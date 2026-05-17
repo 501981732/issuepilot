@@ -225,6 +225,48 @@
         }
       }
     },
+    "evidenceTab": {
+      "ariaLabel": "Evidence",
+      "filterAria": "Evidence kind filter",
+      "empty": "No evidence matches this filter.",
+      "confirm": "Confirm",
+      "confirming": "Confirming…",
+      "confirmed": "Confirmed",
+      "capturedAt": "Captured at {capturedAt}",
+      "openPlaywrightTrace": "Open Playwright trace",
+      "playwrightHint": "Open locally with `npx playwright show-trace`.",
+      "missing": "Missing evidence — task {taskId} has a TaskRunLink but no report",
+      "filters": {
+        "all": "All",
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "command_output": "Commands",
+        "test_result": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review_feedback": "Review"
+      },
+      "kinds": {
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "command_output": "Commands",
+        "test_result": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review_feedback": "Review"
+      },
+      "missingReasons": {
+        "no-run-report": "The task has a linked run, but the run report is missing.",
+        "no-link": "The task has no TaskRunLink yet.",
+        "incomplete-report": "The task report exists but does not include evidence."
+      }
+    },
     "replanDialog": {
       "title": "Replan task",
       "reasonLabel": "Reason",

@@ -225,6 +225,48 @@
         }
       }
     },
+    "evidenceTab": {
+      "ariaLabel": "Evidence",
+      "filterAria": "Evidence 类型筛选",
+      "empty": "当前筛选下没有 evidence。",
+      "confirm": "确认",
+      "confirming": "确认中…",
+      "confirmed": "已确认",
+      "capturedAt": "采集于 {capturedAt}",
+      "openPlaywrightTrace": "Open Playwright trace",
+      "playwrightHint": "在本地用 `npx playwright show-trace` 打开。",
+      "missing": "Missing evidence — task {taskId} has a TaskRunLink but no report",
+      "filters": {
+        "all": "All",
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "command_output": "Commands",
+        "test_result": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review_feedback": "Review"
+      },
+      "kinds": {
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "command_output": "Commands",
+        "test_result": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review_feedback": "Review"
+      },
+      "missingReasons": {
+        "no-run-report": "任务有关联 run，但 run report 缺失。",
+        "no-link": "任务还没有 TaskRunLink。",
+        "incomplete-report": "任务 report 已存在，但没有包含 evidence。"
+      }
+    },
     "replanDialog": {
       "title": "重新规划任务",
       "reasonLabel": "重规划原因",

@@ -8,11 +8,10 @@ import { renderWithIntl as render } from "../../test/intl";
 
 import WorkItemsRoute from "./page";
 import { listWorkItems, setActiveWorkItemsProject } from "../../lib/api";
+import type * as ApiModule from "../../lib/api";
 
 vi.mock("../../lib/api", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../lib/api")
-  >("../../lib/api");
+  const actual = await vi.importActual<typeof ApiModule>("../../lib/api");
   return {
     ...actual,
     listWorkItems: vi.fn(),

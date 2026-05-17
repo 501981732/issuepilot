@@ -5,10 +5,24 @@ import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
 import { WorkItemsList } from "../../components/work-items/work-items-list";
-import { listWorkItems } from "../../lib/api";
+import { PROJECT_COOKIE_KEY } from "../../lib/active-project-cookie";
+import { listWorkItems, setActiveWorkItemsProject } from "../../lib/api";
 
-const PROJECT_STORAGE_KEY = "issuepilot.workItems.activeProject";
+const PROJECT_STORAGE_KEY = PROJECT_COOKIE_KEY;
 const PROJECT_CHANGED_EVENT = "issuepilot:project-changed";
+
+/**
+ * Read the persisted active-project id from `localStorage`. Used both
+ * by the initial fetch (V4.2 review I3: avoid racing with
+ * ProjectSwitcher's mount effect — otherwise the first listWorkItems
+ * call lands without `x-issuepilot-project` and the team-mode
+ * orchestrator returns 400) and by every project-changed re-fetch.
+ */
+function readPersistedProject(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const v = window.localStorage.getItem(PROJECT_STORAGE_KEY);
+  return v && v.length > 0 ? v : undefined;
+}
 
 /**
  * V4.2 team-mode: the work-items list is now a client component so it
@@ -27,8 +41,21 @@ export default function WorkItemsRoute() {
   useEffect(() => {
     let cancelled = false;
     function load() {
+      // V4.2 review I3: synchronously hydrate the active project
+      // BEFORE issuing the first fetch. Pre-fix we relied on
+      // ProjectSwitcher's mount effect to call
+      // `setActiveWorkItemsProject`, but the list page's own mount
+      // effect could (and did) win the race, so the cold-load fetch
+      // missed `x-issuepilot-project` and the orchestrator returned
+      // 400. Passing `opts.project` explicitly makes the wire-level
+      // header deterministic regardless of effect ordering, and
+      // mirroring the value into the API client's module-level state
+      // keeps subsequent in-flight requests aligned with the operator
+      // selection.
+      const project = readPersistedProject();
+      setActiveWorkItemsProject(project ?? null);
       setError(null);
-      listWorkItems()
+      listWorkItems(project ? { project } : {})
         .then((next) => {
           if (!cancelled) setData(next);
         })

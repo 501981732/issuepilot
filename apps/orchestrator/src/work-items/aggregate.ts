@@ -508,8 +508,9 @@ function decideOverallStatus(entries: AggregateEntry[]): WorkItemReportStatus {
   //  - Any task that lacks a TaskRunLink and is not operator-driven
   //    (skipped / needs_rework) blocks a partial / complete verdict
   //    — the run has not produced evidence yet.
-  //  - Any task whose link is `completed` but has no report yet is
-  //    mid-aggregation; same outcome.
+  //  - Any task whose terminal link should have a run report
+  //    (`completed` / `failed` / `blocked`) but has none is missing
+  //    evidence; same outcome.
   //  - Operator-driven skip / needs_rework are themselves settled
   //    states and do not block a verdict, even with no link present.
   for (const e of entries) {

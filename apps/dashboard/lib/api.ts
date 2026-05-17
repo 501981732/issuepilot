@@ -1,4 +1,5 @@
 import type {
+  AcceptWorkItemPlanRequest,
   IssuePilotEvent,
   OrchestratorStateSnapshot,
   ReportsListResponse,
@@ -6,6 +7,11 @@ import type {
   RunRecord,
   RunReportSummary,
   RunStatus,
+  TaskPlan,
+  WorkItem,
+  WorkItemDetailResponse,
+  WorkItemReportResponse,
+  WorkItemsListResponse,
 } from "@issuepilot/shared-contracts";
 
 /**
@@ -239,4 +245,148 @@ export function archiveRun(
   opts: OperatorActionOptions = {},
 ): Promise<{ ok: true }> {
   return postRunAction(runId, "archive", opts);
+}
+
+/**
+ * V4.1 Workflow Spine: Work Item REST client.
+ *
+ * Mirrors the orchestrator routes added in `apps/orchestrator/src/server/`:
+ *
+ * - POST /api/issues/:iid/plan
+ * - GET  /api/work-items
+ * - GET  /api/work-items/:id
+ * - POST /api/work-items/:id/plan/accept
+ * - POST /api/work-items/:id/plan/regenerate
+ * - POST /api/work-items/:id/tasks/:taskId/skip
+ * - POST /api/work-items/:id/tasks/:taskId/retry
+ * - GET  /api/work-items/:id/report
+ *
+ * All POSTs forward the optional `x-issuepilot-operator` header so the
+ * orchestrator emits operator-attributed events.
+ */
+
+async function postWorkItemAction<T>(
+  path: string,
+  body: unknown,
+  opts: OperatorActionOptions = {},
+): Promise<T> {
+  const url = `${resolveApiBase()}${path}`;
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "content-type": "application/json",
+  };
+  if (opts.operator && opts.operator.length > 0) {
+    headers["x-issuepilot-operator"] = opts.operator;
+  }
+  const init: RequestInit = {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body ?? {}),
+    cache: "no-store",
+  };
+  if (opts.signal) init.signal = opts.signal;
+  const response = await fetch(url, init);
+  if (!response.ok) {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = await response.text().catch(() => null);
+    }
+    throw new ApiError(
+      `POST ${path} failed: HTTP ${response.status}`,
+      response.status,
+      body,
+    );
+  }
+  return (await response.json()) as T;
+}
+
+export function planWorkItem(
+  iid: number,
+  params: { regenerate?: boolean } = {},
+  opts: OperatorActionOptions = {},
+): Promise<{ workItem: WorkItem; plan: TaskPlan }> {
+  return postWorkItemAction<{ workItem: WorkItem; plan: TaskPlan }>(
+    `/api/issues/${encodeURIComponent(String(iid))}/plan`,
+    { iid, regenerate: params.regenerate === true },
+    opts,
+  );
+}
+
+export function listWorkItems(
+  opts: ApiGetOptions = {},
+): Promise<WorkItemsListResponse> {
+  return apiGet<WorkItemsListResponse>("/api/work-items", opts);
+}
+
+export function getWorkItem(
+  id: string,
+  opts: ApiGetOptions = {},
+): Promise<WorkItemDetailResponse> {
+  return apiGet<WorkItemDetailResponse>(
+    `/api/work-items/${encodeURIComponent(id)}`,
+    opts,
+  );
+}
+
+export function acceptWorkItemPlan(
+  id: string,
+  body: AcceptWorkItemPlanRequest,
+  opts: OperatorActionOptions = {},
+): Promise<{ workItem: WorkItem; plan: TaskPlan }> {
+  return postWorkItemAction<{ workItem: WorkItem; plan: TaskPlan }>(
+    `/api/work-items/${encodeURIComponent(id)}/plan/accept`,
+    body,
+    opts,
+  );
+}
+
+export function regenerateWorkItemPlan(
+  id: string,
+  opts: OperatorActionOptions = {},
+): Promise<{ workItem: WorkItem; plan: TaskPlan }> {
+  return postWorkItemAction<{ workItem: WorkItem; plan: TaskPlan }>(
+    `/api/work-items/${encodeURIComponent(id)}/plan/regenerate`,
+    {},
+    opts,
+  );
+}
+
+export function skipWorkItemTask(
+  id: string,
+  taskId: string,
+  opts: OperatorActionOptions = {},
+): Promise<{ ok: true }> {
+  return postWorkItemAction<{ ok: true }>(
+    `/api/work-items/${encodeURIComponent(id)}/tasks/${encodeURIComponent(
+      taskId,
+    )}/skip`,
+    {},
+    opts,
+  );
+}
+
+export function retryWorkItemTask(
+  id: string,
+  taskId: string,
+  opts: OperatorActionOptions = {},
+): Promise<{ ok: true }> {
+  return postWorkItemAction<{ ok: true }>(
+    `/api/work-items/${encodeURIComponent(id)}/tasks/${encodeURIComponent(
+      taskId,
+    )}/retry`,
+    {},
+    opts,
+  );
+}
+
+export function getWorkItemReport(
+  id: string,
+  opts: ApiGetOptions = {},
+): Promise<WorkItemReportResponse> {
+  return apiGet<WorkItemReportResponse>(
+    `/api/work-items/${encodeURIComponent(id)}/report`,
+    opts,
+  );
 }

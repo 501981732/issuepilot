@@ -587,6 +587,14 @@ function buildOpenQuestions(entries: AggregateEntry[]): string[] {
         }`,
       );
     }
+    for (const followUp of e.report?.handoff?.followUps ?? []) {
+      if (
+        followUp.startsWith("evidence oversized:") ||
+        followUp.startsWith("evidence rejected:")
+      ) {
+        questions.push(`Task ${e.task.taskId} evidence issue: ${followUp}`);
+      }
+    }
   }
   return questions;
 }

@@ -164,16 +164,25 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
 - **每个 TaskNode 触发一个 synthetic task run**。run 复用现有 IssuePilot runner、
   workspace、event store 和 RunReportArtifact，但 prompt context 额外带上
   `workItemId`、`taskId`、task title、task goal、task scope、依赖摘要和建议验证方式。
-- **默认一 task 一 branch / worktree**。branch 建议形态为
+- **V4.1 只自动执行 independent tasks**。`dependsOn` 为空、或依赖已由人工确认
+  不需要共享代码状态的 task 才能进入 `ready`。需要继承上游代码变更的依赖链保持
+  `blocked_by_dependency`，由 operator 合并上游 MR 后重试，或进入 V4.2 的
+  dependency-aware branch chaining 设计。
+- **默认一 task 一 branch / worktree，base 为 workflow `base_branch`**。branch 建议形态为
   `<branch_prefix>/<iid>-<task-slug>`，workspace 仍位于当前 IssuePilot workspace
-  root 下；V4.1 不做多个 task 共享同一 branch 的实现。
+  root 下；V4.1 不做多个 task 共享同一 branch，也不做从上游 task branch 派生
+  下游 task branch。
 - **GitLab note 以父 Issue 为落点**。V4.1 不为每个子任务新建 Issue，也不要求每个
   task 写独立 handoff note；父 Issue 最终写入或更新 WorkItem 级 handoff / summary
   note，dashboard 负责展示 task 粒度细节。
-- **MR 策略保持保守**。V4.1 可以为每个 task run 创建或更新独立 MR，也可以在实现
-  plan 中先限制为单 task 顺序执行；无论哪种实现，`TaskRunLink` 必须记录
-  task、run、branch、MR 和 report 的绑定关系。是否合并多个 task MR 到一个总 MR
-  不属于 V4.1。
+- **MR 策略保持保守**。每个 task run 创建或更新独立 MR。是否合并多个 task MR
+  到一个总 MR 不属于 V4.1。
+- **per-task run 不直接推进父 Issue workflow label**。synthetic task run 不允许把父
+  Issue 从 `ai-running` 切到 `human-review`，也不允许因单个 task 失败直接把父 Issue
+  切到 `ai-failed` / `ai-blocked`。父 Issue 的 handoff / failure / blocked / closing
+  note 和 label transition 由 WorkItem 汇总阶段统一决定：所有必需 task 完成后才能
+  进入 `human-review`；存在失败 / blocked task 时 WorkItem 保持 `partial` / `blocked`
+  并等待 operator 决策。
 - **Evidence 通过 report 绑定**。子任务 evidence 不复制到 `TaskNode`；`TaskRunLink`
   指向 run/report，`WorkItemReport` 汇总各 task report 的 evidence index。
 - **状态回写只影响本地 WorkItem**。子任务状态变化不直接改 GitLab label；父 Issue
@@ -307,6 +316,18 @@ V4.1 planning 前必须固定核心对象状态，避免实现时各 package 使
 | `WorkItemReport` | `complete` | 所有必需 task 均已汇总 |
 | `WorkItemReport` | `incomplete` | report 依赖的 run / evidence 缺失 |
 
+父 GitLab Issue label 在 V4.1 中只由 WorkItem 聚合状态驱动：
+
+| 事件 | WorkItem 状态 | 父 Issue label 行为 |
+| --- | --- | --- |
+| 点击 `Plan work item` | `planning` | 不改 label |
+| 接受 plan | `ready` | 可保持原 label；开始执行时切 `ai-running` |
+| task run 开始 | `running` | 保持 `ai-running` |
+| 单个 task 完成 | `running` / `partial` | 不切 `human-review` |
+| 单个 task 失败 / blocked | `partial` / `blocked` | 不直接切 `ai-failed` / `ai-blocked` |
+| 所有必需 task 完成并生成完整报告 | `completed` | 统一写 WorkItem handoff note，并切 `human-review` |
+| operator 取消 WorkItem | `blocked` | 由 operator 决定是否切 `ai-blocked` |
+
 ### 9.1 WorkItem
 
 代表一个大 Issue 的 V4 工作单元。它不是替代 GitLab Issue，而是 IssuePilot 对
@@ -424,10 +445,14 @@ V4 不引入 Postgres。生产级 schema、migration、backup / restore 留给 V
 ## 11. 主流程
 
 1. Operator 选择一个 GitLab Issue，点击 `Plan work item`。
-2. IssuePilot 读取 Issue 标题、描述、labels、已有 comments、关联 MR / run history。
-3. Workflow Intelligence Layer 生成 `TaskPlan` 草案。
+2. IssuePilot 立即创建 `WorkItem(status=planning)`，并读取 Issue 标题、描述、
+   labels、已有 comments、关联 MR / run history。
+3. Workflow Intelligence Layer 生成 `TaskPlan(status=draft)` 草案，绑定同一个
+   `workItemId`。
 4. Dashboard 展示子任务列表 / Task Graph，Operator 可以接受、编辑、删除、重排。
-5. Operator 接受 plan 后，IssuePilot 创建 `WorkItem` 和 accepted `TaskPlan`。
+   拒绝或重新生成 plan 时保留 draft / rejected plan version。
+5. Operator 接受 plan 后，IssuePilot 写入 accepted `TaskPlan`，并把 WorkItem 切到
+   `ready`。
 6. 每个 `TaskNode` 按 V4.1 Task execution contract 触发现有 IssuePilot run。
 7. 子任务 run 完成后，`TaskRunLink` 记录 task、run、branch、MR 和 report 的关系。
 8. `WorkItemReport` 汇总所有子任务结果。

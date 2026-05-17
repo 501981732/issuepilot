@@ -89,6 +89,19 @@ export interface RunTaskOnceOptions {
   newRunId?: () => string;
   /** Test seam for deterministic clocks. */
   now?: () => string;
+  /**
+   * V4.2 branch chaining: when set, the dispatch input uses this branch
+   * as the base instead of `workflow.git.baseBranch`. Typically
+   * `origin/<upstream-task-branch>` so the downstream worktree includes
+   * the upstream patch even if its MR has not been merged yet.
+   */
+  baseOverride?: string;
+  /**
+   * V4.2 branch chaining: when set, the upstream taskId whose branch is
+   * being chained off. Threaded through `extraPromptVars.workItem.chainedFrom`
+   * so prompt templates can render "this task is based on upstream task X".
+   */
+  chainedFrom?: string;
 }
 
 export interface RunTaskOnceResult {
@@ -156,7 +169,7 @@ export async function runTaskOnce(
     repoCacheRoot: opts.workflow.workspace.repoCacheRoot,
     worktreeRoot: opts.workflow.workspace.root,
     branch,
-    baseBranch: opts.workflow.git.baseBranch,
+    baseBranch: opts.baseOverride ?? opts.workflow.git.baseBranch,
     runningLabel: opts.workflow.tracker.runningLabel,
     handoffLabel: opts.workflow.tracker.handoffLabel,
     reworkLabel: opts.workflow.tracker.reworkLabel,
@@ -173,6 +186,7 @@ export async function runTaskOnce(
         dependsOn: opts.task.dependsOn,
         dependenciesSummary,
         riskLevel: opts.task.riskLevel,
+        ...(opts.chainedFrom ? { chainedFrom: opts.chainedFrom } : {}),
       },
     },
     ...(opts.workflow.hooks ? { hooks: opts.workflow.hooks } : {}),

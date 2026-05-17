@@ -40,6 +40,14 @@ const mediaTypes = new Map<string, string>([
   [".webp", "image/webp"],
 ]);
 
+const evidenceKinds = new Set<ReportEvidence["kind"]>([
+  "command_output",
+  "playwright",
+  "recording",
+  "screenshot",
+  "test_result",
+]);
+
 export async function scanRunEvidence({
   taskWorktreePath,
   runId,
@@ -63,20 +71,20 @@ export async function scanRunEvidence({
   const rejected: RejectedEvidenceEntry[] = [];
 
   if (manifestUsed) {
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
-      entries?: ReportEvidence[];
-    };
-    const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+    const entries = await readManifestEntries(manifestPath);
+    const validated = entries.flatMap((entry) =>
+      validateManifestEntry({
+        evidenceRunRoot,
+        entry,
+        rejected,
+      }),
+    );
     return {
-      entries: entries.filter((entry) => {
-        if (!entry.relPath) {
+      entries: validated.filter((entry) => {
+        if (entry.relPath === undefined) {
           return true;
         }
-        if (isPathEscaped(evidenceRunRoot, entry.relPath)) {
-          rejected.push({ relPath: entry.relPath, reason: "path-escape" });
-          return false;
-        }
-        return !oversizedRelPaths.has(normalizeRelPath(entry.relPath));
+        return !oversizedRelPaths.has(entry.relPath);
       }),
       oversized,
       rejected,
@@ -92,6 +100,94 @@ export async function scanRunEvidence({
     rejected,
     manifestUsed: false,
   };
+}
+
+async function readManifestEntries(manifestPath: string): Promise<unknown[]> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch {
+    return [];
+  }
+
+  if (!isRecord(manifest) || !Array.isArray(manifest.entries)) {
+    return [];
+  }
+
+  return manifest.entries;
+}
+
+function validateManifestEntry({
+  evidenceRunRoot,
+  entry,
+  rejected,
+}: {
+  evidenceRunRoot: string;
+  entry: unknown;
+  rejected: RejectedEvidenceEntry[];
+}): ReportEvidence[] {
+  if (!isRecord(entry)) {
+    return [];
+  }
+
+  if (!isEvidenceKind(entry.kind) || typeof entry.label !== "string") {
+    return [];
+  }
+
+  const relPathResult = canonicalizeManifestRelPath({
+    evidenceRunRoot,
+    relPath: entry.relPath,
+    rejected,
+  });
+  if (relPathResult === "invalid") {
+    return [];
+  }
+
+  const evidence: ReportEvidence = {
+    kind: entry.kind,
+    label: entry.label,
+  };
+  if (relPathResult !== undefined) {
+    evidence.relPath = relPathResult;
+  }
+  if (typeof entry.href === "string") {
+    evidence.href = entry.href;
+  }
+  if (typeof entry.mediaType === "string") {
+    evidence.mediaType = entry.mediaType;
+  }
+  if (typeof entry.capturedAt === "string") {
+    evidence.capturedAt = entry.capturedAt;
+  }
+  if (entry.confidence === "ai-claim" || entry.confidence === "system-derived") {
+    evidence.confidence = entry.confidence;
+  }
+
+  return [evidence];
+}
+
+function canonicalizeManifestRelPath({
+  evidenceRunRoot,
+  relPath,
+  rejected,
+}: {
+  evidenceRunRoot: string;
+  relPath: unknown;
+  rejected: RejectedEvidenceEntry[];
+}): string | undefined | "invalid" {
+  if (relPath === undefined) {
+    return undefined;
+  }
+  if (typeof relPath !== "string") {
+    return "invalid";
+  }
+
+  const canonicalRelPath = canonicalInRootRelPath(evidenceRunRoot, relPath);
+  if (canonicalRelPath === undefined) {
+    rejected.push({ relPath, reason: "path-escape" });
+    return "invalid";
+  }
+  return canonicalRelPath;
 }
 
 function emptyResult(): ScanRunEvidenceResult {
@@ -222,14 +318,31 @@ function isRecordingExtension(ext: string): boolean {
   return ext === ".mp4" || ext === ".webm" || ext === ".mov";
 }
 
-function isPathEscaped(root: string, relPath: string): boolean {
+function canonicalInRootRelPath(
+  root: string,
+  relPath: string,
+): string | undefined {
   const resolved = path.resolve(root, relPath);
   const relative = path.relative(root, resolved);
-  return relative.startsWith("..") || path.isAbsolute(relative);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  return normalizeRelPath(relative);
 }
 
 function normalizeRelPath(relPath: string): string {
   return relPath.split(path.sep).join(path.posix.sep);
+}
+
+function isEvidenceKind(value: unknown): value is ReportEvidence["kind"] {
+  return (
+    typeof value === "string" &&
+    evidenceKinds.has(value as ReportEvidence["kind"])
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNotFoundError(error: unknown): boolean {

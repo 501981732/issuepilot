@@ -188,6 +188,13 @@ export interface ServerDeps {
    */
   reports?: ReportStore;
   /**
+   * V4.3 team-mode: per-project report stores keyed by the same project id
+   * used by `workItemsByProject`. Evidence file routing must use the selected
+   * project's store so identical run ids in another project cannot resolve a
+   * foreign workspace.
+   */
+  reportsByProject?: Map<string, ReportStore>;
+  /**
    * V4.1 Workflow Spine: WorkItem orchestration façade. When absent,
    * `/api/issues/:iid/plan` and `/api/work-items/*` routes uniformly
    * return HTTP 503 `work_items_unavailable` so dashboards see a
@@ -587,7 +594,7 @@ export async function createServer(
   }
 
   type WorkItemRouteContext =
-    | { ok: true; service: WorkItemService }
+    | { ok: true; service: WorkItemService; projectId?: string }
     | {
         ok: false;
         statusCode: number;
@@ -632,7 +639,7 @@ export async function createServer(
           },
         };
       }
-      return { ok: true, service: svc };
+      return { ok: true, service: svc, projectId: project };
     }
     if (!deps.workItems) {
       return {
@@ -642,6 +649,14 @@ export async function createServer(
       };
     }
     return { ok: true, service: deps.workItems };
+  }
+
+  function resolveReportStore(ctx: {
+    projectId?: string;
+  }): ReportStore | undefined {
+    return ctx.projectId
+      ? deps.reportsByProject?.get(ctx.projectId)
+      : deps.reports;
   }
 
   function workItemErrorBody(error: WorkItemServiceError["error"]) {
@@ -1022,7 +1037,7 @@ export async function createServer(
         .send(routeError("not_found", "run is not linked to work item"));
     }
 
-    const report = await deps.reports?.get(runId.value);
+    const report = await resolveReportStore(ctx)?.get(runId.value);
     const taskWorktreePath = report?.run.workspacePath;
     if (!taskWorktreePath) {
       return reply

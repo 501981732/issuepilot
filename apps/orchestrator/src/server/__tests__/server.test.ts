@@ -41,6 +41,7 @@ async function buildTestApp(
     projects?: ProjectSummary[] | (() => ProjectSummary[]);
     operatorActions?: ServerDeps["operatorActions"];
     reports?: ServerDeps["reports"];
+    reportsByProject?: ServerDeps["reportsByProject"];
     workItems?: ServerDeps["workItems"];
     workItemsByProject?: ServerDeps["workItemsByProject"];
   } = {},
@@ -63,6 +64,9 @@ async function buildTestApp(
         ? { operatorActions: overrides.operatorActions }
         : {}),
       ...(overrides.reports ? { reports: overrides.reports } : {}),
+      ...(overrides.reportsByProject
+        ? { reportsByProject: overrides.reportsByProject }
+        : {}),
       ...(overrides.workItems ? { workItems: overrides.workItems } : {}),
       ...(overrides.workItemsByProject
         ? { workItemsByProject: overrides.workItemsByProject }
@@ -1778,9 +1782,24 @@ describe("V4.1 work item routes", () => {
   });
 
   it("routes go through x-issuepilot-project header or ?project= fallback in team mode", async () => {
-    const { taskWorktreePath } = await createEvidencePng();
+    const { taskWorktreePath, png } = await createEvidencePng();
+    const projectB = await createEvidencePng();
+    await writeFile(
+      path.join(
+        projectB.taskWorktreePath,
+        ".issuepilot",
+        "evidence",
+        "run-1",
+        "screenshots",
+        "login.png",
+      ),
+      Buffer.from("project-b"),
+    );
     const report = runReportFixture({
       run: { ...runReportFixture().run, workspacePath: taskWorktreePath },
+    });
+    const projectBReport = runReportFixture({
+      run: { ...runReportFixture().run, workspacePath: projectB.taskWorktreePath },
     });
     const getEvidenceA = vi.fn(async () => evidenceResponseFixture());
     const getEvidenceB = vi.fn(async () => ({
@@ -1804,7 +1823,11 @@ describe("V4.1 work item routes", () => {
       ],
     }));
     const { app } = await buildTestApp(async () => [], {
-      reports: buildReportStoreByRun([report]),
+      reports: buildReportStoreByRun([projectBReport]),
+      reportsByProject: new Map([
+        ["proj-a", buildReportStoreByRun([report])],
+        ["proj-b", buildReportStoreByRun([projectBReport])],
+      ]),
       workItemsByProject: new Map([
         [
           "proj-a",
@@ -1832,7 +1855,17 @@ describe("V4.1 work item routes", () => {
       });
       expect(fileResp.statusCode).toBe(200);
       expect(fileResp.headers["content-type"]).toContain("image/png");
+      expect(Buffer.from(fileResp.rawPayload)).toEqual(png);
       expect(detailA).toHaveBeenCalledWith("wi_01");
+
+      const headerPriorityResp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence/file?project=proj-b&runId=run-1&path=screenshots/login.png",
+        headers: { "x-issuepilot-project": "proj-a" },
+      });
+      expect(headerPriorityResp.statusCode).toBe(200);
+      expect(Buffer.from(headerPriorityResp.rawPayload)).toEqual(png);
+      expect(detailA).toHaveBeenCalledTimes(2);
     } finally {
       await app.close();
     }

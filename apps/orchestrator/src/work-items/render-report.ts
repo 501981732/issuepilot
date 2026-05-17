@@ -350,5 +350,5 @@ function safeOneLine(s: string): string {
 }
 
 function escapeMarkdownLinkText(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  return s.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
 }

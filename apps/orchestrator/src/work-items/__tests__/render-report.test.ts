@@ -320,4 +320,47 @@ describe("renderWorkItemReportMarkdown", () => {
       "[API screenshot](https://reports.local/evidence?viewer=1&runId=run_a&path=evidence%2Fapi.png)",
     );
   });
+
+  it("escapes evidence link text that contains markdown brackets", () => {
+    const body = renderWorkItemReportMarkdown(
+      workItem,
+      plan,
+      report({
+        evidence: {
+          index: [
+            {
+              taskId: "t1",
+              kind: "artifact",
+              evidenceId: "t1:artifact:run_a:001",
+              label: "Artifact [draft]",
+              confidence: "system-derived",
+              href: "https://reports.local/artifacts/1",
+              source: { runId: "run_a" },
+            },
+          ],
+          byTask: {},
+        },
+      }),
+      { audience: "markdown" },
+    );
+
+    expect(body).toContain(
+      "- [Artifact \\[draft\\]](https://reports.local/artifacts/1) (system-derived)",
+    );
+  });
+
+  it("renders stable fallback next action when questions and actions are empty", () => {
+    const body = renderWorkItemReportMarkdown(
+      workItem,
+      plan,
+      report({ openQuestions: [], recommendedNextActions: [] }),
+      { audience: "markdown" },
+    );
+
+    expect(body).not.toContain("### Open questions");
+    expect(body).toContain("### Recommended next actions");
+    expect(body).toContain(
+      "- Reviewer to inspect the linked MRs and decide next steps.",
+    );
+  });
 });

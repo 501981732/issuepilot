@@ -55,12 +55,15 @@ export interface WorkItemDetailProps {
    * `list` when not provided.
    */
   initialView?: WorkItemView;
+  /** Team-mode project id resolved from SSR cookie; used before client hydration. */
+  project?: string;
 }
 
 export function WorkItemDetail({
   initial,
   operator = "operator",
   initialView = "list",
+  project,
 }: WorkItemDetailProps) {
   const t = useTranslations("workItem");
   const [data, setData] = useState<WorkItemDetailResponse>(initial);
@@ -80,9 +83,12 @@ export function WorkItemDetail({
   }, []);
 
   const reload = useCallback(async () => {
-    const next = await getWorkItem(data.workItem.workItemId);
+    const next = await getWorkItem(
+      data.workItem.workItemId,
+      project ? { project } : {},
+    );
     startTransition(() => refresh(next));
-  }, [data.workItem.workItemId, refresh]);
+  }, [data.workItem.workItemId, project, refresh]);
 
   const handleAccept = useCallback(
     async ({
@@ -236,7 +242,7 @@ export function WorkItemDetail({
     if (view !== "evidence") return;
     let cancelled = false;
     setEvidenceError(null);
-    getWorkItemEvidence(data.workItem.workItemId)
+    getWorkItemEvidence(data.workItem.workItemId, project ? { project } : {})
       .then((next) => {
         if (!cancelled) setEvidence(next);
       })
@@ -248,24 +254,33 @@ export function WorkItemDetail({
     return () => {
       cancelled = true;
     };
-  }, [view, data.workItem.workItemId]);
+  }, [view, data.workItem.workItemId, project]);
 
   const handleConfirmEvidence = useCallback(
     async (taskId: string, evidenceId: string) => {
       setError(null);
-      await confirmWorkItemTaskEvidence(
-        data.workItem.workItemId,
-        taskId,
-        evidenceId,
-        { operator },
-      );
-      const [nextEvidence] = await Promise.all([
-        getWorkItemEvidence(data.workItem.workItemId),
-        reload(),
-      ]);
-      setEvidence(nextEvidence);
+      try {
+        await confirmWorkItemTaskEvidence(
+          data.workItem.workItemId,
+          taskId,
+          evidenceId,
+          { operator, ...(project ? { project } : {}) },
+        );
+        const [nextEvidence] = await Promise.all([
+          getWorkItemEvidence(
+            data.workItem.workItemId,
+            project ? { project } : {},
+          ),
+          reload(),
+        ]);
+        setEvidence(nextEvidence);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        throw err;
+      }
     },
-    [data.workItem.workItemId, operator, reload],
+    [data.workItem.workItemId, operator, project, reload],
   );
 
   const wi = data.workItem;
@@ -403,7 +418,9 @@ export function WorkItemDetail({
         </div>
       ) : null}
 
-      {planAccepted ? <ParentReviewPacket report={data.report} /> : null}
+      {planAccepted ? (
+        <ParentReviewPacket report={data.report} project={project} />
+      ) : null}
     </div>
   );
 }

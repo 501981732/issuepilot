@@ -165,10 +165,12 @@ describe("ParentReviewPacket", () => {
       configurable: true,
       value: { writeText },
     });
-    render(<ParentReviewPacket report={baseReport()} />);
+    render(<ParentReviewPacket report={baseReport()} project="platform-web" />);
     fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
     await waitFor(() =>
-      expect(getWorkItemReportMarkdown).toHaveBeenCalledWith("wi_1"),
+      expect(getWorkItemReportMarkdown).toHaveBeenCalledWith("wi_1", {
+        project: "platform-web",
+      }),
     );
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const md = writeText.mock.calls[0]![0] as string;

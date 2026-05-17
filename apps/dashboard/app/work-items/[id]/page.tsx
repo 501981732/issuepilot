@@ -30,7 +30,13 @@ export default async function WorkItemDetailRoute(props: {
       id,
       project ? { project } : {},
     );
-    return <WorkItemDetail initial={detail} initialView={initialView} />;
+    return (
+      <WorkItemDetail
+        initial={detail}
+        initialView={initialView}
+        project={project}
+      />
+    );
   } catch (err) {
     const error = err as Error & { status?: number };
     if (error.status === 404) {

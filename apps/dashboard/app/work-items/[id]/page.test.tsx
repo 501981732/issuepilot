@@ -64,11 +64,13 @@ vi.mock("../../../components/work-items/work-item-detail", () => ({
   WorkItemDetail: ({
     initial,
     initialView,
+    project,
   }: {
     initial: WorkItemDetailResponse;
     initialView?: string;
+    project?: string;
   }) => (
-    <div data-testid="detail" data-view={initialView}>
+    <div data-testid="detail" data-view={initialView} data-project={project}>
       {initial.workItem.workItemId}
     </div>
   ),
@@ -125,6 +127,10 @@ describe("WorkItemDetailRoute (SSR)", () => {
     const [calledId, calledOpts] = vi.mocked(getWorkItem).mock.calls[0]!;
     expect(calledId).toBe("wi_42");
     expect(calledOpts).toMatchObject({ project: "platform-web" });
+    expect(screen.getByTestId("detail")).toHaveAttribute(
+      "data-project",
+      "platform-web",
+    );
   });
 
   it("omits the project option when no cookie is present (single-mode behaviour preserved)", async () => {

@@ -135,7 +135,7 @@ describe("WorkItemDetail", () => {
     ]);
     expect(opts).toEqual({ operator: "alice" });
 
-    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1", {}));
   });
 
   it("invokes regenerateWorkItemPlan with operator and reloads", async () => {
@@ -152,7 +152,7 @@ describe("WorkItemDetail", () => {
         operator: "alice",
       }),
     );
-    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1", {}));
   });
 
   it("V4.2: shows the view toggle and switches to TaskGraph when graph data loads", async () => {
@@ -219,7 +219,7 @@ describe("WorkItemDetail", () => {
     fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
 
     await waitFor(() =>
-      expect(getWorkItemEvidence).toHaveBeenCalledWith("wi_1"),
+      expect(getWorkItemEvidence).toHaveBeenCalledWith("wi_1", {}),
     );
     await waitFor(() =>
       expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
@@ -272,7 +272,13 @@ describe("WorkItemDetail", () => {
     });
     vi.mocked(getWorkItem).mockResolvedValue(acceptedDetail());
 
-    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+    render(
+      <WorkItemDetail
+        initial={acceptedDetail()}
+        operator="alice"
+        project="platform-web"
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
     await waitFor(() =>
       expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
@@ -284,11 +290,48 @@ describe("WorkItemDetail", () => {
         "wi_1",
         "T1",
         "ev_validation",
-        { operator: "alice" },
+        { operator: "alice", project: "platform-web" },
       ),
     );
-    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+    await waitFor(() =>
+      expect(getWorkItem).toHaveBeenCalledWith("wi_1", {
+        project: "platform-web",
+      }),
+    );
+    expect(getWorkItemEvidence).toHaveBeenCalledWith("wi_1", {
+      project: "platform-web",
+    });
     expect(getWorkItemEvidence).toHaveBeenCalledTimes(2);
+  });
+
+  it("V4.3: surfaces confirm evidence failures", async () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [
+        {
+          taskId: "T1",
+          kind: "validation",
+          evidenceId: "ev_validation",
+          label: "pnpm test passed",
+          confidence: "ai-claim",
+        },
+      ],
+      byTask: {},
+      missing: [],
+    });
+    vi.mocked(confirmWorkItemTaskEvidence).mockRejectedValue(
+      new Error("confirm failed"),
+    );
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+    await waitFor(() =>
+      expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("confirm failed"),
+    );
   });
 
   it("invokes skipWorkItemTask / retryWorkItemTask from task list", async () => {

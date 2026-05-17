@@ -39,16 +39,20 @@ const EVIDENCE_KIND_KEY: Record<WorkItemEvidenceEntry["kind"], string> = {
 
 export interface ParentReviewPacketProps {
   report?: WorkItemReport;
+  project?: string;
 }
 
-export function ParentReviewPacket({ report }: ParentReviewPacketProps) {
+export function ParentReviewPacket({ report, project }: ParentReviewPacketProps) {
   const t = useTranslations("workItem.parentReviewPacket");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
     if (!report) return;
     try {
-      const md = await getWorkItemReportMarkdown(report.workItemId);
+      const md = await getWorkItemReportMarkdown(
+        report.workItemId,
+        project ? { project } : {},
+      );
       // navigator.clipboard may not exist in jsdom; fall back to document.execCommand
       if (typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(md);

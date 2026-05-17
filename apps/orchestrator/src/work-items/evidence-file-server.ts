@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 export interface ServeEvidenceFileInput {
@@ -19,6 +19,7 @@ const mediaTypes = new Map<string, string>([
   [".jpg", "image/jpeg"],
   [".json", "application/json"],
   [".log", "text/plain"],
+  [".mov", "video/quicktime"],
   [".mp4", "video/mp4"],
   [".png", "image/png"],
   [".txt", "text/plain"],
@@ -32,27 +33,51 @@ export async function serveEvidenceFile({
   runId,
   relPath,
 }: ServeEvidenceFileInput): Promise<ServeEvidenceFileResult> {
-  const expectedRoot = path.resolve(
-    taskWorktreePath,
-    EVIDENCE_DIR,
-    runId,
-  );
-  const requested = path.resolve(expectedRoot, relPath);
+  const evidenceBase = path.resolve(taskWorktreePath, EVIDENCE_DIR);
+  const expectedRoot = path.resolve(evidenceBase, runId);
+  if (
+    expectedRoot === evidenceBase ||
+    !expectedRoot.startsWith(evidenceBase + path.sep)
+  ) {
+    return { ok: false, error: "forbidden" };
+  }
 
+  const requested = path.resolve(expectedRoot, relPath);
   if (!requested.startsWith(expectedRoot + path.sep)) {
     return { ok: false, error: "forbidden" };
   }
 
-  let stats;
+  let linkStats;
   try {
-    stats = await stat(requested);
+    linkStats = await lstat(requested);
   } catch (error) {
     if (isNotFoundError(error)) {
       return { ok: false, error: "not_found" };
     }
     throw error;
   }
+  if (linkStats.isSymbolicLink()) {
+    return { ok: false, error: "forbidden" };
+  }
 
+  let stats;
+  let realExpectedRoot;
+  let realRequested;
+  try {
+    [stats, realExpectedRoot, realRequested] = await Promise.all([
+      stat(requested),
+      realpath(expectedRoot),
+      realpath(requested),
+    ]);
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return { ok: false, error: "not_found" };
+    }
+    throw error;
+  }
+  if (!realRequested.startsWith(realExpectedRoot + path.sep)) {
+    return { ok: false, error: "forbidden" };
+  }
   if (!stats.isFile()) {
     return { ok: false, error: "not_found" };
   }

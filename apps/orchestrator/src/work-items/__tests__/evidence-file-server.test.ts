@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -70,6 +77,16 @@ describe("serveEvidenceFile", () => {
     ).resolves.toEqual({ ok: false, error: "forbidden" });
   });
 
+  it("returns forbidden when runId escapes the evidence base", async () => {
+    await expect(
+      serveEvidenceFile({
+        taskWorktreePath,
+        runId: "../outside-run",
+        relPath: "screenshots/login.png",
+      }),
+    ).resolves.toEqual({ ok: false, error: "forbidden" });
+  });
+
   it("returns forbidden when relPath is empty and resolves to the evidence root", async () => {
     await expect(
       serveEvidenceFile({
@@ -100,6 +117,22 @@ describe("serveEvidenceFile", () => {
         relPath: "screenshots",
       }),
     ).resolves.toEqual({ ok: false, error: "not_found" });
+  });
+
+  it("returns forbidden when relPath points to a symlink", async () => {
+    const outsidePath = path.join(taskWorktreePath, "secret.txt");
+    await writeFile(outsidePath, "secret");
+    const linkPath = path.join(evidenceRoot(), "commands", "secret.log");
+    await mkdir(path.dirname(linkPath), { recursive: true });
+    await symlink(outsidePath, linkPath);
+
+    await expect(
+      serveEvidenceFile({
+        taskWorktreePath,
+        runId: "run-1",
+        relPath: "commands/secret.log",
+      }),
+    ).resolves.toEqual({ ok: false, error: "forbidden" });
   });
 
   it("returns oversized when file size is greater than 50MB", async () => {
@@ -145,6 +178,23 @@ describe("serveEvidenceFile", () => {
       ok: true,
       absPath,
       mediaType: "video/mp4",
+      sizeBytes: 3,
+    });
+  });
+
+  it("infers video/quicktime for .mov files", async () => {
+    const absPath = await writeEvidenceFile("recordings/demo.mov", "mov");
+
+    await expect(
+      serveEvidenceFile({
+        taskWorktreePath,
+        runId: "run-1",
+        relPath: "recordings/demo.mov",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      absPath,
+      mediaType: "video/quicktime",
       sizeBytes: 3,
     });
   });

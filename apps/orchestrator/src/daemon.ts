@@ -19,7 +19,10 @@ import {
   driveLifecycle,
   spawnRpc,
 } from "@issuepilot/runner-codex-app-server";
-import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
+import type {
+  IssuePilotInternalEvent,
+  RunReportArtifact,
+} from "@issuepilot/shared-contracts";
 import {
   createGitLabAdapter,
   createGitLabAdapterFromCredential,
@@ -62,10 +65,7 @@ import {
   reconcile,
 } from "./orchestrator/reconcile.js";
 import { sweepReviewFeedbackOnce } from "./orchestrator/review-feedback.js";
-import {
-  createInitialReport,
-  markReportFailed,
-} from "./reports/lifecycle.js";
+import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
 import { createRunCancelRegistry } from "./runtime/run-cancel-registry.js";
@@ -75,6 +75,11 @@ import { createServer, type WorkItemService } from "./server/index.js";
 import { aggregateWorkItem } from "./work-items/aggregate.js";
 import { decideEffectiveBase } from "./work-items/branch-chain.js";
 import { runTaskOnce } from "./work-items/dispatch-task.js";
+import { scanRunEvidence } from "./work-items/evidence-scanner.js";
+import {
+  appendOversizedFollowUps,
+  mergeReportEvidence,
+} from "./work-items/evidence-merge.js";
 import { writeParentHandoff } from "./work-items/handoff.js";
 import {
   createWorkItemPlanner,
@@ -693,6 +698,73 @@ export async function startDaemon(
     });
   };
 
+  const patchReportEvidence = async (
+    finalReport: RunReportArtifact,
+  ): Promise<void> => {
+    const taskWorktreePath = finalReport.run.workspacePath.trim();
+    if (!taskWorktreePath) {
+      publishEvent({
+        type: "work_item_evidence_index_skipped",
+        runId: finalReport.runId,
+        ts: new Date().toISOString(),
+        detail: {
+          reason: "missing-workspace-path",
+        },
+      });
+      return;
+    }
+
+    const scan = await scanRunEvidence({
+      taskWorktreePath,
+      runId: finalReport.runId,
+    });
+    publishEvent({
+      type: "work_item_evidence_indexed",
+      runId: finalReport.runId,
+      ts: new Date().toISOString(),
+      detail: {
+        count: scan.entries.length,
+        oversizedCount: scan.oversized.length,
+        rejectedCount: scan.rejected.length,
+        manifestUsed: scan.manifestUsed,
+      },
+    });
+
+    const existingEvidence = finalReport.evidence ?? [];
+    const nextEvidence = mergeReportEvidence(existingEvidence, scan);
+    const nextFollowUps = appendOversizedFollowUps(
+      finalReport.handoff.followUps,
+      scan.oversized,
+      scan.rejected,
+    );
+    const evidenceChanged =
+      JSON.stringify(existingEvidence) !== JSON.stringify(nextEvidence);
+    const followUpsChanged =
+      JSON.stringify(finalReport.handoff.followUps) !==
+      JSON.stringify(nextFollowUps);
+    if (!evidenceChanged && !followUpsChanged) return;
+
+    const { evidence: _evidence, ...reportWithoutEvidence } = finalReport;
+    const patchedReport: RunReportArtifact =
+      nextEvidence.length > 0
+        ? {
+            ...finalReport,
+            evidence: nextEvidence,
+            handoff: {
+              ...finalReport.handoff,
+              followUps: nextFollowUps,
+            },
+          }
+        : {
+            ...reportWithoutEvidence,
+            handoff: {
+              ...finalReport.handoff,
+              followUps: nextFollowUps,
+            },
+          };
+    await reportStore.save(patchedReport);
+  };
+
   const operatorActionDeps = (): OperatorActionDeps => ({
     state,
     eventBus,
@@ -723,13 +795,13 @@ export async function startDaemon(
   let lastWorkspaceUsageGb: number | undefined;
   let nextWorkspaceCleanupAt: string | undefined;
 
-  const workItemHandoffWorkflow = (() => ({
+  const workItemHandoffWorkflow = () => ({
     runningLabel: workflow.tracker.runningLabel,
     handoffLabel: workflow.tracker.handoffLabel,
     reworkLabel: workflow.tracker.reworkLabel,
     blockedLabel: workflow.tracker.blockedLabel,
     readyLabel: readyLabel(workflow),
-  }));
+  });
 
   const workItems: WorkItemService = createWorkItemService({
     store: workItemStore,
@@ -868,8 +940,7 @@ export async function startDaemon(
                     runId: input.runId,
                     ts: new Date().toISOString(),
                     detail: {
-                      reason:
-                        err instanceof Error ? err.message : String(err),
+                      reason: err instanceof Error ? err.message : String(err),
                       workItemId: wi.workItemId,
                       taskId: task.taskId,
                     },
@@ -879,237 +950,235 @@ export async function startDaemon(
 
               function buildDeps(): Parameters<typeof dispatch>[1] {
                 return {
-                state,
-                maxAttempts: workflow.agent.maxAttempts,
-                retryBackoffMs: workflow.agent.retryBackoffMs,
-                ensureMirror: async (opts) =>
-                  ensureMirror({
-                    repoUrl: opts.remoteUrl,
-                    projectSlug: parentProjectSlug,
-                    repoCacheRoot: opts.repoCacheRoot,
-                  }),
-                ensureWorktree: async (opts) => {
-                  const result = await ensureWorktree({
-                    mirrorPath: opts.mirrorPath,
-                    projectSlug: parentProjectSlug,
-                    issueIid: issue.iid,
-                    titleSlug,
-                    baseBranch: opts.baseBranch,
-                    branchPrefix: workflow.git.branchPrefix,
-                    workspaceRoot: opts.worktreeRoot,
-                  });
-                  return {
-                    worktreePath: result.workspacePath,
-                    created: !result.reused,
-                  };
-                },
-                runHook: (opts) =>
-                  runHook({
-                    cwd: opts.cwd,
-                    name: opts.name,
-                    script: opts.script,
-                    env: opts.env ?? {},
-                  }),
-                renderPrompt: (opts) =>
-                  workflowLoader.render(
-                    opts.template,
-                    opts.vars as unknown as PromptContext,
-                  ),
-                runAgent: async (opts) => {
-                  const cmd = splitCommand(workflow.codex.command);
-                  const rpc = spawnRpc({ ...cmd, cwd: opts.cwd });
-                  const gitlabToolsAdapter = {
-                    getIssue: async (iid: number) => {
-                      const fullIssue = await gitlab.getIssue(iid);
-                      return {
-                        ...fullIssue,
-                        labels: [...fullIssue.labels],
-                      };
-                    },
-                    transitionLabels: gitlab.transitionLabels,
-                    createIssueNote: gitlab.createIssueNote,
-                    updateIssueNote: (
-                      iid: number,
-                      noteId: number,
-                      update: { body: string },
-                    ) => gitlab.updateIssueNote(iid, noteId, update.body),
-                    createMergeRequest: gitlab.createMergeRequest,
-                    updateMergeRequest: gitlab.updateMergeRequest,
-                    getMergeRequest: gitlab.getMergeRequest,
-                    listMergeRequestNotes: gitlab.listMergeRequestNotes,
-                    getPipelineStatus: gitlab.getPipelineStatus,
-                  };
-                  try {
-                    const result = await driveLifecycle({
-                      rpc,
-                      maxTurns: workflow.agent.maxTurns,
-                      prompt: opts.prompt,
-                      title: issue.title,
-                      cwd: opts.cwd,
-                      threadName: `${workflow.tracker.projectId}#${issue.iid}/${task.taskId}`,
-                      sandboxType: workflow.codex.threadSandbox,
-                      approvalPolicy: workflow.codex.approvalPolicy,
-                      turnSandboxPolicy: workflow.codex.turnSandboxPolicy,
-                      turnTimeoutMs: workflow.codex.turnTimeoutMs,
-                      tools: createGitLabTools(gitlabToolsAdapter, {
-                        id: String(issue.iid),
-                        iid: issue.iid,
-                        title: issue.title,
-                        url: issue.url,
-                        projectId: issue.projectId,
-                        labels: [],
-                      }),
-                      onEvent: (type, data) =>
-                        publishEvent({
-                          type: `codex_${type}`,
-                          runId: input.runId,
-                          ts: new Date().toISOString(),
-                          detail: { data },
-                        }),
-                      onTurnActive: (cancel) =>
-                        runCancelRegistry.register(input.runId, cancel),
+                  state,
+                  maxAttempts: workflow.agent.maxAttempts,
+                  retryBackoffMs: workflow.agent.retryBackoffMs,
+                  ensureMirror: async (opts) =>
+                    ensureMirror({
+                      repoUrl: opts.remoteUrl,
+                      projectSlug: parentProjectSlug,
+                      repoCacheRoot: opts.repoCacheRoot,
+                    }),
+                  ensureWorktree: async (opts) => {
+                    const result = await ensureWorktree({
+                      mirrorPath: opts.mirrorPath,
+                      projectSlug: parentProjectSlug,
+                      issueIid: issue.iid,
+                      titleSlug,
+                      baseBranch: opts.baseBranch,
+                      branchPrefix: workflow.git.branchPrefix,
+                      workspaceRoot: opts.worktreeRoot,
                     });
                     return {
-                      status: result.status,
-                      summary: result.failureReason,
+                      worktreePath: result.workspacePath,
+                      created: !result.reused,
                     };
-                  } finally {
-                    runCancelRegistry.unregister(input.runId);
-                    await rpc.close();
-                  }
-                },
-                reconcile: async (opts) => {
-                  const report = await reportStore.get(opts.runId);
-                  const result = await reconcile({
-                    ...opts,
-                    ...(report ? { report } : {}),
-                    git: {
-                      hasNewCommits,
-                      push: pushBranch,
-                    },
-                    gitlab: {
-                      findMergeRequest: (sourceBranch) =>
-                        gitlab.findMergeRequestBySourceBranch(sourceBranch),
-                      createMergeRequest: (mrOpts) =>
-                        gitlab.createMergeRequest({
-                          ...mrOpts,
-                          issueIid: opts.iid,
+                  },
+                  runHook: (opts) =>
+                    runHook({
+                      cwd: opts.cwd,
+                      name: opts.name,
+                      script: opts.script,
+                      env: opts.env ?? {},
+                    }),
+                  renderPrompt: (opts) =>
+                    workflowLoader.render(
+                      opts.template,
+                      opts.vars as unknown as PromptContext,
+                    ),
+                  runAgent: async (opts) => {
+                    const cmd = splitCommand(workflow.codex.command);
+                    const rpc = spawnRpc({ ...cmd, cwd: opts.cwd });
+                    const gitlabToolsAdapter = {
+                      getIssue: async (iid: number) => {
+                        const fullIssue = await gitlab.getIssue(iid);
+                        return {
+                          ...fullIssue,
+                          labels: [...fullIssue.labels],
+                        };
+                      },
+                      transitionLabels: gitlab.transitionLabels,
+                      createIssueNote: gitlab.createIssueNote,
+                      updateIssueNote: (
+                        iid: number,
+                        noteId: number,
+                        update: { body: string },
+                      ) => gitlab.updateIssueNote(iid, noteId, update.body),
+                      createMergeRequest: gitlab.createMergeRequest,
+                      updateMergeRequest: gitlab.updateMergeRequest,
+                      getMergeRequest: gitlab.getMergeRequest,
+                      listMergeRequestNotes: gitlab.listMergeRequestNotes,
+                      getPipelineStatus: gitlab.getPipelineStatus,
+                    };
+                    try {
+                      const result = await driveLifecycle({
+                        rpc,
+                        maxTurns: workflow.agent.maxTurns,
+                        prompt: opts.prompt,
+                        title: issue.title,
+                        cwd: opts.cwd,
+                        threadName: `${workflow.tracker.projectId}#${issue.iid}/${task.taskId}`,
+                        sandboxType: workflow.codex.threadSandbox,
+                        approvalPolicy: workflow.codex.approvalPolicy,
+                        turnSandboxPolicy: workflow.codex.turnSandboxPolicy,
+                        turnTimeoutMs: workflow.codex.turnTimeoutMs,
+                        tools: createGitLabTools(gitlabToolsAdapter, {
+                          id: String(issue.iid),
+                          iid: issue.iid,
+                          title: issue.title,
+                          url: issue.url,
+                          projectId: issue.projectId,
+                          labels: [],
                         }),
-                      updateMergeRequest: (mrIid, updates) =>
-                        gitlab.updateMergeRequest(mrIid, updates),
-                      findWorkpadNote: (issueIid, marker) =>
-                        gitlab.findWorkpadNote(issueIid, marker),
-                      createNote: (issueIid, body) =>
-                        gitlab.createIssueNote(issueIid, body),
-                      updateNote: (issueIid, noteId, body) =>
-                        gitlab.updateIssueNote(issueIid, noteId, body),
-                      transitionLabels: async (iid, labelOpts) => {
-                        await gitlab.transitionLabels(iid, labelOpts);
+                        onEvent: (type, data) =>
+                          publishEvent({
+                            type: `codex_${type}`,
+                            runId: input.runId,
+                            ts: new Date().toISOString(),
+                            detail: { data },
+                          }),
+                        onTurnActive: (cancel) =>
+                          runCancelRegistry.register(input.runId, cancel),
+                      });
+                      return {
+                        status: result.status,
+                        summary: result.failureReason,
+                      };
+                    } finally {
+                      runCancelRegistry.unregister(input.runId);
+                      await rpc.close();
+                    }
+                  },
+                  reconcile: async (opts) => {
+                    const report = await reportStore.get(opts.runId);
+                    const result = await reconcile({
+                      ...opts,
+                      ...(report ? { report } : {}),
+                      git: {
+                        hasNewCommits,
+                        push: pushBranch,
                       },
-                    },
-                    onEvent: publishEvent,
-                  });
-                  if (report) {
-                    const merged = mergeAgentHandoffIntoReport(
-                      report,
-                      {
-                        reworkLabel: opts.reworkLabel,
-                        ...(opts.agentSummary !== undefined
-                          ? { agentSummary: opts.agentSummary }
-                          : {}),
-                        ...(opts.agentValidation !== undefined
-                          ? { agentValidation: opts.agentValidation }
-                          : {}),
-                        ...(opts.agentRisks !== undefined
-                          ? { agentRisks: opts.agentRisks }
-                          : {}),
-                        ...(opts.noCodeChangeReason !== undefined
-                          ? { noCodeChangeReason: opts.noCodeChangeReason }
-                          : {}),
+                      gitlab: {
+                        findMergeRequest: (sourceBranch) =>
+                          gitlab.findMergeRequestBySourceBranch(sourceBranch),
+                        createMergeRequest: (mrOpts) =>
+                          gitlab.createMergeRequest({
+                            ...mrOpts,
+                            issueIid: opts.iid,
+                          }),
+                        updateMergeRequest: (mrIid, updates) =>
+                          gitlab.updateMergeRequest(mrIid, updates),
+                        findWorkpadNote: (issueIid, marker) =>
+                          gitlab.findWorkpadNote(issueIid, marker),
+                        createNote: (issueIid, body) =>
+                          gitlab.createIssueNote(issueIid, body),
+                        updateNote: (issueIid, noteId, body) =>
+                          gitlab.updateIssueNote(issueIid, noteId, body),
+                        transitionLabels: async (iid, labelOpts) => {
+                          await gitlab.transitionLabels(iid, labelOpts);
+                        },
                       },
-                      result.mergeRequest
-                        ? {
-                            iid: result.mergeRequest.iid,
-                            ...(result.mergeRequest.webUrl
-                              ? { webUrl: result.mergeRequest.webUrl }
-                              : {}),
-                          }
-                        : null,
-                    );
-                    const nextReport = {
-                      ...merged,
-                      run: {
-                        ...merged.run,
-                        ...(opts.workspacePath &&
-                        opts.workspacePath !== merged.run.workspacePath
-                          ? { workspacePath: opts.workspacePath }
-                          : {}),
-                      },
-                      notes: {
-                        ...merged.notes,
-                        ...(result.handoffNoteId !== undefined
-                          ? { handoffNoteId: result.handoffNoteId }
-                          : {}),
-                      },
-                    };
-                    await reportStore.save(nextReport);
-                  }
-                  return result;
-                },
-                onEvent: publishEvent,
-                // V4.1 onFailure deliberately does NOT touch the
-                // parent Issue label or write a parent-Issue failure
-                // note — that would violate the
-                // `parentIssueLabelMode: "suppressed"` invariant
-                // (synthetic task runs are only allowed to influence
-                // the parent Issue via the WorkItem aggregator). We
-                // just persist the failed report so
-                // `settleTaskRunFinal` (the dispatch_failed bus
-                // listener) sees it; the listener then aggregates
-                // and lets `decideParentLabelTransition` decide the
-                // parent label, which for `partial`/`blocked`
-                // outcomes is intentionally a no-op.
-                onFailure: async (
-                  failedRunId,
-                  classification,
-                  _attempt,
-                ) => {
-                  try {
-                    const report = await reportStore.get(failedRunId);
+                      onEvent: publishEvent,
+                    });
                     if (report) {
-                      const failedReport = markReportFailed(report, {
-                        status:
-                          classification.kind === "blocked"
-                            ? "blocked"
-                            : "failed",
-                        endedAt: new Date().toISOString(),
-                        lastError: {
-                          code: classification.code,
-                          message: classification.reason,
-                          classification:
+                      const merged = mergeAgentHandoffIntoReport(
+                        report,
+                        {
+                          reworkLabel: opts.reworkLabel,
+                          ...(opts.agentSummary !== undefined
+                            ? { agentSummary: opts.agentSummary }
+                            : {}),
+                          ...(opts.agentValidation !== undefined
+                            ? { agentValidation: opts.agentValidation }
+                            : {}),
+                          ...(opts.agentRisks !== undefined
+                            ? { agentRisks: opts.agentRisks }
+                            : {}),
+                          ...(opts.noCodeChangeReason !== undefined
+                            ? { noCodeChangeReason: opts.noCodeChangeReason }
+                            : {}),
+                        },
+                        result.mergeRequest
+                          ? {
+                              iid: result.mergeRequest.iid,
+                              ...(result.mergeRequest.webUrl
+                                ? { webUrl: result.mergeRequest.webUrl }
+                                : {}),
+                            }
+                          : null,
+                      );
+                      const nextReport = {
+                        ...merged,
+                        run: {
+                          ...merged.run,
+                          ...(opts.workspacePath &&
+                          opts.workspacePath !== merged.run.workspacePath
+                            ? { workspacePath: opts.workspacePath }
+                            : {}),
+                        },
+                        notes: {
+                          ...merged.notes,
+                          ...(result.handoffNoteId !== undefined
+                            ? { handoffNoteId: result.handoffNoteId }
+                            : {}),
+                        },
+                      };
+                      await reportStore.save(nextReport);
+                      await patchReportEvidence(nextReport);
+                    }
+                    return result;
+                  },
+                  onEvent: publishEvent,
+                  // V4.1 onFailure deliberately does NOT touch the
+                  // parent Issue label or write a parent-Issue failure
+                  // note — that would violate the
+                  // `parentIssueLabelMode: "suppressed"` invariant
+                  // (synthetic task runs are only allowed to influence
+                  // the parent Issue via the WorkItem aggregator). We
+                  // just persist the failed report so
+                  // `settleTaskRunFinal` (the dispatch_failed bus
+                  // listener) sees it; the listener then aggregates
+                  // and lets `decideParentLabelTransition` decide the
+                  // parent label, which for `partial`/`blocked`
+                  // outcomes is intentionally a no-op.
+                  onFailure: async (failedRunId, classification, _attempt) => {
+                    try {
+                      const report = await reportStore.get(failedRunId);
+                      if (report) {
+                        const failedReport = markReportFailed(report, {
+                          status:
                             classification.kind === "blocked"
                               ? "blocked"
-                              : classification.kind === "retryable"
-                                ? "failed"
-                                : classification.kind,
+                              : "failed",
+                          endedAt: new Date().toISOString(),
+                          lastError: {
+                            code: classification.code,
+                            message: classification.reason,
+                            classification:
+                              classification.kind === "blocked"
+                                ? "blocked"
+                                : classification.kind === "retryable"
+                                  ? "failed"
+                                  : classification.kind,
+                          },
+                        });
+                        await reportStore.save(failedReport);
+                        await patchReportEvidence(failedReport);
+                      }
+                    } catch (err) {
+                      publishEvent({
+                        type: "report_failure_update_failed",
+                        runId: failedRunId,
+                        ts: new Date().toISOString(),
+                        detail: {
+                          reason:
+                            err instanceof Error ? err.message : String(err),
+                          workItemId: wi.workItemId,
+                          taskId: task.taskId,
                         },
                       });
-                      await reportStore.save(failedReport);
                     }
-                  } catch (err) {
-                    publishEvent({
-                      type: "report_failure_update_failed",
-                      runId: failedRunId,
-                      ts: new Date().toISOString(),
-                      detail: {
-                        reason:
-                          err instanceof Error ? err.message : String(err),
-                        workItemId: wi.workItemId,
-                        taskId: task.taskId,
-                      },
-                    });
-                  }
-                },
+                  },
                 };
               }
             },

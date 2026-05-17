@@ -387,6 +387,7 @@ export function WorkItemDetail({
               <EvidenceTab
                 workItemId={data.workItem.workItemId}
                 evidence={evidence}
+                project={project}
                 onConfirm={handleConfirmEvidence}
               />
             ) : (

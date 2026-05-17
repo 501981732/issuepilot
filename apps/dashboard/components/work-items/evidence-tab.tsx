@@ -47,12 +47,14 @@ const KIND_ORDER: WorkItemEvidenceKind[] = [
 interface EvidenceTabProps {
   workItemId: string;
   evidence: WorkItemEvidenceResponse;
+  project?: string;
   onConfirm: (taskId: string, evidenceId: string) => Promise<void>;
 }
 
 export function EvidenceTab({
   workItemId,
   evidence,
+  project,
   onConfirm,
 }: EvidenceTabProps) {
   const t = useTranslations("workItem.evidenceTab");
@@ -129,6 +131,7 @@ export function EvidenceTab({
               taskId={taskId}
               entries={entries}
               workItemId={workItemId}
+              project={project}
               optimisticConfirmedIds={optimisticConfirmedIds}
               pendingIds={pendingIds}
               onConfirm={handleConfirm}
@@ -166,6 +169,7 @@ function TaskEvidenceCard({
   taskId,
   entries,
   workItemId,
+  project,
   optimisticConfirmedIds,
   pendingIds,
   onConfirm,
@@ -173,6 +177,7 @@ function TaskEvidenceCard({
   taskId: string;
   entries: WorkItemEvidenceEntry[];
   workItemId: string;
+  project?: string;
   optimisticConfirmedIds: Set<string>;
   pendingIds: Set<string>;
   onConfirm: (entry: WorkItemEvidenceEntry) => Promise<void>;
@@ -203,6 +208,7 @@ function TaskEvidenceCard({
                     <EvidenceEntryView
                       entry={entry}
                       workItemId={workItemId}
+                      project={project}
                       confirmed={
                         entry.confidence === "human-confirmed" ||
                         optimisticConfirmedIds.has(entry.evidenceId)
@@ -224,12 +230,14 @@ function TaskEvidenceCard({
 function EvidenceEntryView({
   entry,
   workItemId,
+  project,
   confirmed,
   pending,
   onConfirm,
 }: {
   entry: WorkItemEvidenceEntry;
   workItemId: string;
+  project?: string;
   confirmed: boolean;
   pending: boolean;
   onConfirm: () => Promise<void>;
@@ -241,7 +249,7 @@ function EvidenceEntryView({
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          {renderPrimaryEvidence(entry, workItemId, t)}
+          {renderPrimaryEvidence(entry, workItemId, project, t)}
           {entry.text ? (
             <p className="whitespace-pre-wrap break-words text-sm text-fg-muted">
               {entry.text}
@@ -277,10 +285,11 @@ function EvidenceEntryView({
 function renderPrimaryEvidence(
   entry: WorkItemEvidenceEntry,
   workItemId: string,
+  project: string | undefined,
   t: ReturnType<typeof useTranslations<"workItem.evidenceTab">>,
 ) {
   if (entry.kind === "screenshot") {
-    const src = evidenceFileUrl(workItemId, entry);
+    const src = evidenceFileUrl(workItemId, entry, project);
     if (src) {
       return (
         <div className="flex flex-col gap-2">
@@ -297,14 +306,14 @@ function renderPrimaryEvidence(
   }
 
   if (entry.kind === "recording") {
-    const href = entry.href ?? evidenceFileUrl(workItemId, entry);
+    const href = entry.href ?? evidenceFileUrl(workItemId, entry, project);
     return (
       <EvidenceLinkOrText href={href} label={entry.label} className="text-sm" />
     );
   }
 
   if (entry.kind === "playwright") {
-    const href = entry.href ?? evidenceFileUrl(workItemId, entry);
+    const href = entry.href ?? evidenceFileUrl(workItemId, entry, project);
     return (
       <div className="flex flex-col gap-1">
         <EvidenceLinkOrText
@@ -319,7 +328,7 @@ function renderPrimaryEvidence(
 
   return (
     <EvidenceLinkOrText
-      href={entry.href ?? evidenceFileUrl(workItemId, entry)}
+      href={entry.href ?? evidenceFileUrl(workItemId, entry, project)}
       label={entry.label}
       className={cn(
         "text-sm",
@@ -358,12 +367,14 @@ function EvidenceLinkOrText({
 function evidenceFileUrl(
   workItemId: string,
   entry: WorkItemEvidenceEntry,
+  project: string | undefined,
 ): string | undefined {
   if (!entry.source?.runId || !entry.source.relPath) return undefined;
   return buildEvidenceFileUrl(
     workItemId,
     entry.source.runId,
     entry.source.relPath,
+    project ? { project } : {},
   );
 }
 

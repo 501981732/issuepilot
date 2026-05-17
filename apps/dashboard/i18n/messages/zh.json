@@ -180,7 +180,8 @@
     },
     "viewToggle": {
       "list": "列表",
-      "graph": "图谱"
+      "graph": "图谱",
+      "evidence": "证据"
     },
     "confidence": {
       "ai-claim": "AI 推断",

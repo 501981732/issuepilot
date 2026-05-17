@@ -180,7 +180,8 @@
     },
     "viewToggle": {
       "list": "List",
-      "graph": "Graph"
+      "graph": "Graph",
+      "evidence": "Evidence"
     },
     "confidence": {
       "ai-claim": "AI inferred",

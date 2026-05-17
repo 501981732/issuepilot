@@ -498,9 +498,43 @@ export function createWorkItemService(
       return { workItem: updatedWi, plan: newPlan };
     },
 
-    async markNeedsRework() {
-      // Implemented in task 9.
-      return errorResult("not_implemented", "markNeedsRework not implemented");
+    async markNeedsRework({ workItemId, taskId, reason, operator }) {
+      const wi = await deps.store.getWorkItem(workItemId);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const plan = await deps.store.getCurrentPlan(workItemId);
+      if (!plan) return errorResult("not_found", "plan not found");
+      const task = plan.tasks.find((t) => t.taskId === taskId);
+      if (!task) return errorResult("not_found", "task not found");
+
+      // V4.2 §12.3: only completed / failed / blocked tasks can be pushed
+      // back to needs_rework. Running / planned / ready stay where they
+      // are — operator should cancel / wait instead.
+      if (
+        task.status !== "completed" &&
+        task.status !== "failed" &&
+        task.status !== "blocked"
+      ) {
+        return errorResult(
+          "invalid_status",
+          `task ${taskId} status ${task.status} cannot be marked needs_rework`,
+        );
+      }
+
+      const ts = now();
+      const nextTasks: TaskNode[] = plan.tasks.map((t) =>
+        t.taskId === taskId
+          ? { ...t, status: "needs_rework" as const, needsReworkReason: reason }
+          : t,
+      );
+      await deps.store.saveTaskPlan({ ...plan, tasks: nextTasks });
+      deps.emit({
+        type: "task_marked_needs_rework",
+        ts,
+        detail: { workItemId, taskId, reason, operator },
+      });
+      // reconcileWorkItem updates WorkItem.status and parent handoff.
+      await deps.reconcileWorkItem(workItemId);
+      return { ok: true } as const;
     },
 
     async unskipTask() {

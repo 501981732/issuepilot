@@ -123,6 +123,11 @@ export const EVENT_TYPE_VALUES = [
   // V4.1 aggregation + parent handoff
   "work_item_aggregated",
   "work_item_handoff_written",
+  // V4.2 task graph + operator actions
+  "task_marked_needs_rework",
+  "task_replanned",
+  "task_unskipped",
+  "task_graph_recomputed",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPE_VALUES)[number];

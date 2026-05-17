@@ -152,6 +152,22 @@ describe("@issuepilot/shared-contracts/events", () => {
     }
   });
 
+  it("isEventType narrows new V4.2 task graph + operator action types", () => {
+    const v42Types = [
+      "task_marked_needs_rework",
+      "task_replanned",
+      "task_unskipped",
+      "task_graph_recomputed",
+    ];
+    for (const t of v42Types) {
+      expect(isEventType(t), `missing V4.2 event: ${t}`).toBe(true);
+      expect(
+        (EVENT_TYPE_VALUES as readonly string[]).includes(t),
+        `V4.2 event not in EVENT_TYPE_VALUES: ${t}`,
+      ).toBe(true);
+    }
+  });
+
   it("IssuePilotEvent requires id / runId / issue / type / message / createdAt", () => {
     expectTypeOf<IssuePilotEvent>()
       .toHaveProperty("id")

@@ -1,10 +1,17 @@
 "use client";
 
+import type {
+  OrchestratorStateSnapshot,
+  ProjectSummary,
+} from "@issuepilot/shared-contracts";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
+import { useEffect, useState } from "react";
 
+import { getState } from "../../lib/api";
 import { cn } from "../../lib/cn";
+import { ProjectSwitcher } from "../work-items/project-switcher";
 
 import { LocaleToggle } from "./locale-toggle";
 import { ThemeToggle } from "./theme-toggle";
@@ -115,6 +122,31 @@ const NAV: NavItem[] = [
 export function TopBar() {
   const pathname = usePathname() ?? "/";
   const t = useTranslations("nav");
+  const [runtimeMode, setRuntimeMode] = useState<"single" | "team">("single");
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // V4.2: the project switcher is conditional on team-mode. We poll
+    // `/api/state` once on mount — the runtime mode does not change at
+    // runtime (it is set by the daemon entrypoint at startup), so we
+    // intentionally do not refetch.
+    getState()
+      .then((snap: OrchestratorStateSnapshot) => {
+        if (cancelled) return;
+        const mode = snap.runtime?.mode ?? "single";
+        setRuntimeMode(mode);
+        setProjects(snap.projects ?? []);
+      })
+      .catch(() => {
+        // Swallow: the rest of the dashboard already surfaces /api/state
+        // failures (overview-page renders an error banner); we just keep
+        // the switcher hidden to avoid duplicating the alert here.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <header
@@ -157,6 +189,7 @@ export function TopBar() {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2">
+          <ProjectSwitcher mode={runtimeMode} projects={projects} />
           <LocaleToggle />
           <ThemeToggle />
           <span className="hidden font-mono text-[10px] uppercase tracking-[0.16em] text-fg-subtle xl:inline">

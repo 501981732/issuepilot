@@ -103,6 +103,7 @@
     "title": "工作单元",
     "description": "把大型 GitLab Issue 拆成 2–5 个 synthetic 任务运行。接受 plan 后立即派发任务运行；只有当所有必需任务都完成时父 Issue label 才会切到 human-review。",
     "errorTitle": "工作单元服务不可用",
+    "loading": "正在加载工作单元…",
     "empty": "暂无工作单元。回到指挥中心选中某个大 Issue 并点击「Plan work item」开始拆解。",
     "counter": {
       "planning": "拆解中",

@@ -103,6 +103,7 @@
     "title": "Work Items",
     "description": "Large GitLab Issues planned into 2–5 synthetic task runs. Accept the plan to dispatch task runs; the parent Issue label only flips to human-review once all required tasks complete.",
     "errorTitle": "Work Items unavailable",
+    "loading": "Loading work items…",
     "empty": "No work items yet. Open the Command Center, pick a large Issue, and click \"Plan work item\" to start.",
     "counter": {
       "planning": "Planning",

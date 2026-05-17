@@ -151,11 +151,13 @@ export function computeReadyTasks(
   for (const t of plan.tasks) {
     if (!isStatusEligibleForReady(t.status)) continue;
     const taskLinks = linksByTask.get(t.taskId) ?? [];
-    if (
-      taskLinks.some((l) => l.status === "running" || l.status === "claimed")
-    ) {
-      continue;
-    }
+    // TaskRunLink.status is a TaskNodeStatus; "claimed" is not in that
+    // vocabulary because the link is only persisted once we have a real
+    // TaskNode-level state (running / completed / failed / blocked).
+    // The runtime-state RunRecord may pass through "claimed" briefly
+    // inside dispatch-task, but at the orchestration layer "running" is
+    // the only in-flight signal we need to gate on.
+    if (taskLinks.some((l) => l.status === "running")) continue;
     if (taskLinks.some((l) => l.status === "completed")) continue;
     if (!t.dependsOn.every((dep) => upstreamMerged(dep))) continue;
     ready.push(t);

@@ -83,6 +83,8 @@ const REQUIRED_EVENT_TYPES = [
   "workspace_cleanup_completed",
   "workspace_cleanup_failed",
   "work_item_evidence_indexed",
+  "work_item_evidence_index_skipped",
+  "work_item_evidence_index_failed",
   "work_item_evidence_confirmed",
   "work_item_report_rendered",
 ] as const;
@@ -174,6 +176,8 @@ describe("@issuepilot/shared-contracts/events", () => {
   it("isEventType narrows V4.3 review packet + evidence types", () => {
     const v43Types = [
       "work_item_evidence_indexed",
+      "work_item_evidence_index_skipped",
+      "work_item_evidence_index_failed",
       "work_item_evidence_confirmed",
       "work_item_report_rendered",
     ];

@@ -701,68 +701,82 @@ export async function startDaemon(
   const patchReportEvidence = async (
     finalReport: RunReportArtifact,
   ): Promise<void> => {
-    const taskWorktreePath = finalReport.run.workspacePath.trim();
-    if (!taskWorktreePath) {
+    try {
+      const taskWorktreePath = finalReport.run.workspacePath.trim();
+      if (!taskWorktreePath) {
+        publishEvent({
+          type: "work_item_evidence_index_skipped",
+          runId: finalReport.runId,
+          ts: new Date().toISOString(),
+          detail: {
+            reason: "missing-workspace-path",
+          },
+        });
+        return;
+      }
+
+      const scan = await scanRunEvidence({
+        taskWorktreePath,
+        runId: finalReport.runId,
+      });
       publishEvent({
-        type: "work_item_evidence_index_skipped",
+        type: "work_item_evidence_indexed",
         runId: finalReport.runId,
         ts: new Date().toISOString(),
         detail: {
-          reason: "missing-workspace-path",
+          count: scan.entries.length,
+          oversizedCount: scan.oversized.length,
+          rejectedCount: scan.rejected.length,
+          manifestUsed: scan.manifestUsed,
         },
       });
-      return;
+
+      const existingEvidence = finalReport.evidence ?? [];
+      const nextEvidence = mergeReportEvidence(existingEvidence, scan);
+      const nextFollowUps = appendOversizedFollowUps(
+        finalReport.handoff.followUps,
+        scan.oversized,
+        scan.rejected,
+      );
+      const evidenceChanged =
+        JSON.stringify(existingEvidence) !== JSON.stringify(nextEvidence);
+      const followUpsChanged =
+        JSON.stringify(finalReport.handoff.followUps) !==
+        JSON.stringify(nextFollowUps);
+      if (!evidenceChanged && !followUpsChanged) return;
+
+      const { evidence: _evidence, ...reportWithoutEvidence } = finalReport;
+      const patchedReport: RunReportArtifact =
+        nextEvidence.length > 0
+          ? {
+              ...finalReport,
+              evidence: nextEvidence,
+              handoff: {
+                ...finalReport.handoff,
+                followUps: nextFollowUps,
+              },
+            }
+          : {
+              ...reportWithoutEvidence,
+              handoff: {
+                ...finalReport.handoff,
+                followUps: nextFollowUps,
+              },
+            };
+      await reportStore.save(patchedReport);
+    } catch (err) {
+      publishEvent({
+        type: "work_item_evidence_index_failed",
+        runId: finalReport.runId,
+        ts: new Date().toISOString(),
+        detail: {
+          reason: err instanceof Error ? err.message : String(err),
+          ...(finalReport.run.workspacePath
+            ? { workspacePath: finalReport.run.workspacePath }
+            : {}),
+        },
+      });
     }
-
-    const scan = await scanRunEvidence({
-      taskWorktreePath,
-      runId: finalReport.runId,
-    });
-    publishEvent({
-      type: "work_item_evidence_indexed",
-      runId: finalReport.runId,
-      ts: new Date().toISOString(),
-      detail: {
-        count: scan.entries.length,
-        oversizedCount: scan.oversized.length,
-        rejectedCount: scan.rejected.length,
-        manifestUsed: scan.manifestUsed,
-      },
-    });
-
-    const existingEvidence = finalReport.evidence ?? [];
-    const nextEvidence = mergeReportEvidence(existingEvidence, scan);
-    const nextFollowUps = appendOversizedFollowUps(
-      finalReport.handoff.followUps,
-      scan.oversized,
-      scan.rejected,
-    );
-    const evidenceChanged =
-      JSON.stringify(existingEvidence) !== JSON.stringify(nextEvidence);
-    const followUpsChanged =
-      JSON.stringify(finalReport.handoff.followUps) !==
-      JSON.stringify(nextFollowUps);
-    if (!evidenceChanged && !followUpsChanged) return;
-
-    const { evidence: _evidence, ...reportWithoutEvidence } = finalReport;
-    const patchedReport: RunReportArtifact =
-      nextEvidence.length > 0
-        ? {
-            ...finalReport,
-            evidence: nextEvidence,
-            handoff: {
-              ...finalReport.handoff,
-              followUps: nextFollowUps,
-            },
-          }
-        : {
-            ...reportWithoutEvidence,
-            handoff: {
-              ...finalReport.handoff,
-              followUps: nextFollowUps,
-            },
-          };
-    await reportStore.save(patchedReport);
   };
 
   const operatorActionDeps = (): OperatorActionDeps => ({

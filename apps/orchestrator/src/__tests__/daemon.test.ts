@@ -34,6 +34,13 @@ const reportStoreMockState = vi.hoisted(() => ({
     save: ReturnType<typeof vi.fn>;
     get: (runId: string) => Promise<unknown>;
   }>,
+  saveCallCount: 0,
+  failSaveCall: undefined as number | undefined,
+  saveError: undefined as Error | undefined,
+}));
+
+const evidenceScannerMockState = vi.hoisted(() => ({
+  error: undefined as Error | undefined,
 }));
 
 vi.mock("../orchestrator/dispatch.js", () => ({
@@ -88,10 +95,37 @@ vi.mock("../reports/store.js", async (importActual) => {
         const store = actual.createReportStore(opts);
         const wrapped = {
           ...store,
-          save: vi.fn(store.save),
+          save: vi.fn(async (...args: Parameters<typeof store.save>) => {
+            reportStoreMockState.saveCallCount += 1;
+            if (
+              reportStoreMockState.failSaveCall ===
+              reportStoreMockState.saveCallCount
+            ) {
+              throw (
+                reportStoreMockState.saveError ?? new Error("save exploded")
+              );
+            }
+            await store.save(...args);
+          }),
         };
         reportStoreMockState.stores.push(wrapped);
         return wrapped;
+      },
+    ),
+  };
+});
+
+vi.mock("../work-items/evidence-scanner.js", async (importActual) => {
+  const actual =
+    await importActual<typeof import("../work-items/evidence-scanner.js")>();
+  return {
+    ...actual,
+    scanRunEvidence: vi.fn(
+      async (...args: Parameters<typeof actual.scanRunEvidence>) => {
+        if (evidenceScannerMockState.error) {
+          throw evidenceScannerMockState.error;
+        }
+        return actual.scanRunEvidence(...args);
       },
     ),
   };
@@ -319,6 +353,9 @@ async function runSingleTaskWorkItemDispatch(opts: {
   workspacePath: string;
   beforeReconcile?: ((input: DispatchInput) => Promise<void>) | undefined;
   omitWorkspacePath?: boolean | undefined;
+  evidenceScanError?: Error | undefined;
+  failReportSaveCall?: number | undefined;
+  reportSaveError?: Error | undefined;
 }): Promise<{
   root: string;
   daemon: Awaited<ReturnType<typeof startDaemon>>;
@@ -330,9 +367,13 @@ async function runSingleTaskWorkItemDispatch(opts: {
   };
 }> {
   reportStoreMockState.stores.length = 0;
+  reportStoreMockState.saveCallCount = 0;
+  reportStoreMockState.failSaveCall = opts.failReportSaveCall;
+  reportStoreMockState.saveError = opts.reportSaveError;
   dispatchMockState.workspacePath = opts.workspacePath;
   dispatchMockState.omitWorkspacePath = opts.omitWorkspacePath ?? false;
   dispatchMockState.beforeReconcile = opts.beforeReconcile;
+  evidenceScannerMockState.error = opts.evidenceScanError;
 
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "issuepilot-daemon-evidence-"),
@@ -1102,6 +1143,108 @@ describe("startDaemon human-review event publishing", () => {
       expect(
         ctx.events.some((event) => event.type === "work_item_evidence_indexed"),
       ).toBe(false);
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("keeps a successful dispatch completed when evidence scan fails", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      evidenceScanError: new Error("scan exploded"),
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_index_failed",
+        );
+      });
+      const types = ctx.events.map((event) => event.type);
+      expect(types).toContain("dispatch_completed");
+      expect(types).not.toContain("dispatch_failed");
+      const failed = ctx.events.find(
+        (event) => event.type === "work_item_evidence_index_failed",
+      );
+      expect(failed?.data).toMatchObject({
+        reason: "scan exploded",
+      });
+
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const report = await ctx.serverDeps.reports.get(runId);
+      expect(report).toMatchObject({
+        mergeRequest: {
+          iid: 11,
+          state: "opened",
+        },
+        run: {
+          workspacePath,
+        },
+      });
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("keeps a successful dispatch completed when evidence patch save fails", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      failReportSaveCall: 3,
+      reportSaveError: new Error("patch save exploded"),
+      beforeReconcile: async (input) => {
+        const screenshotPath = path.join(
+          workspacePath,
+          ".issuepilot",
+          "evidence",
+          input.runId,
+          "screenshots",
+          "login.png",
+        );
+        await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+        await fs.writeFile(screenshotPath, "png");
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_index_failed",
+        );
+      });
+      const types = ctx.events.map((event) => event.type);
+      expect(types).toContain("dispatch_completed");
+      expect(types).toContain("work_item_evidence_indexed");
+      expect(types).not.toContain("dispatch_failed");
+      const failed = ctx.events.find(
+        (event) => event.type === "work_item_evidence_index_failed",
+      );
+      expect(failed?.data).toMatchObject({
+        reason: "patch save exploded",
+      });
+
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const report = await ctx.serverDeps.reports.get(runId);
+      expect(report).toMatchObject({
+        mergeRequest: {
+          iid: 11,
+          state: "opened",
+        },
+      });
+      expect(report).not.toHaveProperty("evidence");
     } finally {
       await ctx.daemon.stop();
       await removeTempDir(ctx.root);

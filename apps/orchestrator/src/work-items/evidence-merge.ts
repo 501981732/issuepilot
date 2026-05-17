@@ -32,8 +32,9 @@ export function appendOversizedFollowUps(
   oversized: OversizedEvidenceFile[],
   rejected: RejectedEvidenceEntry[],
 ): string[] {
-  return [
-    ...followUps,
+  const seen = new Set(followUps);
+  const next = [...followUps];
+  for (const line of [
     ...oversized.map(
       (file) =>
         `evidence oversized: ${file.relPath} (${formatMegabytes(
@@ -43,7 +44,12 @@ export function appendOversizedFollowUps(
     ...rejected.map(
       (entry) => `evidence rejected: ${entry.relPath} escapes evidence dir`,
     ),
-  ];
+  ]) {
+    if (seen.has(line)) continue;
+    seen.add(line);
+    next.push(line);
+  }
+  return next;
 }
 
 function evidenceKey(entry: ReportEvidence): string {

@@ -136,4 +136,20 @@ describe("appendOversizedFollowUps", () => {
     ]);
     expect(existing).toEqual(["existing follow-up"]);
   });
+
+  it("does not duplicate generated followUps when re-run", () => {
+    const existing = [
+      "existing follow-up",
+      "evidence oversized: recordings/demo.webm (5.0MB)",
+      "evidence rejected: ../escape.png escapes evidence dir",
+    ];
+
+    expect(
+      appendOversizedFollowUps(
+        existing,
+        [{ relPath: "recordings/demo.webm", sizeBytes: 5 * 1024 * 1024 }],
+        [{ relPath: "../escape.png", reason: "path-escape" }],
+      ),
+    ).toEqual(existing);
+  });
 });

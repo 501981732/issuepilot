@@ -68,6 +68,16 @@ V4 可以增强流程智能，但不能提前把系统拖进生产平台化复�
 
 V4 把 IssuePilot 从“单 Issue 单 run 执行器”升级为“本地优先的智能研发工作台”。
 
+IssuePilot 的长期愿景是做一个和 Harness Engineer 互补的研发流程层：
+
+- **有 Harness Engineer 的项目**：Harness Engineer 继续负责项目内的工程规则、
+  代码约束、验证矩阵、实现纪律和局部执行质量；IssuePilot 负责跨 Issue / 多 run
+  的流程编排、状态管理、报告、证据、review feedback 和持续改进闭环。IssuePilot
+  不复制或覆盖 Harness Engineer 的项目规则，而是把它们作为执行上下文和验收证据的一部分。
+- **没有 Harness Engineer 的项目**：IssuePilot 仍然可以直接使用。此时
+  `issuepilot-config/` 的 project facts、workflow profile、repo-local rules 和
+  skills 构成最小工程约束层；V4 的拆解、编排、Review Packet 和 evidence 能独立工作。
+
 V4 要帮助团队推进一个真实研发任务的完整流程：
 
 1. 理解一个大 Issue 的意图、约束和验收标准。

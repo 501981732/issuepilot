@@ -9,7 +9,11 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LeaseStore } from "../../runtime/leases.js";
-import type { ServerDeps, WorkItemService } from "../../server/index.js";
+import {
+  createServer as realCreateServer,
+  type ServerDeps,
+  type WorkItemService,
+} from "../../server/index.js";
 import type { TeamConfig } from "../config.js";
 import { startTeamDaemon } from "../daemon.js";
 import type { ProjectRegistry, RegisteredProject } from "../registry.js";
@@ -389,6 +393,209 @@ describe("team daemon V4.1/V4.2 work-items wiring", () => {
         expect("error" in result ? result.error.code : null).toBe(
           "gitlab_failed",
         );
+      } finally {
+        await handle.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Task 22: end-to-end coverage that drives the real Fastify routes
+  // through the team daemon's per-project WorkItemService map.
+  //
+  //  - GET /api/work-items without `x-issuepilot-project` → 400
+  //    `project_header_required` (the route must refuse to silently
+  //    pick a project when team-mode is on).
+  //  - GET /api/work-items with the project A header → only A's
+  //    WorkItem is returned, B's namespace is untouched.
+  //  - GET /api/work-items with the project B header → empty (no
+  //    cross-project leakage).
+  //  - Each project persists its WorkItem under its own workspace
+  //    `.issuepilot/work-items/` directory, never the other project's.
+  it("HTTP routes isolate each project's WorkItem namespace via x-issuepilot-project", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-team-wi-e2e-"),
+    );
+    try {
+      const workspaceA = path.join(root, "workspaces/platform-web");
+      const workspaceB = path.join(root, "workspaces/infra-tools");
+      await fs.mkdir(workspaceA, { recursive: true });
+      await fs.mkdir(workspaceB, { recursive: true });
+      const projects: RegisteredProject[] = [
+        {
+          id: "platform-web",
+          name: "Platform Web",
+          projectPath: "/cfg/projects/platform-web.yaml",
+          workflowProfilePath: "/cfg/workflows/default-web.md",
+          effectiveWorkflowPath: "/cfg/.generated/platform-web.workflow.md",
+          enabled: true,
+          workflow: makeWorkflow("platform-web", workspaceA),
+          lastPollAt: null,
+          activeRuns: 0,
+        },
+        {
+          id: "infra-tools",
+          name: "Infra Tools",
+          projectPath: "/cfg/projects/infra-tools.yaml",
+          workflowProfilePath: "/cfg/workflows/default-node-lib.md",
+          effectiveWorkflowPath: "/cfg/.generated/infra-tools.workflow.md",
+          enabled: true,
+          workflow: makeWorkflow("infra-tools", workspaceB),
+          lastPollAt: null,
+          activeRuns: 0,
+        },
+      ];
+      const registry = makeRegistry(projects);
+      const loadTeamConfig = vi.fn(async () => baseConfig(root));
+      const createProjectRegistry = vi.fn(async () => registry);
+      const createLeaseStore = vi.fn(() => makeLeaseStore());
+
+      // Capture the real Fastify app so we can drive HTTP routes with
+      // `app.inject`. Build it via the actual `createServer` exported
+      // by the route layer (no fake / stub) so this test exercises
+      // the project-header middleware end-to-end.
+      let capturedApp: Awaited<ReturnType<typeof realCreateServer>> | null =
+        null;
+      const createServerWrapper: typeof realCreateServer = async (
+        deps,
+        opts,
+      ) => {
+        capturedDeps = deps;
+        const built = await realCreateServer(deps, { ...opts, port: 0 });
+        capturedApp = built;
+        return built;
+      };
+
+      const handle = await startTeamDaemon(
+        {
+          configPath: `${root}/issuepilot.team.yaml`,
+          host: "127.0.0.1",
+          port: 0,
+        },
+        {
+          loadTeamConfig,
+          createProjectRegistry,
+          createServer: createServerWrapper,
+          createLeaseStore,
+        },
+      );
+
+      try {
+        expect(capturedDeps).not.toBeNull();
+        expect(capturedApp).not.toBeNull();
+        const byProject = capturedDeps!.workItemsByProject!;
+        const app = capturedApp!;
+
+        // Drop a synthetic WorkItem into project A's store directly.
+        // We cannot drive `planFromIssue` because team-mode's
+        // fetchIssue is a stub (see test #3) — but seeding the store
+        // is enough to verify the namespace + routing contract end
+        // to end.
+        const projectAService = byProject.get("platform-web")!;
+        const projectAStore = (projectAService as unknown as {
+          __test_store?: never;
+        });
+        void projectAStore;
+        // Bypass to the underlying store via service.list() being a
+        // pure read; we synthesise via writing a JSON file under the
+        // workspace .issuepilot dir directly. This mirrors what
+        // `WorkItemStore.saveWorkItem` does without re-importing it,
+        // keeping the test focused on routing isolation.
+        const wiADir = path.join(workspaceA, ".issuepilot", "work-items");
+        await fs.mkdir(wiADir, { recursive: true });
+        const wiAFixture = {
+          workItemId: "wi_A1",
+          sourceIssue: {
+            kind: "gitlab" as const,
+            projectId: "group/platform-web",
+            iid: 7,
+            url: "https://gitlab.com/group/platform-web/-/issues/7",
+            title: "Platform feature",
+            body: "Body",
+            labels: ["ai-ready"],
+            milestone: null,
+            assignees: [],
+            web_url: "https://gitlab.com/group/platform-web/-/issues/7",
+          },
+          status: "ready" as const,
+          taskIds: [],
+          createdAt: "2026-05-17T00:00:00.000Z",
+          updatedAt: "2026-05-17T00:00:00.000Z",
+        };
+        await fs.writeFile(
+          path.join(wiADir, `${wiAFixture.workItemId}.json`),
+          JSON.stringify(wiAFixture),
+          "utf8",
+        );
+
+        // 1) No header → 400 project_header_required.
+        const respNoHeader = await app.inject({
+          method: "GET",
+          url: "/api/work-items",
+        });
+        expect(respNoHeader.statusCode).toBe(400);
+        expect(JSON.parse(respNoHeader.body)).toMatchObject({
+          ok: false,
+          code: "project_header_required",
+        });
+
+        // 2) Header points to platform-web → sees the WorkItem we
+        //    seeded under its namespace.
+        const respA = await app.inject({
+          method: "GET",
+          url: "/api/work-items",
+          headers: { "x-issuepilot-project": "platform-web" },
+        });
+        expect(respA.statusCode).toBe(200);
+        const bodyA = JSON.parse(respA.body) as {
+          workItems: Array<{ workItemId: string }>;
+        };
+        expect(bodyA.workItems).toHaveLength(1);
+        expect(bodyA.workItems[0]!.workItemId).toBe("wi_A1");
+
+        // 3) Header points to infra-tools → empty list (no cross-
+        //    project bleed). Independent namespace.
+        const respB = await app.inject({
+          method: "GET",
+          url: "/api/work-items",
+          headers: { "x-issuepilot-project": "infra-tools" },
+        });
+        expect(respB.statusCode).toBe(200);
+        const bodyB = JSON.parse(respB.body) as {
+          workItems: Array<unknown>;
+        };
+        expect(bodyB.workItems).toEqual([]);
+
+        // 4) Unknown project header → 404 project_not_found (the
+        //    server distinguishes "missing header" from "bad project
+        //    id" so the dashboard can show a clearer error).
+        const respUnknown = await app.inject({
+          method: "GET",
+          url: "/api/work-items",
+          headers: { "x-issuepilot-project": "nonexistent" },
+        });
+        expect(respUnknown.statusCode).toBe(404);
+        expect(JSON.parse(respUnknown.body)).toMatchObject({
+          ok: false,
+          code: "project_not_found",
+        });
+
+        // 5) Workspace dir isolation: project B's .issuepilot dir
+        //    must NOT contain the WorkItem we wrote under project A.
+        //    The cleanest way to assert this without coupling to the
+        //    store layout: project B's service.list() returned empty
+        //    above. We additionally verify the FS layer:
+        const wiBDirExists = await fs
+          .stat(path.join(workspaceB, ".issuepilot", "work-items"))
+          .then(() => true)
+          .catch(() => false);
+        if (wiBDirExists) {
+          const entries = await fs.readdir(
+            path.join(workspaceB, ".issuepilot", "work-items"),
+          );
+          expect(entries).toEqual([]);
+        }
       } finally {
         await handle.stop();
       }

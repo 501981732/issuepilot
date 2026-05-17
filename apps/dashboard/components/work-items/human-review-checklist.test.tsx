@@ -72,9 +72,7 @@ describe("HumanReviewChecklist", () => {
       catalog: zhMessages,
     });
 
-    expect(
-      screen.getByText("逐条 evidence 确认请到 Evidence 标签页。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("逐条证据确认请到证据标签页。")).toBeInTheDocument();
   });
 
   it("renders the localized reason label for each checklist reason", () => {

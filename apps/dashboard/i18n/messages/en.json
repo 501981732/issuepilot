@@ -183,13 +183,39 @@
       "graph": "Graph",
       "evidence": "Evidence"
     },
+    "view": {
+      "evidence": "Evidence"
+    },
+    "evidence": {
+      "title": "Evidence",
+      "empty": "No evidence matches this filter.",
+      "missing": "Missing evidence — task {taskId} has a TaskRunLink but no report",
+      "filter": {
+        "all": "All",
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "commandOutput": "Commands",
+        "testResult": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review": "Review"
+      },
+      "confirmAction": "Confirm",
+      "confirmedBy": "Confirmed by {confirmedBy}"
+    },
     "confidence": {
       "ai-claim": "AI inferred",
       "system-derived": "System derived",
       "human-confirmed": "Human confirmed"
     },
     "checklist": {
+      "title": "Human review checklist",
+      "empty": "No human review items.",
       "confirmHint": "Confirm evidence item by item in the Evidence tab.",
+      "confirmAction": "Confirm",
       "confirmedSuffix": "(confirmed by {confirmedBy} at {confirmedAt})",
       "confirmedAria": "{label} is confirmed",
       "unconfirmedAria": "{label} is not confirmed",
@@ -306,6 +332,7 @@
       "evidenceReview": "Reviewer",
       "noNextActions": "Reviewer to inspect the linked MRs and decide next steps.",
       "copyMarkdown": "Copy as Markdown",
+      "copyFromServer": "Copy the server-rendered Review Packet.",
       "copied": "Copied"
     },
     "action": {

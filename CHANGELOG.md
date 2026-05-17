@@ -55,8 +55,72 @@
     synthetic task run 的 `parentIssueLabelMode` 仍是 `"suppressed"`；
     `aggregate.decideOverallStatus` 增加 operator-driven 状态
     （`skipped` / `needs_rework`）的 carve-out，使 `markNeedsRework`
-    能让 WorkItem 从 `completed` 回到 `partial` 并触发父 Issue label
-    转 `ai-rework`，而不是悄悄无效。
+    能让 WorkItem 从 `completed` 回到 `partial`；与之配套的
+    `decideParentLabelTransition` 同步增加 4 条 V4.2 状态迁移
+    （`completed → partial`、`partial → running`、`partial → completed`、
+    `completed → running`），覆盖 §12.3 rework loop：父 Issue label
+    在 `markNeedsRework` 时由 `human-review` → `ai-rework`，retry
+    后由 `ai-rework` → `ai-running`，loop closed 后由 `ai-rework`
+    → `human-review`。
+
+- 2026-05-17 — **V4.2 Task Graph code review fix**：补齐 V4.2 review
+  发现的 3 个 Critical + 4 个 Important 缺陷，使 §12.3 rework loop /
+  team-mode SSR / dashboard 状态渲染真正闭环。
+  - **C1**（Critical）—— `apps/orchestrator/src/work-items/orchestration.ts`
+    `computeReadyTasks` 之前会跳过任何已有 `TaskRunLink.status === "completed"`
+    的 task，导致 `retryTask` / `replanTask` 对历史 completed task 是
+    silent no-op；spec §12.3 的 rework 回路根本走不下去。修复：删除
+    历史 link 的 completed-skip，仅保留 `running` link 作为 spec §11.4
+    幂等守卫；`task.status`（operator 驱动：retryTask / unskipTask /
+    acceptPlan after replan 都把它设回 `ready` / `planned`）成为是否
+    re-dispatch 的唯一来源。新增 e2e 用例：plan + 两 task 全部 complete
+    + markNeedsRework T2 + retryTask T2 → T2 在新 runId 上重派，
+    `T2.runIds` 携带两次尝试，旧 `completed` link 仍保留作为历史证据。
+  - **C2**（Critical）—— `decideParentLabelTransition` 之前只识别
+    `ready → running` 和 `running → completed` 两条迁移，V4.2 引入的
+    `completed → partial` 等四条迁移全部是 silent no-op，使
+    `markNeedsRework` 后父 Issue label 卡在 `human-review`。修复：
+    `handoff.ts` 增加 4 条 V4.2 状态迁移（见上一节）；同时给
+    `retryTask` / `unskipTask` 末尾补 `await deps.reconcileWorkItem(...)`，
+    让 tick 之后 WorkItem-level aggregate 与父 label 立刻跟上 in-flight
+    状态。`handoff.test.ts` 新增 4 条迁移单测；`work-items-v42-e2e.test.ts`
+    新增 rework 回路 e2e：merged → markNeedsRework → retry → re-merge，
+    断言每次 label flip 都落到 fake GitLab adapter 的 labelLog。
+  - **C3**（Critical）—— `apps/dashboard/app/work-items/[id]/page.tsx`
+    是 Server Component，team-mode 下调用 `getWorkItem(id)` 时无法读
+    `localStorage`，orchestrator 返回 400 `project_header_required`，
+    详情页直接渲染错误 banner。修复：新增
+    `apps/dashboard/lib/active-project-cookie.ts` 共享 cookie key；
+    ProjectSwitcher 在选择 / 水合时同步写入 cookie；详情页通过
+    `next/headers` 的 `cookies()` 读 cookie 并以 `{ project }` 透传给
+    `getWorkItem`。新增 SSR 单测在 cookie 命中 / 缺失两种场景下
+    分别断言 `getWorkItem` 拿到正确的 `opts.project`。
+  - **I1**（Important）—— `task-list.tsx` 的 `effectiveStatus`
+    （`link?.status ?? task.status`）与 `aggregate.effectiveTaskStatus`
+    （operator-driven `needs_rework` / `skipped` 优先）不一致，导致
+    operator 把已完成 task 标为 needs_rework 后，dashboard 仍把它分到
+    `Completed` 组并显示 Mark-rework 按钮。修复：把
+    `effectiveTaskStatus` 提升到 `@issuepilot/shared-contracts`，
+    orchestrator 与 dashboard 共用同一份函数；新增两条 task-list 单测：
+    operator-driven `needs_rework` 胜过历史 completed link、
+    operator-driven `skipped` 胜过历史 running link。
+  - **I2**（Important）—— `ProjectSwitcher` 之前在 `useState` 的 lazy
+    initializer 里读 `localStorage`，SSR 与首次 client render 不一致，
+    React 会发出 hydration mismatch warning。修复：`useState("")` 保持
+    确定性，把 `localStorage` 读取 / cookie 同步 / API client 模块状态
+    更新全部移到 post-mount `useEffect`；新增 `console.error` 探针
+    单测固化 SSR-safe 模式。
+  - **I3**（Important）—— `apps/dashboard/app/work-items/page.tsx`
+    的首屏 `listWorkItems()` 与 ProjectSwitcher 的 mount effect 竞态，
+    cold-load 经常拿不到 `x-issuepilot-project` header 即返回 400。
+    修复：load() 顶部同步读 `localStorage` 并把值同时塞给
+    `setActiveWorkItemsProject` 和 `listWorkItems` 的 `opts.project`，
+    使第一发 fetch 始终携带 header；新增列表页 CSR 单测覆盖。
+  - **I4**（Important）—— CHANGELOG / USAGE / README 之前已经声明
+    `markNeedsRework` 会驱动父 Issue label 转 `ai-rework`，但实际实现
+    缺失（C2）。本次同时修订 CHANGELOG 与 §12.3 rework 描述，使其与
+    `decideParentLabelTransition` 的最新行为对齐，避免操作员根据文档
+    误判。
 
 ### Fixed
 

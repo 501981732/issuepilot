@@ -467,16 +467,12 @@ describe("V4.2 work item client", () => {
 
   it("getWorkItemGraph GETs /api/work-items/:id/graph", async () => {
     const fetchMock = mockFetch({
-      workItemId: "wi_01",
-      planId: "tp_01",
-      version: 1,
-      tasks: [],
       edges: [],
       levels: [],
-      criticalPath: [],
+      criticalPathTaskIds: [],
     });
     const result = await getWorkItemGraph("wi_01");
-    expect(result.workItemId).toBe("wi_01");
+    expect(result.criticalPathTaskIds).toEqual([]);
     expect(fetchMock).toHaveBeenCalledWith(
       `${FAKE_BASE}/api/work-items/wi_01/graph`,
       expect.objectContaining({ method: "GET" }),
@@ -512,13 +508,9 @@ describe("V4.2 work item client", () => {
   it("propagates project header on GET work-item graph too", async () => {
     setActiveWorkItemsProject("platform-web");
     const fetchMock = mockFetch({
-      workItemId: "wi_01",
-      planId: "tp_01",
-      version: 1,
-      tasks: [],
       edges: [],
       levels: [],
-      criticalPath: [],
+      criticalPathTaskIds: [],
     });
     await getWorkItemGraph("wi_01");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;

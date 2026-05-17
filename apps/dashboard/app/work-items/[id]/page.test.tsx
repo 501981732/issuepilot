@@ -68,6 +68,15 @@ vi.mock("../../../components/work-items/work-item-detail", () => ({
 }));
 
 function makeDetail(): WorkItemDetailResponse {
+  const currentPlan = {
+    planId: "tp_42",
+    workItemId: "wi_42",
+    version: 1,
+    tasks: [],
+    dependencies: [],
+    operatorEdits: [],
+    status: "accepted" as const,
+  };
   return {
     workItem: {
       workItemId: "wi_42",
@@ -85,8 +94,9 @@ function makeDetail(): WorkItemDetailResponse {
       createdAt: "2026-05-17T00:00:00.000Z",
       updatedAt: "2026-05-17T00:00:00.000Z",
     },
-    plans: [],
+    plan: { current: currentPlan, history: [currentPlan] },
     tasks: [],
+    runLinks: [],
   };
 }
 

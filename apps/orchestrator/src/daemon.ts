@@ -816,6 +816,11 @@ export async function startDaemon(
     blockedLabel: workflow.tracker.blockedLabel,
     readyLabel: readyLabel(workflow),
   });
+  const workItemAggregateDeps = () => ({
+    getRunReport: (runId: string) => reportStore.get(runId),
+    getEvidenceConfirmations: (workItemId: string) =>
+      workItemStore.loadEvidenceConfirmations(workItemId),
+  });
 
   const workItems: WorkItemService = createWorkItemService({
     store: workItemStore,
@@ -1218,6 +1223,9 @@ export async function startDaemon(
         emit: publishEvent,
       });
     },
+    aggregateDeps: {
+      getRunReport: (runId) => reportStore.get(runId),
+    },
     reconcileWorkItem: async (workItemId) => {
       // V4.1: re-run aggregate + handoff against whatever links are
       // already on disk. Called by the service layer for operator
@@ -1241,9 +1249,12 @@ export async function startDaemon(
       const links = await workItemStore.listAllTaskRunLinks(workItemId);
       const ts = new Date().toISOString();
 
-      const { report } = await aggregateWorkItem(wi, plan, links, {
-        getRunReport: (runId) => reportStore.get(runId),
-      });
+      const { report } = await aggregateWorkItem(
+        wi,
+        plan,
+        links,
+        workItemAggregateDeps(),
+      );
       await workItemStore.saveReport(report);
       // Note: settleTaskRunFinal already emits `work_item_aggregated`
       // when a synthetic-run settle path triggers reconcileWorkItem.
@@ -1317,7 +1328,7 @@ export async function startDaemon(
         },
         {
           store: workItemStore,
-          aggregateDeps: { getRunReport: (id) => reportStore.get(id) },
+          aggregateDeps: workItemAggregateDeps(),
           parentHandoff: {
             gitlab: {
               findWorkpadNote: gitlab.findWorkpadNote,

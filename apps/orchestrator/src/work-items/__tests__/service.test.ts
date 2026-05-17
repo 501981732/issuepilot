@@ -514,7 +514,10 @@ describe("createWorkItemService", () => {
   });
 
   it("getReportMarkdown delegates to renderWorkItemReportMarkdown", async () => {
-    const { store, svc, workItem, plan } = await makeAcceptedService();
+    const reports = new Map([["run_t1", makeRunReport("run_t1")]]);
+    const { store, svc, workItem, plan } = await makeAcceptedService({
+      reports,
+    });
     const report: WorkItemReport = {
       workItemId: workItem.workItemId,
       overallStatus: "complete",
@@ -528,6 +531,15 @@ describe("createWorkItemService", () => {
       generatedAt: "2026-05-17T00:10:00.000Z",
     };
     await store.saveReport(report);
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
     const spy = vi
       .spyOn(ReportRenderer, "renderWorkItemReportMarkdown")
       .mockReturnValue("markdown body");
@@ -535,10 +547,22 @@ describe("createWorkItemService", () => {
     const result = await svc.getReportMarkdown(workItem.workItemId);
 
     expect(result).toBe("markdown body");
-    expect(spy).toHaveBeenCalledWith(workItem, plan, report, {
-      audience: "markdown",
-      evidenceBaseHref: `/api/work-items/${workItem.workItemId}/evidence/file`,
-    });
+    expect(spy).toHaveBeenCalledWith(
+      workItem,
+      plan,
+      expect.objectContaining({
+        workItemId: workItem.workItemId,
+        evidence: expect.objectContaining({
+          index: expect.arrayContaining([
+            expect.objectContaining({ taskId: "t1" }),
+          ]),
+        }),
+      }),
+      {
+        audience: "markdown",
+        evidenceBaseHref: `/api/work-items/${workItem.workItemId}/evidence/file`,
+      },
+    );
     spy.mockRestore();
   });
 
@@ -693,6 +717,110 @@ describe("createWorkItemService", () => {
         confirmedAt: "2026-05-17T03:00:00.000Z",
       }),
     }));
+  });
+
+  it("confirmTaskEvidence is idempotent and preserves the first confirmation", async () => {
+    const reports = new Map([["run_t1", makeRunReport("run_t1")]]);
+    const events: Array<{ type: string; detail: Record<string, unknown> }> = [];
+    const reconciled: string[] = [];
+    let currentNow = "2026-05-17T00:00:00.000Z";
+    const { store, svc, workItem } = await makeAcceptedService({
+      reports,
+      emit: (event) => events.push(event),
+      reconcile: async (id) => {
+        reconciled.push(id);
+      },
+      now: () => currentNow,
+    });
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+    const evidence = await svc.getEvidence(workItem.workItemId);
+    if ("error" in evidence) throw new Error(evidence.error.message);
+    const evidenceId = evidence.byTask.t1[0]!.evidenceId;
+
+    currentNow = "2026-05-17T03:00:00.000Z";
+    const first = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      evidenceId,
+      { operator: "alice" },
+    );
+    currentNow = "2026-05-17T04:00:00.000Z";
+    const second = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      evidenceId,
+      { operator: "bob" },
+    );
+
+    expect("error" in first).toBe(false);
+    expect("error" in second).toBe(false);
+    if ("error" in first || "error" in second) return;
+    expect(second.confirmedAt).toBe("2026-05-17T03:00:00.000Z");
+    expect(second.report.evidence.byTask.t1[0]).toMatchObject({
+      evidenceId,
+      confidence: "human-confirmed",
+      confirmedBy: "alice",
+      confirmedAt: "2026-05-17T03:00:00.000Z",
+    });
+    expect(reconciled).toEqual([workItem.workItemId]);
+    expect(
+      events.filter((event) => event.type === "work_item_evidence_confirmed"),
+    ).toHaveLength(1);
+  });
+
+  it("getReportMarkdown renders the current human-confirmed report instead of stale stored report", async () => {
+    const reports = new Map([["run_t1", makeRunReport("run_t1")]]);
+    const { store, svc, workItem } = await makeAcceptedService({
+      reports,
+      now: () => "2026-05-17T03:00:00.000Z",
+    });
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+    await store.saveReport({
+      workItemId: workItem.workItemId,
+      overallStatus: "draft",
+      taskSummaries: [],
+      validationSummary: "stale",
+      riskSummary: "stale",
+      evidence: { index: [], byTask: {} },
+      openQuestions: [],
+      recommendedNextActions: [],
+      humanReviewChecklist: [],
+      generatedAt: "2026-05-17T00:10:00.000Z",
+    });
+    const evidence = await svc.getEvidence(workItem.workItemId);
+    if ("error" in evidence) throw new Error(evidence.error.message);
+    const evidenceId = evidence.byTask.t1[0]!.evidenceId;
+    const confirmed = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      evidenceId,
+      { operator: "alice" },
+    );
+    if ("error" in confirmed) throw new Error(confirmed.error.message);
+
+    const markdown = await svc.getReportMarkdown(workItem.workItemId);
+
+    expect(typeof markdown).toBe("string");
+    if (typeof markdown !== "string") return;
+    expect(markdown).toContain("(human-confirmed)");
+    expect(markdown).toContain("Screenshot run_t1");
+    expect(markdown).not.toContain("stale");
   });
 
   it("confirmTaskEvidence triggers reconcileWorkItem so handoff note re-renders", async () => {

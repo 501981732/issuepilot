@@ -243,7 +243,11 @@ describe("WorkItemStore", () => {
 
   it("persists evidence confirmations under evidence-confirmations/<workItemId>.json", async () => {
     const store = createWorkItemStore({ rootDir: root });
-    await store.saveEvidenceConfirmation("wi_01", "ev_01", {
+    const saved = await store.saveEvidenceConfirmation("wi_01", "ev_01", {
+      confirmedBy: "alice",
+      confirmedAt: "2026-05-17T01:00:00.000Z",
+    });
+    expect(saved).toEqual({
       confirmedBy: "alice",
       confirmedAt: "2026-05-17T01:00:00.000Z",
     });
@@ -266,6 +270,56 @@ describe("WorkItemStore", () => {
     });
 
     await expect(fresh.loadEvidenceConfirmations("wi_01")).resolves.toEqual({
+      ev_01: {
+        confirmedBy: "alice",
+        confirmedAt: "2026-05-17T01:00:00.000Z",
+      },
+      ev_02: {
+        confirmedBy: "bob",
+        confirmedAt: "2026-05-17T02:00:00.000Z",
+      },
+    });
+  });
+
+  it("preserves the first evidence confirmation for duplicate writes", async () => {
+    const store = createWorkItemStore({ rootDir: root });
+    await store.saveEvidenceConfirmation("wi_01", "ev_01", {
+      confirmedBy: "alice",
+      confirmedAt: "2026-05-17T01:00:00.000Z",
+    });
+
+    const saved = await store.saveEvidenceConfirmation("wi_01", "ev_01", {
+      confirmedBy: "bob",
+      confirmedAt: "2026-05-17T02:00:00.000Z",
+    });
+
+    expect(saved).toEqual({
+      confirmedBy: "alice",
+      confirmedAt: "2026-05-17T01:00:00.000Z",
+    });
+    await expect(store.loadEvidenceConfirmations("wi_01")).resolves.toEqual({
+      ev_01: {
+        confirmedBy: "alice",
+        confirmedAt: "2026-05-17T01:00:00.000Z",
+      },
+    });
+  });
+
+  it("serializes concurrent evidence confirmation writes for a work item", async () => {
+    const store = createWorkItemStore({ rootDir: root });
+
+    await Promise.all([
+      store.saveEvidenceConfirmation("wi_01", "ev_01", {
+        confirmedBy: "alice",
+        confirmedAt: "2026-05-17T01:00:00.000Z",
+      }),
+      store.saveEvidenceConfirmation("wi_01", "ev_02", {
+        confirmedBy: "bob",
+        confirmedAt: "2026-05-17T02:00:00.000Z",
+      }),
+    ]);
+
+    await expect(store.loadEvidenceConfirmations("wi_01")).resolves.toEqual({
       ev_01: {
         confirmedBy: "alice",
         confirmedAt: "2026-05-17T01:00:00.000Z",

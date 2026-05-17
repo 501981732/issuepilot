@@ -660,14 +660,17 @@ export function createWorkItemService(
     },
 
     async getReportMarkdown(id) {
-      const detail = await buildDetail(id);
-      if (!detail?.report) {
+      const storedReport = await deps.store.getReport(id);
+      if (!storedReport) {
         return errorResult("report_not_ready", "report not ready");
       }
+      const aggregate = await aggregateCurrentWorkItem(id);
+      if ("error" in aggregate) return aggregate;
+      const { workItem, plan, result } = aggregate;
       const markdown = ReportRenderer.renderWorkItemReportMarkdown(
-        detail.workItem,
-        detail.plan.current,
-        detail.report,
+        workItem,
+        plan,
+        result.report,
         {
           audience: "markdown",
           evidenceBaseHref: `/api/work-items/${encodeURIComponent(
@@ -709,30 +712,37 @@ export function createWorkItemService(
         return errorResult("not_found", "evidence not found");
       }
 
-      const confirmedAt = now();
       const confirmedBy = operator ?? "operator";
-      await deps.store.saveEvidenceConfirmation(workItemId, evidenceId, {
-        confirmedBy,
-        confirmedAt,
-      });
-      await deps.reconcileWorkItem(workItemId);
-      deps.emit({
-        type: "work_item_evidence_confirmed",
-        ts: confirmedAt,
-        detail: {
-          workItemId,
-          taskId,
-          evidenceId,
+      const confirmed = await deps.store.saveEvidenceConfirmation(
+        workItemId,
+        evidenceId,
+        {
           confirmedBy,
-          confirmedAt,
+          confirmedAt: now(),
         },
-      });
+      );
+      const alreadyConfirmed = evidence.confidence === "human-confirmed";
+      if (!alreadyConfirmed) {
+        await deps.reconcileWorkItem(workItemId);
+        deps.emit({
+          type: "work_item_evidence_confirmed",
+          ts: confirmed.confirmedAt,
+          detail: {
+            workItemId,
+            taskId,
+            evidenceId,
+            confirmedBy: confirmed.confirmedBy,
+            confirmedAt: confirmed.confirmedAt,
+          },
+        });
+      }
 
       const refreshed = await aggregateCurrentWorkItem(workItemId);
       if ("error" in refreshed) return refreshed;
+      await deps.store.saveReport(refreshed.result.report);
       return {
         evidenceId,
-        confirmedAt,
+        confirmedAt: confirmed.confirmedAt,
         report: refreshed.result.report,
       };
     },

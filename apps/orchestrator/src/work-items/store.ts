@@ -58,7 +58,7 @@ export interface WorkItemStore {
     workItemId: string,
     evidenceId: string,
     confirmation: EvidenceConfirmation,
-  ): Promise<void>;
+  ): Promise<EvidenceConfirmation>;
 }
 
 export interface EvidenceConfirmation {
@@ -90,6 +90,7 @@ export function createWorkItemStore(
     string,
     Record<string, EvidenceConfirmation>
   >();
+  const evidenceConfirmationWrites = new Map<string, Promise<unknown>>();
 
   function workItemPath(id: string): string {
     return join(opts.rootDir, WORK_ITEMS_DIR, `${id}.json`);
@@ -291,12 +292,28 @@ export function createWorkItemStore(
     },
 
     async saveEvidenceConfirmation(workItemId, evidenceId, confirmation) {
-      const current = {
-        ...(await this.loadEvidenceConfirmations(workItemId)),
-        [evidenceId]: confirmation,
-      };
-      evidenceConfirmations.set(workItemId, current);
-      await writeJson(evidenceConfirmationsPath(workItemId), current);
+      const previousWrite =
+        evidenceConfirmationWrites.get(workItemId) ?? Promise.resolve();
+      const nextWrite = previousWrite.then(async () => {
+        const current =
+          (await readJson<Record<string, EvidenceConfirmation>>(
+            evidenceConfirmationsPath(workItemId),
+          )) ?? {};
+        const saved = current[evidenceId] ?? confirmation;
+        const next = { ...current, [evidenceId]: saved };
+        evidenceConfirmations.set(workItemId, next);
+        await writeJson(evidenceConfirmationsPath(workItemId), next);
+        return saved;
+      });
+      const queuedWrite = nextWrite.catch(() => undefined);
+      evidenceConfirmationWrites.set(workItemId, queuedWrite);
+      try {
+        return await nextWrite;
+      } finally {
+        if (evidenceConfirmationWrites.get(workItemId) === queuedWrite) {
+          evidenceConfirmationWrites.delete(workItemId);
+        }
+      }
     },
   };
 }

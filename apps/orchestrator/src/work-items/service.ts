@@ -14,6 +14,7 @@ import type {
 import type { WorkItemService, WorkItemServiceError } from "../server/index.js";
 
 import { aggregateWorkItem, type AggregateDeps } from "./aggregate.js";
+import { computeTaskGraph } from "./graph.js";
 import {
   decideParentLabelTransition,
   writeParentHandoff,
@@ -568,9 +569,25 @@ export function createWorkItemService(
       return { ok: true } as const;
     },
 
-    async graph() {
-      // Implemented in task 11.
-      return errorResult("not_implemented", "graph not implemented");
+    async graph(id) {
+      const wi = await deps.store.getWorkItem(id);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const plan = await deps.store.getCurrentPlan(id);
+      if (!plan) return errorResult("not_found", "plan not found");
+      const links = await deps.store.listAllTaskRunLinks(id);
+      const graph = computeTaskGraph(plan, links);
+      const ts = now();
+      deps.emit({
+        type: "task_graph_recomputed",
+        ts,
+        detail: {
+          workItemId: id,
+          levelsCount: graph.levels.length,
+          edgesCount: graph.edges.length,
+          criticalPathLength: graph.criticalPathTaskIds.length,
+        },
+      });
+      return graph;
     },
 
     async report(id) {

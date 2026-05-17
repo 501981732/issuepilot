@@ -329,6 +329,49 @@ describe("createWorkItemService", () => {
     expect(events).toContain("task_run_skipped");
   });
 
+  it("graph returns levels + edges + criticalPathTaskIds when plan exists", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
+    const store = createWorkItemStore({ rootDir: dir });
+    const events: string[] = [];
+    const svc = createWorkItemService({
+      store,
+      planner: makePlanner(),
+      fetchIssue: async () => issue,
+      tick: async () => {},
+      reconcileWorkItem: async () => {},
+      emit: (e) => events.push(e.type),
+      newId: () => "wi_test",
+      now: () => "2026-05-17T00:00:00.000Z",
+    });
+    const planned = await svc.planFromIssue({ iid: 42, operator: "alice" });
+    if ("error" in planned) throw new Error(planned.error.message);
+    const result = await svc.graph(planned.workItem.workItemId);
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.levels).toEqual([["t1"], ["t2"]]);
+    expect(result.edges).toContainEqual({ from: "t1", to: "t2" });
+    expect(result.criticalPathTaskIds).toEqual(["t1", "t2"]);
+    expect(events).toContain("task_graph_recomputed");
+  });
+
+  it("graph returns not_found when plan does not exist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
+    const store = createWorkItemStore({ rootDir: dir });
+    const svc = createWorkItemService({
+      store,
+      planner: makePlanner(),
+      fetchIssue: async () => issue,
+      tick: async () => {},
+      reconcileWorkItem: async () => {},
+      emit: () => {},
+      newId: () => "wi_test",
+      now: () => "2026-05-17T00:00:00.000Z",
+    });
+    const result = await svc.graph("missing");
+    expect("error" in result).toBe(true);
+    if ("error" in result) expect(result.error.code).toBe("not_found");
+  });
+
   it("regeneratePlan calls planFromIssue with regenerate=true and bumps version", async () => {
     const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
     const store = createWorkItemStore({ rootDir: dir });

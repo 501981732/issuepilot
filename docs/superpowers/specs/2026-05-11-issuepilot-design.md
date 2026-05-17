@@ -543,6 +543,10 @@ P0 不暴露任意 GitLab REST 或 GraphQL。
 - 不支持的工具 fast-fail，不能卡住 runner
 - tool schema 使用明确 JSON schema，在 `thread/start` 传给 app-server
 
+边界：IssuePilot 不是纯 toolchain 写入模型。agent 可以通过 allowlist tools 完成
+正常 handoff；orchestrator 仍拥有认领、post-run reconciliation、失败 / 阻塞 /
+closing note、label transition，以及 MR / note / label 兜底写入等确定性平台动作。
+
 GitLab tools 用于让 agent 正常完成 issue handoff。orchestrator 仍保留 deterministic post-run reconciliation。
 
 ## 12. Post-Run Reconciliation

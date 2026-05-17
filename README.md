@@ -116,7 +116,7 @@ it**:
 | Runtime         | Single Elixir service + optional status surface                 | Orchestrator daemon (Fastify) + read-only Next.js dashboard (Tailwind/shadcn)                      |
 | Workspace       | Per-issue workspace                                             | Bare mirror + git worktree under `~/.issuepilot/{repos,workspaces,state}`                          |
 | Events / logs   | Structured logs + optional status surface                       | JSONL event store + atomic run records + SSE live stream + pino structured logging                 |
-| MR / PR writes  | Performed by the agent through workflow-defined tools           | Adapter pushes / opens MRs directly, with orchestrator post-run reconciliation as a fallback       |
+| MR / PR writes  | Performed by the agent through workflow-defined tools           | Hybrid: Codex can use narrow GitLab dynamic tools, while the orchestrator owns claim, reconciliation, and fallback MR / note / label writes |
 | Restart recovery | Tracker + filesystem driven                                    | Driven by labels + handoff note marker (`<!-- issuepilot:run:<runId> -->`)                         |
 | Security stance | Each implementation declares its own trust posture              | Rejects `danger-full-access` sandboxes, redacts tokens end-to-end, pins Codex cwd to the worktree  |
 | Open SPEC       | `SPEC.md` v1 (language-agnostic)                                | `SPEC.md` retained as reference; product spec lives in `docs/superpowers/specs/`                   |

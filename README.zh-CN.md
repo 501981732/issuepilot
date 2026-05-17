@@ -95,7 +95,7 @@ IssuePilot 起源于 OpenAI Symphony 的 fork，因此 **整体架构思路是�
 | 运行形态      | 单进程 Elixir 服务 + 可选 status surface         | orchestrator（Fastify daemon）+ 只读 Next.js dashboard（Tailwind/shadcn）       |
 | 工作区策略    | 每 Issue 独立 workspace                          | bare mirror + git worktree（`~/.issuepilot/{repos,workspaces,state}`）          |
 | 事件 / 日志   | 结构化日志 + 可选 status surface                 | JSONL event store + 原子 run record + SSE 实时流 + pino structured logging      |
-| MR/PR 处理    | 由 agent 通过 workflow 内的 tools 自行 push / 写 | adapter 直接 push / 创建 MR，并提供 orchestrator post-run reconciliation 兜底   |
+| MR/PR 处理    | 由 agent 通过 workflow 内的 tools 自行 push / 写 | 混合模型：Codex 可调用窄范围 GitLab dynamic tools，orchestrator 负责认领、reconciliation 和 MR / note / label 兜底写入 |
 | 重启恢复      | tracker + 文件系统驱动                           | label 状态 + handoff note marker（`<!-- issuepilot:run:<runId> -->`）驱动       |
 | 安全姿态      | 实现自行声明 trust posture                       | 拒绝 `danger-full-access` sandbox、token 全链路 redact、Codex cwd 限定 worktree |
 | 公开 SPEC     | `SPEC.md` v1 (language-agnostic)                 | `SPEC.md` 保留为参考；产品 spec 见 `docs/superpowers/specs/`                    |

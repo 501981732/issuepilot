@@ -323,6 +323,17 @@ export function WorkItemDetail({
               onUnskip={handleUnskip}
               actionsEnabled
             />
+          ) : view === "evidence" ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("evidenceTab.ariaLabel")}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-fg-subtle">
+                  {t("evidenceTab.empty")}
+                </p>
+              </CardContent>
+            </Card>
           ) : graph ? (
             <TaskGraph graph={graph} tasks={data.tasks} />
           ) : (

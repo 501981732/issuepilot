@@ -182,6 +182,15 @@ describe("WorkItemDetail", () => {
     );
   });
 
+  it("V4.3: switches to the evidence view without loading the graph", () => {
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+
+    expect(screen.getByText("No evidence matches this filter.")).toBeInTheDocument();
+    expect(getWorkItemGraph).not.toHaveBeenCalled();
+  });
+
   it("invokes skipWorkItemTask / retryWorkItemTask from task list", async () => {
     vi.mocked(skipWorkItemTask).mockResolvedValue({ ok: true });
     vi.mocked(retryWorkItemTask).mockResolvedValue({ ok: true });

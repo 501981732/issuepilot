@@ -15,7 +15,8 @@ export default async function WorkItemDetailRoute(props: {
 }) {
   const { id } = await props.params;
   const sp = props.searchParams ? await props.searchParams : {};
-  const initialView = sp.view === "graph" ? "graph" : "list";
+  const initialView =
+    sp.view === "graph" || sp.view === "evidence" ? sp.view : "list";
   // V4.2 team-mode: the orchestrator requires `x-issuepilot-project`
   // on every work-item route when `workItemsByProject` is wired. SSR
   // can't read the operator's localStorage, so ProjectSwitcher mirrors

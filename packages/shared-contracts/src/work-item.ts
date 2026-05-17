@@ -146,6 +146,13 @@ export interface TaskNode {
   riskLevel: RiskLevel;
   /** Operator-visible reason when status leaves `ready`（blocked / failed 解释）。 */
   statusReason?: string;
+  /**
+   * V4.2: human-driven reason when operator pushes a task back to
+   * `needs_rework`. Separate from `statusReason` (which records
+   * runtime-side failure reasons) so quality analytics in V4.4 can
+   * count true review-driven rework without false positives.
+   */
+  needsReworkReason?: string;
 }
 
 /**
@@ -154,7 +161,19 @@ export interface TaskNode {
  */
 export interface TaskPlanEdit {
   taskId: string;
-  field: "title" | "goal" | "scope" | "dependsOn" | "suggestedValidation";
+  /**
+   * V4.2: `"replan"` records a single-task replan where the planner re-drafted
+   * exactly one task and produced a new TaskPlan version. The before/after
+   * payloads capture the task snapshot pre/post-replan rather than a single
+   * field; older field values keep the V4.1 semantics.
+   */
+  field:
+    | "title"
+    | "goal"
+    | "scope"
+    | "dependsOn"
+    | "suggestedValidation"
+    | "replan";
   before: unknown;
   after: unknown;
   by: string;
@@ -176,6 +195,13 @@ export interface TaskPlan {
   status: TaskPlanStatus;
   acceptedAt?: string;
   rejectedReason?: string;
+  /**
+   * V4.2: when a plan is the result of a *single-task replan* (not a
+   * full plan regeneration), records which previous plan + task this
+   * plan derives from. The non-replanned tasks inherit status / runIds
+   * from the previous plan so an in-flight workflow does not reset.
+   */
+  replanOf?: { planId: string; taskId: string };
 }
 
 /**

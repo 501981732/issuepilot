@@ -702,6 +702,11 @@ describe("startDaemon human-review event publishing", () => {
       expect(typeof serverDeps?.workItems?.skipTask).toBe("function");
       expect(typeof serverDeps?.workItems?.retryTask).toBe("function");
       expect(typeof serverDeps?.workItems?.report).toBe("function");
+      // V4.2 task graph operator actions + graph projection.
+      expect(typeof serverDeps?.workItems?.replanTask).toBe("function");
+      expect(typeof serverDeps?.workItems?.markNeedsRework).toBe("function");
+      expect(typeof serverDeps?.workItems?.unskipTask).toBe("function");
+      expect(typeof serverDeps?.workItems?.graph).toBe("function");
     } finally {
       await daemon.stop();
       await fs.rm(root, { recursive: true, force: true });

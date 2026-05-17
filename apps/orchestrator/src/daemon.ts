@@ -73,6 +73,7 @@ import { createConcurrencySlots } from "./runtime/slots.js";
 import { createRuntimeState, type RuntimeState } from "./runtime/state.js";
 import { createServer, type WorkItemService } from "./server/index.js";
 import { aggregateWorkItem } from "./work-items/aggregate.js";
+import { decideEffectiveBase } from "./work-items/branch-chain.js";
 import { runTaskOnce } from "./work-items/dispatch-task.js";
 import { writeParentHandoff } from "./work-items/handoff.js";
 import {
@@ -751,7 +752,15 @@ export async function startDaemon(
       await tickWorkItemImpl(wi, plan, links, {
         availableSlots: () => slots.available(),
         getRunReport: (runId) => reportStore.get(runId),
-        dispatchTask: async (task) => {
+        decideEffectiveBase: (input) =>
+          decideEffectiveBase({
+            task: input.task,
+            plan: input.plan,
+            links: input.links,
+            getRunReport: (runId) => reportStore.get(runId),
+            defaultBaseBranch: workflow.git.baseBranch,
+          }),
+        dispatchTask: async (task, dispatchOpts) => {
           // V4.1 review C1 fix: synthetic task runs now go through the
           // real V2.x dispatch path with `parentIssueLabelMode:
           // "suppressed"` (set by `runTaskOnce` on the DispatchInput).
@@ -794,6 +803,12 @@ export async function startDaemon(
             },
             promptTemplate: workflow.promptTemplate,
             state,
+            ...(dispatchOpts?.baseOverride
+              ? { baseOverride: dispatchOpts.baseOverride }
+              : {}),
+            ...(dispatchOpts?.chainedFrom
+              ? { chainedFrom: dispatchOpts.chainedFrom }
+              : {}),
             dispatch: async (input) => {
               taskRunIndex.set(input.runId, {
                 workItemId: wi.workItemId,

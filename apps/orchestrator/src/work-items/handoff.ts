@@ -2,9 +2,10 @@ import type {
   TaskPlan,
   WorkItem,
   WorkItemReport,
-  WorkItemReportStatus,
   WorkItemStatus,
 } from "@issuepilot/shared-contracts";
+
+import { renderWorkItemReportMarkdown } from "./render-report.js";
 
 /**
  * V4.1 Workflow Spine parent handoff (spec §9.0 / §11.6 / §14).
@@ -185,100 +186,12 @@ export function renderWorkItemHandoffNoteBody(
   plan: TaskPlan,
   report: WorkItemReport,
 ): string {
-  const lines: string[] = [];
-  lines.push(workItemHandoffMarker(workItem.workItemId));
-  lines.push(`## IssuePilot work item handoff — ${workItem.title}`);
-  lines.push("");
-  lines.push(`- Source Issue: ${workItem.sourceIssue.url}`);
-  lines.push(
-    `- Status: ${overallStatusLabel(report.overallStatus)} (${report.overallStatus})`,
-  );
-  lines.push(`- Plan version: ${plan.version}`);
-  lines.push(`- Tasks: ${plan.tasks.length}`);
-  lines.push("");
-  lines.push("### Task summary");
-  lines.push("");
-  for (const summary of report.taskSummaries) {
-    const titleLine = `- **${summary.title}** (${summary.taskId}) — \`${summary.taskStatus}\``;
-    lines.push(titleLine);
-    if (summary.diffSummary) {
-      lines.push(`  - Diff: ${oneLine(summary.diffSummary)}`);
-    }
-    if (summary.mergeRequestUrl) {
-      lines.push(`  - MR: ${summary.mergeRequestUrl}`);
-    }
-    if (summary.ciStatus) {
-      lines.push(`  - CI: ${summary.ciStatus}`);
-    }
-    if (summary.validation.length > 0) {
-      lines.push(
-        `  - Validation: ${summary.validation.map(oneLine).join("; ")}`,
-      );
-    }
-    if (summary.risks.length > 0) {
-      lines.push(
-        `  - Risks: ${summary.risks
-          .map((r) => `(${r.level}) ${oneLine(r.text)}`)
-          .join("; ")}`,
-      );
-    }
-    if (summary.followUps.length > 0) {
-      lines.push(`  - Follow-ups: ${summary.followUps.map(oneLine).join("; ")}`);
-    }
-    if (summary.nextAction) {
-      lines.push(`  - Next: ${oneLine(summary.nextAction)}`);
-    }
-  }
-
-  lines.push("");
-  lines.push("### Validation");
-  lines.push(report.validationSummary || "_(no validation reported)_");
-
-  lines.push("");
-  lines.push("### Risks");
-  lines.push(report.riskSummary || "_(no risks reported)_");
-
-  if (report.openQuestions.length > 0) {
-    lines.push("");
-    lines.push("### Open questions");
-    for (const q of report.openQuestions) {
-      lines.push(`- ${oneLine(q)}`);
-    }
-  }
-
-  lines.push("");
-  lines.push("### Next action");
-  if (report.recommendedNextActions.length === 0) {
-    lines.push("Reviewer to inspect the linked MRs and decide next steps.");
-  } else {
-    for (const a of report.recommendedNextActions) {
-      lines.push(`- ${oneLine(a)}`);
-    }
-  }
-
-  lines.push("");
-  lines.push(`_Generated at ${report.generatedAt}._`);
-
-  return lines.join("\n");
-}
-
-function overallStatusLabel(status: WorkItemReportStatus): string {
-  switch (status) {
-    case "complete":
-      return "All tasks completed";
-    case "partial":
-      return "Partial — operator action required";
-    case "incomplete":
-      return "Awaiting more task runs";
-    case "draft":
-      return "Aggregation pending";
-    default:
-      return status;
-  }
-}
-
-function oneLine(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
+  return `${workItemHandoffMarker(workItem.workItemId)}\n${renderWorkItemReportMarkdown(
+    workItem,
+    plan,
+    report,
+    { audience: "gitlab" },
+  )}`;
 }
 
 export async function writeParentHandoff(

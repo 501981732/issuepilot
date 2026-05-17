@@ -15,6 +15,7 @@ import {
   type ParentHandoffDeps,
   type ParentHandoffWorkflow,
 } from "../handoff.js";
+import { renderWorkItemReportMarkdown } from "../render-report.js";
 
 const workflow: ParentHandoffWorkflow = {
   runningLabel: "ai-running",
@@ -177,9 +178,41 @@ describe("decideParentLabelTransition", () => {
     expect(r.add).toEqual(["ai-running"]);
     expect(r.remove).toEqual(["human-review"]);
   });
+
+  it("keeps blocked transitions label-neutral", () => {
+    for (const previousStatus of [
+      undefined,
+      "planning",
+      "ready",
+      "running",
+      "partial",
+      "completed",
+    ] satisfies Array<WorkItemStatus | undefined>) {
+      expect(
+        decideParentLabelTransition(previousStatus, "blocked", workflow),
+      ).toEqual({ add: [], remove: [] });
+    }
+  });
 });
 
 describe("renderWorkItemHandoffNoteBody", () => {
+  it("equals exactly one marker + renderWorkItemReportMarkdown(gitlab)", () => {
+    const marker = workItemHandoffMarker(baseWorkItem.workItemId);
+    const body = renderWorkItemHandoffNoteBody(
+      baseWorkItem,
+      basePlan,
+      completeReport,
+    );
+    const rendered = renderWorkItemReportMarkdown(
+      baseWorkItem,
+      basePlan,
+      completeReport,
+      { audience: "gitlab" },
+    );
+
+    expect(body).toBe(`${marker}\n${rendered}`);
+  });
+
   it("starts with the canonical work-item marker", () => {
     const body = renderWorkItemHandoffNoteBody(
       baseWorkItem,
@@ -189,6 +222,23 @@ describe("renderWorkItemHandoffNoteBody", () => {
     expect(body.startsWith(workItemHandoffMarker(baseWorkItem.workItemId))).toBe(
       true,
     );
+  });
+
+  it("keeps the marker on the first line and emits it exactly once", () => {
+    const marker = workItemHandoffMarker(baseWorkItem.workItemId);
+    const body = renderWorkItemHandoffNoteBody(
+      baseWorkItem,
+      basePlan,
+      completeReport,
+    );
+
+    expect(body.split("\n")[0]).toBe(marker);
+    expect(body.split(marker)).toHaveLength(2);
+    expect(
+      renderWorkItemReportMarkdown(baseWorkItem, basePlan, completeReport, {
+        audience: "gitlab",
+      }),
+    ).not.toContain(marker);
   });
 
   it("includes each task title and merge request link", () => {
@@ -209,7 +259,7 @@ describe("renderWorkItemHandoffNoteBody", () => {
       basePlan,
       completeReport,
     );
-    expect(body).toContain("Next action");
+    expect(body).toContain("Recommended next actions");
     expect(body).toContain("ask the reviewer");
   });
 

@@ -7,10 +7,12 @@ import { renderWithIntl as render } from "../../test/intl";
 
 vi.mock("../../lib/api", () => ({
   acceptWorkItemPlan: vi.fn(),
+  confirmWorkItemTaskEvidence: vi.fn(),
   regenerateWorkItemPlan: vi.fn(),
   skipWorkItemTask: vi.fn(),
   retryWorkItemTask: vi.fn(),
   getWorkItem: vi.fn(),
+  getWorkItemEvidence: vi.fn(),
   getWorkItemGraph: vi.fn(),
   replanWorkItemTask: vi.fn(),
   markWorkItemTaskRework: vi.fn(),
@@ -19,7 +21,9 @@ vi.mock("../../lib/api", () => ({
 
 import {
   acceptWorkItemPlan,
+  confirmWorkItemTaskEvidence,
   getWorkItem,
+  getWorkItemEvidence,
   getWorkItemGraph,
   regenerateWorkItemPlan,
   retryWorkItemTask,
@@ -183,12 +187,108 @@ describe("WorkItemDetail", () => {
   });
 
   it("V4.3: switches to the evidence view without loading the graph", () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [],
+      byTask: {},
+      missing: [],
+    });
     render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
 
     fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
 
     expect(screen.getByText("No evidence matches this filter.")).toBeInTheDocument();
     expect(getWorkItemGraph).not.toHaveBeenCalled();
+  });
+
+  it("V4.3: fetches evidence when view=evidence", async () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [
+        {
+          taskId: "T1",
+          kind: "validation",
+          evidenceId: "ev_validation",
+          label: "pnpm test passed",
+          confidence: "system-derived",
+        },
+      ],
+      byTask: {},
+      missing: [],
+    });
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+
+    await waitFor(() =>
+      expect(getWorkItemEvidence).toHaveBeenCalledWith("wi_1"),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
+    );
+  });
+
+  it("V4.3: confirms evidence and reloads after confirm", async () => {
+    vi.mocked(getWorkItemEvidence)
+      .mockResolvedValueOnce({
+        index: [
+          {
+            taskId: "T1",
+            kind: "validation",
+            evidenceId: "ev_validation",
+            label: "pnpm test passed",
+            confidence: "ai-claim",
+          },
+        ],
+        byTask: {},
+        missing: [],
+      })
+      .mockResolvedValueOnce({
+        index: [
+          {
+            taskId: "T1",
+            kind: "validation",
+            evidenceId: "ev_validation",
+            label: "pnpm test passed",
+            confidence: "human-confirmed",
+          },
+        ],
+        byTask: {},
+        missing: [],
+      });
+    vi.mocked(confirmWorkItemTaskEvidence).mockResolvedValue({
+      evidenceId: "ev_validation",
+      confirmedAt: "2026-05-17T10:00:00.000Z",
+      report: {
+        workItemId: "wi_1",
+        overallStatus: "complete",
+        taskSummaries: [],
+        validationSummary: "",
+        riskSummary: "",
+        evidence: { index: [], byTask: {} },
+        openQuestions: [],
+        recommendedNextActions: [],
+        humanReviewChecklist: [],
+        generatedAt: "2026-05-17T10:00:00.000Z",
+      },
+    });
+    vi.mocked(getWorkItem).mockResolvedValue(acceptedDetail());
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+    await waitFor(() =>
+      expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() =>
+      expect(confirmWorkItemTaskEvidence).toHaveBeenCalledWith(
+        "wi_1",
+        "T1",
+        "ev_validation",
+        { operator: "alice" },
+      ),
+    );
+    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+    expect(getWorkItemEvidence).toHaveBeenCalledTimes(2);
   });
 
   it("invokes skipWorkItemTask / retryWorkItemTask from task list", async () => {

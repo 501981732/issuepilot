@@ -6,6 +6,7 @@ import type {
   TaskPlanEdit,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemEvidenceResponse,
   WorkItemGraphResponse,
 } from "@issuepilot/shared-contracts";
 import Link from "next/link";
@@ -14,7 +15,9 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 
 import {
   acceptWorkItemPlan,
+  confirmWorkItemTaskEvidence,
   getWorkItem,
+  getWorkItemEvidence,
   getWorkItemGraph,
   markWorkItemTaskRework,
   regenerateWorkItemPlan,
@@ -26,6 +29,7 @@ import {
 import { cn } from "../../lib/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
+import { EvidenceTab } from "./evidence-tab";
 import { ParentReviewPacket } from "./parent-review-packet";
 import { PlanEditor } from "./plan-editor";
 import { TaskGraph } from "./task-graph";
@@ -66,6 +70,10 @@ export function WorkItemDetail({
   const [view, setView] = useState<WorkItemView>(initialView);
   const [graph, setGraph] = useState<WorkItemGraphResponse | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<WorkItemEvidenceResponse | null>(
+    null,
+  );
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
 
   const refresh = useCallback((next: WorkItemDetailResponse) => {
     setData(next);
@@ -224,6 +232,42 @@ export function WorkItemDetail({
     };
   }, [view, data.workItem.workItemId]);
 
+  useEffect(() => {
+    if (view !== "evidence") return;
+    let cancelled = false;
+    setEvidenceError(null);
+    getWorkItemEvidence(data.workItem.workItemId)
+      .then((next) => {
+        if (!cancelled) setEvidence(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setEvidenceError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, data.workItem.workItemId]);
+
+  const handleConfirmEvidence = useCallback(
+    async (taskId: string, evidenceId: string) => {
+      setError(null);
+      await confirmWorkItemTaskEvidence(
+        data.workItem.workItemId,
+        taskId,
+        evidenceId,
+        { operator },
+      );
+      const [nextEvidence] = await Promise.all([
+        getWorkItemEvidence(data.workItem.workItemId),
+        reload(),
+      ]);
+      setEvidence(nextEvidence);
+    },
+    [data.workItem.workItemId, operator, reload],
+  );
+
   const wi = data.workItem;
   const planAccepted = data.plan.current.status === "accepted";
 
@@ -324,16 +368,24 @@ export function WorkItemDetail({
               actionsEnabled
             />
           ) : view === "evidence" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("evidenceTab.ariaLabel")}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-fg-subtle">
-                  {t("evidenceTab.empty")}
-                </p>
-              </CardContent>
-            </Card>
+            evidence ? (
+              <EvidenceTab
+                workItemId={data.workItem.workItemId}
+                evidence={evidence}
+                onConfirm={handleConfirmEvidence}
+              />
+            ) : (
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("evidenceTab.ariaLabel")}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-fg-subtle">
+                    {evidenceError ?? t("evidenceTab.empty")}
+                  </p>
+                </CardContent>
+              </Card>
+            )
           ) : graph ? (
             <TaskGraph graph={graph} tasks={data.tasks} />
           ) : (

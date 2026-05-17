@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { renderWithIntl as render } from "../../test/intl";
 
+vi.mock("../../lib/api", () => ({
+  getWorkItemReportMarkdown: vi.fn(),
+}));
+
+import { getWorkItemReportMarkdown } from "../../lib/api";
 import { ParentReviewPacket } from "./parent-review-packet";
 
 const baseReport = (over: Partial<WorkItemReport> = {}): WorkItemReport => ({
@@ -86,6 +91,12 @@ describe("ParentReviewPacket", () => {
     expect(screen.getByText("Reviewer to inspect MR")).toBeInTheDocument();
   });
 
+  it("renders ConfidencePill for each evidence entry", () => {
+    render(<ParentReviewPacket report={baseReport()} />);
+
+    expect(screen.getAllByText("AI inferred")).toHaveLength(3);
+  });
+
   it("renders HumanReviewChecklist when report.humanReviewChecklist is non-empty", () => {
     render(
       <ParentReviewPacket
@@ -145,7 +156,10 @@ describe("ParentReviewPacket", () => {
     expect(screen.queryByText(/ready_to_merge/i)).not.toBeInTheDocument();
   });
 
-  it("Copy as Markdown writes a markdown blob to navigator.clipboard", async () => {
+  it("Copy as Markdown fetches report.md and writes it to navigator.clipboard", async () => {
+    vi.mocked(getWorkItemReportMarkdown).mockResolvedValue(
+      "# Server-rendered Review Packet\n\nAll synthetic tests pass\n",
+    );
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -153,10 +167,12 @@ describe("ParentReviewPacket", () => {
     });
     render(<ParentReviewPacket report={baseReport()} />);
     fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+    await waitFor(() =>
+      expect(getWorkItemReportMarkdown).toHaveBeenCalledWith("wi_1"),
+    );
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const md = writeText.mock.calls[0]![0] as string;
-    expect(md).toContain("# Parent Review Packet");
+    expect(md).toContain("# Server-rendered Review Packet");
     expect(md).toContain("All synthetic tests pass");
-    expect(md).toContain("T1 Title");
   });
 });

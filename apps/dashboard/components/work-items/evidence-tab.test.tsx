@@ -26,6 +26,7 @@ const baseEvidence = (
       label: "pnpm lint",
       confidence: "system-derived",
       text: "lint passed",
+      source: { runId: "run-1", relPath: "commands/lint.log" },
     },
     {
       taskId: "task-b",
@@ -160,11 +161,15 @@ describe("EvidenceTab", () => {
     expect(onConfirm).toHaveBeenCalledWith("task-a", "ev_screenshot");
     expect(within(item!).getByText("Human confirmed")).toBeInTheDocument();
     expect(
-      within(item!).getByRole("button", { name: "Confirmed" }),
+      within(item!).getByRole("button", { name: "Confirming…" }),
     ).toBeDisabled();
 
     resolveConfirm();
-    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        within(item!).getByRole("button", { name: "Confirmed" }),
+      ).toBeDisabled(),
+    );
   });
 
   it("rolls back optimistic pill change when onConfirm rejects", async () => {
@@ -188,6 +193,104 @@ describe("EvidenceTab", () => {
     expect(
       within(item!).getByRole("button", { name: "Confirm" }),
     ).toBeEnabled();
+  });
+
+  it("keeps another optimistic confirmation when a concurrent confirm rejects", async () => {
+    let rejectScreenshot: (error: Error) => void = () => {};
+    let resolveCommand: () => void = () => {};
+    const onConfirm = vi.fn((taskId: string, evidenceId: string) => {
+      if (evidenceId === "ev_screenshot") {
+        return new Promise<void>((_, reject) => {
+          rejectScreenshot = reject;
+        });
+      }
+      if (evidenceId === "ev_command") {
+        return new Promise<void>((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    render(
+      <EvidenceTab
+        workItemId="wi_01"
+        evidence={baseEvidence()}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const screenshotItem = screen.getByText("Login screenshot").closest("li");
+    const commandItem = screen.getByText("pnpm lint").closest("li");
+    fireEvent.click(
+      within(screenshotItem!).getByRole("button", { name: "Confirm" }),
+    );
+    fireEvent.click(
+      within(commandItem!).getByRole("button", { name: "Confirm" }),
+    );
+
+    rejectScreenshot(new Error("nope"));
+    await waitFor(() =>
+      expect(
+        within(screenshotItem!).getByText("AI inferred"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(commandItem!).getByText("Human confirmed"),
+    ).toBeInTheDocument();
+
+    resolveCommand();
+    await waitFor(() =>
+      expect(
+        within(commandItem!).getByRole("button", { name: "Confirmed" }),
+      ).toBeDisabled(),
+    );
+  });
+
+  it("treats human-confirmed prop updates as confirmed state", () => {
+    const { rerender } = render(
+      <EvidenceTab
+        workItemId="wi_01"
+        evidence={baseEvidence()}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    rerender(
+      <EvidenceTab
+        workItemId="wi_01"
+        evidence={baseEvidence({
+          index: [
+            {
+              ...baseEvidence().index[0]!,
+              confidence: "human-confirmed",
+            },
+          ],
+        })}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    const item = screen.getByText("Login screenshot").closest("li");
+    expect(within(item!).getByText("Human confirmed")).toBeInTheDocument();
+    expect(
+      within(item!).getByRole("button", { name: "Confirmed" }),
+    ).toBeDisabled();
+  });
+
+  it("renders file links for non-media entries with source relPath", () => {
+    render(
+      <EvidenceTab
+        workItemId="wi_01"
+        evidence={baseEvidence()}
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "pnpm lint" })).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:4738/api/work-items/wi_01/evidence/file?runId=run-1&path=commands%2Flint.log",
+    );
   });
 
   it("renders missing-evidence card for tasks in evidence.missing", () => {

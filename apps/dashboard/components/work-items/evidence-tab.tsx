@@ -57,14 +57,9 @@ export function EvidenceTab({
 }: EvidenceTabProps) {
   const t = useTranslations("workItem.evidenceTab");
   const [filter, setFilter] = useState<EvidenceFilter>("all");
-  const [confirmedIds, setConfirmedIds] = useState<Set<string>>(
-    () =>
-      new Set(
-        evidence.index
-          .filter((entry) => entry.confidence === "human-confirmed")
-          .map((entry) => entry.evidenceId),
-      ),
-  );
+  const [optimisticConfirmedIds, setOptimisticConfirmedIds] = useState<
+    Set<string>
+  >(() => new Set());
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
 
   const visibleEntries = useMemo(
@@ -81,13 +76,18 @@ export function EvidenceTab({
   );
 
   async function handleConfirm(entry: WorkItemEvidenceEntry) {
-    const previous = confirmedIds;
-    setConfirmedIds((current) => new Set(current).add(entry.evidenceId));
+    setOptimisticConfirmedIds((current) =>
+      new Set(current).add(entry.evidenceId),
+    );
     setPendingIds((current) => new Set(current).add(entry.evidenceId));
     try {
       await onConfirm(entry.taskId, entry.evidenceId);
     } catch (error) {
-      setConfirmedIds(previous);
+      setOptimisticConfirmedIds((current) => {
+        const next = new Set(current);
+        next.delete(entry.evidenceId);
+        return next;
+      });
     } finally {
       setPendingIds((current) => {
         const next = new Set(current);
@@ -129,7 +129,7 @@ export function EvidenceTab({
               taskId={taskId}
               entries={entries}
               workItemId={workItemId}
-              confirmedIds={confirmedIds}
+              optimisticConfirmedIds={optimisticConfirmedIds}
               pendingIds={pendingIds}
               onConfirm={handleConfirm}
             />
@@ -166,14 +166,14 @@ function TaskEvidenceCard({
   taskId,
   entries,
   workItemId,
-  confirmedIds,
+  optimisticConfirmedIds,
   pendingIds,
   onConfirm,
 }: {
   taskId: string;
   entries: WorkItemEvidenceEntry[];
   workItemId: string;
-  confirmedIds: Set<string>;
+  optimisticConfirmedIds: Set<string>;
   pendingIds: Set<string>;
   onConfirm: (entry: WorkItemEvidenceEntry) => Promise<void>;
 }) {
@@ -203,7 +203,10 @@ function TaskEvidenceCard({
                     <EvidenceEntryView
                       entry={entry}
                       workItemId={workItemId}
-                      confirmed={confirmedIds.has(entry.evidenceId)}
+                      confirmed={
+                        entry.confidence === "human-confirmed" ||
+                        optimisticConfirmedIds.has(entry.evidenceId)
+                      }
                       pending={pendingIds.has(entry.evidenceId)}
                       onConfirm={() => onConfirm(entry)}
                     />
@@ -259,10 +262,10 @@ function EvidenceEntryView({
             disabled={confirmed || pending}
             onClick={onConfirm}
           >
-            {confirmed
-              ? t("confirmed")
-              : pending
-                ? t("confirming")
+            {pending
+              ? t("confirming")
+              : confirmed
+                ? t("confirmed")
                 : t("confirm")}
           </Button>
         </div>
@@ -316,7 +319,7 @@ function renderPrimaryEvidence(
 
   return (
     <EvidenceLinkOrText
-      href={entry.href}
+      href={entry.href ?? evidenceFileUrl(workItemId, entry)}
       label={entry.label}
       className={cn(
         "text-sm",

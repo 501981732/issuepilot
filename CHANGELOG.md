@@ -46,6 +46,13 @@
       文本转成 `TaskPlan` draft；JSON 解析失败、LLM 抛错、validation
       失败统一映射成稳定 code（`planner_call_failed` /
       `planner_parse_failed` / forwarded validator codes）。
+  - `reconcile.ts` 引入 `parentIssueLabelMode: "active" | "suppressed"`：
+    V2.x 单 Issue→单 MR 路径保持 `"active"`（默认），自动写父 Issue
+    workpad handoff note 并切到 `human-review`；V4.1 synthetic task run
+    设为 `"suppressed"`，只走 push / create MR / update MR，**不**
+    写父 Issue note 也**不**切父 Issue label —— parent handoff 完全由
+    WorkItem aggregator（V4.1 任务 11）统一执行。已有 V2.x 调用方
+    无需改动（参数省略时退回 `"active"`）。
 
 ### Changed
   主设计 spec 同步）。

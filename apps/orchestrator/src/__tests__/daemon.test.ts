@@ -361,6 +361,7 @@ async function runSingleTaskWorkItemDispatch(opts: {
   daemon: Awaited<ReturnType<typeof startDaemon>>;
   serverDeps: ServerDeps;
   events: IssuePilotInternalEvent[];
+  publishEvent(event: IssuePilotInternalEvent): void;
   reportStore: {
     save: ReturnType<typeof vi.fn>;
     get: (runId: string) => Promise<unknown>;
@@ -438,7 +439,14 @@ async function runSingleTaskWorkItemDispatch(opts: {
     throw new Error("report store was not captured");
   }
 
-  return { root, daemon, serverDeps, events, reportStore };
+  return {
+    root,
+    daemon,
+    serverDeps,
+    events,
+    publishEvent: (event) => eventBus.publish(event),
+    reportStore,
+  };
 }
 
 async function removeTempDir(dir: string): Promise<void> {
@@ -1093,7 +1101,7 @@ describe("startDaemon human-review event publishing", () => {
     }
   });
 
-  it("overlays evidence confirmations through the daemon reconcile path", async () => {
+  it("overlays evidence confirmations through the daemon settle path", async () => {
     const workspacePath = await fs.mkdtemp(
       path.join(os.tmpdir(), "issuepilot-task-worktree-"),
     );
@@ -1131,6 +1139,18 @@ describe("startDaemon human-review event publishing", () => {
         (entry) => entry.kind === "screenshot",
       );
       expect(screenshot).toBeDefined();
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const before = await ctx.serverDeps.workItems!.report(
+        workItem!.workItemId,
+      );
+      expect(before?.evidence.index).toContainEqual(
+        expect.objectContaining({
+          evidenceId: screenshot!.evidenceId,
+          confidence: "ai-claim",
+        }),
+      );
 
       const confirmed = await ctx.serverDeps.workItems!.confirmTaskEvidence(
         workItem!.workItemId,
@@ -1141,11 +1161,55 @@ describe("startDaemon human-review event publishing", () => {
       if ("error" in confirmed) {
         throw new Error(confirmed.error.message);
       }
+      const aggregateCountBefore = ctx.events.filter(
+        (event) => event.type === "work_item_aggregated",
+      ).length;
 
-      const storedReport = await ctx.serverDeps.workItems!.report(
+      ctx.publishEvent({
+        id: "manual-dispatch-completed",
+        runId,
+        type: "dispatch_completed",
+        message: "dispatch_completed",
+        data: {},
+        createdAt: "2026-05-17T04:00:01.000Z",
+        ts: "2026-05-17T04:00:01.000Z",
+        issue: {
+          id: "7",
+          iid: 7,
+          title: "Needs review",
+          url: "https://gitlab.example.com/group/project/-/issues/7",
+          projectId: "group/project",
+        },
+      });
+
+      await vi.waitFor(async () => {
+        expect(
+          ctx.events.filter((event) => event.type === "work_item_aggregated")
+            .length,
+        ).toBeGreaterThan(aggregateCountBefore);
+        const storedReport = await ctx.serverDeps.workItems!.report(
+          workItem!.workItemId,
+        );
+        expect(storedReport?.evidence.index).toContainEqual(
+          expect.objectContaining({
+            evidenceId: screenshot!.evidenceId,
+            confidence: "human-confirmed",
+            confirmedBy: "alice",
+            confirmedAt: confirmed.confirmedAt,
+          }),
+        );
+      });
+      expect(
+        ctx.events.filter(
+          (event) =>
+            event.type === "dispatch_completed" &&
+            event.id === "manual-dispatch-completed",
+        ),
+      ).toHaveLength(1);
+      const saved = await ctx.serverDeps.workItems!.report(
         workItem!.workItemId,
       );
-      expect(storedReport?.evidence.index).toContainEqual(
+      expect(saved?.evidence.index).toContainEqual(
         expect.objectContaining({
           evidenceId: screenshot!.evidenceId,
           confidence: "human-confirmed",

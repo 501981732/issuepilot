@@ -286,6 +286,98 @@ describe("reconcile", () => {
     expect(note).not.toContain("not reported");
   });
 
+  // V4.1 Workflow Spine: synthetic task runs share the dispatch / reconcile
+  // path but MUST NOT write the parent Issue's workpad handoff note or
+  // transition the parent Issue's workflow label. That responsibility moves
+  // to the WorkItem aggregator (handoff.ts in V4.1 task 11). The
+  // `parentIssueLabelMode: "suppressed"` flag is the explicit opt-out.
+  describe("V4.1 parentIssueLabelMode", () => {
+    it("defaults to 'active' so V2.x callers see no behaviour change", async () => {
+      await reconcile(baseInput(mocks));
+      expect(mocks.gitlab.transitionLabels).toHaveBeenCalledTimes(1);
+      expect(mocks.gitlab.findWorkpadNote).toHaveBeenCalledTimes(1);
+      expect(mocks.gitlab.createNote).toHaveBeenCalledTimes(1);
+    });
+
+    it("suppresses parent issue label transition AND workpad note when set to 'suppressed' (happy path with new commits)", async () => {
+      const input = baseInput(mocks);
+      input.parentIssueLabelMode = "suppressed";
+
+      const result = await reconcile(input);
+
+      // MR + push side-effects still happen — every task gets its own MR.
+      expect(mocks.git.push).toHaveBeenCalledTimes(1);
+      expect(mocks.gitlab.createMergeRequest).toHaveBeenCalledTimes(1);
+
+      // Parent Issue label is NOT touched.
+      expect(mocks.gitlab.transitionLabels).not.toHaveBeenCalled();
+
+      // Parent Issue workpad note is NOT touched.
+      expect(mocks.gitlab.findWorkpadNote).not.toHaveBeenCalled();
+      expect(mocks.gitlab.createNote).not.toHaveBeenCalled();
+      expect(mocks.gitlab.updateNote).not.toHaveBeenCalled();
+
+      // MR is still returned so the dispatch-task layer can record it on
+      // the canonical TaskRunLink.
+      expect(result.mergeRequest?.iid).toBe(100);
+      expect(result.hadNewCommits).toBe(true);
+      // `handoffNoteId` is intentionally absent when suppressed.
+      expect(result.handoffNoteId).toBeUndefined();
+
+      const eventTypes = mocks.events.map((e) => e.type);
+      expect(eventTypes).toContain("gitlab_push");
+      expect(eventTypes).toContain("gitlab_mr_created");
+      expect(eventTypes).not.toContain("gitlab_labels_transitioned");
+      expect(eventTypes).not.toContain("gitlab_workpad_note_created");
+      expect(eventTypes).not.toContain("gitlab_workpad_note_updated");
+    });
+
+    it("suppresses note + label even when there are no new commits but a no-code-change reason is supplied", async () => {
+      mocks.git.hasNewCommits.mockResolvedValue(false);
+      const input = baseInput(mocks);
+      input.parentIssueLabelMode = "suppressed";
+      input.noCodeChangeReason =
+        "Existing implementation already satisfies the task.";
+
+      const result = await reconcile(input);
+
+      expect(mocks.git.push).not.toHaveBeenCalled();
+      expect(mocks.gitlab.createMergeRequest).not.toHaveBeenCalled();
+      expect(mocks.gitlab.findWorkpadNote).not.toHaveBeenCalled();
+      expect(mocks.gitlab.createNote).not.toHaveBeenCalled();
+      expect(mocks.gitlab.updateNote).not.toHaveBeenCalled();
+      expect(mocks.gitlab.transitionLabels).not.toHaveBeenCalled();
+
+      expect(result.hadNewCommits).toBe(false);
+
+      const eventTypes = mocks.events.map((e) => e.type);
+      // reconcile_no_commits still fires so observers see the run finished.
+      expect(eventTypes).toContain("reconcile_no_commits");
+      expect(eventTypes).not.toContain("gitlab_labels_transitioned");
+      expect(eventTypes).not.toContain("gitlab_workpad_note_created");
+    });
+
+    it("still updates the MR description when a task run reuses an existing MR", async () => {
+      mocks.gitlab.findMergeRequest.mockResolvedValue({
+        iid: 99,
+        title: "old",
+        description: "old",
+      });
+      const input = baseInput(mocks);
+      input.parentIssueLabelMode = "suppressed";
+      await reconcile(input);
+
+      expect(mocks.gitlab.createMergeRequest).not.toHaveBeenCalled();
+      expect(mocks.gitlab.updateMergeRequest).toHaveBeenCalledWith(99, {
+        description: expect.stringContaining("Implementation summary"),
+      });
+      // Even though we reused an MR, parent-issue side-effects stay
+      // suppressed.
+      expect(mocks.gitlab.transitionLabels).not.toHaveBeenCalled();
+      expect(mocks.gitlab.createNote).not.toHaveBeenCalled();
+    });
+  });
+
   it("falls back to the noCodeChangeReason summary when agentSummary is empty and a report is provided", async () => {
     mocks.git.hasNewCommits.mockResolvedValue(false);
     const input = baseInput(mocks);

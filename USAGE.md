@@ -46,7 +46,8 @@ Visual versions:
   - [5.4 Phase 3 — CI status auto-flip](#54-phase-3--ci-status-auto-flip)
   - [5.5 Phase 4 — Review feedback sweep](#55-phase-4--review-feedback-sweep)
   - [5.6 Phase 5 — Workspace retention](#56-phase-5--workspace-retention)
-  - [5.7 Current V2 boundaries and gaps](#57-current-v2-boundaries-and-gaps)
+  - [5.7 V4.1 Workflow Spine — plan a large issue end to end](#57-v41-workflow-spine--plan-a-large-issue-end-to-end)
+  - [5.8 Current V2 boundaries and gaps](#58-current-v2-boundaries-and-gaps)
 - [Part 6 — Day-2 operations and troubleshooting](#part-6--day-2-operations-and-troubleshooting)
   - [6.1 Where to look](#61-where-to-look)
   - [6.2 Forensics for failed / blocked runs](#62-forensics-for-failed--blocked-runs)
@@ -773,7 +774,77 @@ Workspace cleanup dry-run
 temporary disable):
 [`docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md`](./docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md).
 
-### 5.7 Current V2 boundaries and gaps
+### 5.7 V4.1 Workflow Spine — plan a large issue end to end
+
+V4.1 turns IssuePilot from "one issue, one run" into a workbench that can
+break a large GitLab Issue into 2–5 ordered sub-tasks, dispatch one
+synthetic task run per sub-task (each with its own branch + MR), and
+ship a single Parent Review Packet back to the parent Issue.
+
+Operator workflow:
+
+1. In the **Command Center** (`/`), pick a run whose `issue.iid` points
+   at the large Issue you want IssuePilot to plan, and click
+   **Plan work item** in the right-hand inspector. The orchestrator
+   POSTs to `/api/issues/:iid/plan`, drafts a `TaskPlan` from the LLM,
+   and the dashboard hard-navigates to `/work-items/<id>`.
+2. On the **Work item detail** page (`/work-items/<id>`), review the
+   draft plan. While `plan.status === "draft"` you can:
+   - Click **Edit** to inline-edit `title` / `goal` / `scope` /
+     `dependsOn` / `suggestedValidation` per task.
+   - Click **Accept plan** — only operator-changed fields are POSTed,
+     `WorkItem.status` flips to `ready`, and orchestration immediately
+     dispatches every zero-dependency task whose concurrency slot is
+     free.
+   - Click **Regenerate** — the orchestrator marks the current draft
+     `superseded` and asks the planner for a fresh draft as a new
+     version.
+3. As each synthetic task run lands, watch the **Tasks** section group
+   tasks by their effective status (`ready` / `running` / `completed` /
+   `failed` / `blocked` / `needs_rework` / `blocked_by_dependency` /
+   `skipped`). Each row links to its MR; failed / needs-rework / blocked
+   rows expose **Retry**, blocked / blocked-by-dependency / failed rows
+   expose **Skip**.
+4. Once every task settles, the **Parent Review Packet** card renders
+   `WorkItemReport`: validation summary, risk summary, per-task cards
+   (diff, validation, risks, follow-ups, CI, MR, next action), evidence
+   index and recommended next actions. Use **Copy as Markdown** to drop
+   the same content into Slack / a code review thread.
+5. The orchestrator writes a single workpad note on the parent Issue
+   carrying the marker `<!-- issuepilot:work-item:<id> -->` so the same
+   note is updated on every reconciliation. When *every* required task
+   ends `completed`, IssuePilot transitions the parent Issue from
+   `ai-running` to `human-review`. Partial / failed outcomes leave the
+   parent label untouched and let the operator decide.
+
+CLI / direct HTTP equivalents (useful for scripting and CI checks):
+
+```bash
+# Draft a plan for a GitLab Issue iid
+curl -X POST -H 'content-type: application/json' \
+  -d '{"iid": 42}' \
+  http://127.0.0.1:4738/api/issues/42/plan
+
+# List all WorkItems with status counters
+curl http://127.0.0.1:4738/api/work-items
+
+# Read the latest aggregated WorkItemReport
+curl http://127.0.0.1:4738/api/work-items/<id>/report
+```
+
+V4.1 invariants worth knowing as an operator:
+
+- IssuePilot **never** creates child GitLab Issues; the parent Issue
+  stays the only tracked artefact, while every task gets its own MR.
+- Synthetic task runs **never** flip the parent Issue label; that is the
+  aggregator's job. If you see runs flipping the parent label, file a
+  bug — it would mean `parentIssueLabelMode: "suppressed"` was bypassed.
+- The dashboard **never** advertises `ready_to_merge` for a work item;
+  the strongest recommendation V4.1 emits is "请进入人工 review"
+  ("reviewer to inspect the linked MRs"). Auto-merge is reserved for
+  later phases.
+
+### 5.8 Current V2 boundaries and gaps
 
 The main V2 surface is complete. **Explicitly out of scope** for V2 (will be
 handled in V3 / V4):

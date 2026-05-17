@@ -25,6 +25,29 @@ describe("@issuepilot/shared-contracts/run", () => {
     );
   });
 
+  it("RunRecord.workItem carries V4.1 synthetic task metadata", () => {
+    const run: RunRecord = {
+      runId: "run_a",
+      issue: {
+        id: "1",
+        iid: 1,
+        title: "T",
+        url: "u",
+        projectId: "g/p",
+        labels: [],
+      },
+      status: "claimed",
+      attempt: 1,
+      branch: "ai/1",
+      workspacePath: "/tmp",
+      startedAt: "2026-05-17T00:00:00.000Z",
+      updatedAt: "2026-05-17T00:00:01.000Z",
+      workItem: { workItemId: "wi_01", taskId: "t1" },
+    };
+    expect(run.workItem?.taskId).toBe("t1");
+    expect(JSON.parse(JSON.stringify(run))).toEqual(run);
+  });
+
   it("isRunStatus narrows known strings and rejects unknown ones", () => {
     expect(isRunStatus("running")).toBe(true);
     expect(isRunStatus("nope")).toBe(false);

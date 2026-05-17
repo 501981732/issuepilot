@@ -4,9 +4,264 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 2026-05-17 — **V4.1 Workflow Spine code review fix**：补齐之前 review 发现的
+  4 个缺陷（2 个 Critical + 2 个 Important），使 V4.1 闭环在生产环境真正生效。
+  - **C1**（Critical）—— `apps/orchestrator/src/daemon.ts` 中的 V4.1
+    `dispatchTask` 之前是 no-op stub（注释里写着「lands in V4.2」），synthetic
+    task run 在生产里根本不跑。修复后通过 `runTaskOnce` shim 把
+    `parentIssueLabelMode: "suppressed"` 的 `DispatchInput` 接到真正的
+    `orchestrator/dispatch.ts`，按 V2.x 路径完成 mirror / worktree /
+    Codex agent / commits / MR / `RunReportArtifact`，但 `onFailure`
+    单独实现成「只 mark report failed，不动父 Issue label / note」以
+    维持 spec §11.2 的「合成 task 不允许越过 aggregator 触父 Issue」契约。
+    重 dispatch 异步 fire-and-forget，不阻塞 operator 的 HTTP 调用。
+    `runTaskOnce` 的接口同步收紧成 `dispatch: (input) => Promise<void>`（去掉
+    `deps` 参数），让 daemon 可以在 runId / branch 已知后再构造
+    DispatchDeps，避免把 `{} as never` 喂给 V2.x dispatch。
+  - **C2**（Critical）—— `daemon.ts` 的 `reconcileWorkItem`（service 调用
+    `skipTask` / `retryTask` 时走的路径）之前直接拿未变 `WorkItem` 调
+    `writeParentHandoff`，导致 `previousStatus === currentStatus`、
+    `decideParentLabelTransition` 永返回 `{ add: [], remove: [] }`，父
+    Issue label 永远卡在 `ai-running`。修复后改成
+    「aggregate → `decideWorkItemStatus(...)` → `saveWorkItem(updated)`
+    → `writeParentHandoff({ workItem: updated, previousStatus, ... })`」
+    与 `service.settleTaskRunFinal` 完全同构。`decideWorkItemStatus`
+    从 service.ts 导出供 daemon 复用，避免两条路径 drift。
+  - **I1**（Important）—— `service.acceptPlan` 之前对 operator `edits`
+    跳过 `validatePlanDraft`，cycles / unknown deps / 空 title 会被持久化成
+    `accepted`。修复后在 `applyEdits` 之后重跑校验，失败时返回
+    `validation_failed`。
+  - **I2**（Important）—— `decideWorkItemStatus` 把 `incomplete` 分支的
+    `someRunning ? "running" : "running"` 死代码三元清掉，改成显式
+    `return "running"` 并加注释解释「incomplete 总是当 in-flight 处理，
+    让父 Issue 抢到 `ai-running` label」。
+  - 测试新增：
+    - `service.test.ts` 加 `"acceptPlan rejects operator edits that
+      introduce a dependency cycle"` 与 `"... empty out a required
+      field"`，断言 `validation_failed.code` 与 plan 仍处于 `draft`。
+    - `work-items-e2e.test.ts` 加
+      `"operator skip path: reconcileWorkItem advances WorkItem.status
+      and emits the parent label transition (C2)"`，证明
+      reconcile 把 `WorkItem.status` 从 `ready` 推到 `running`、
+      `summaryReportId` 被写入、并在 `gitlab.transitionLabels` 里看到
+      `add: ["ai-running"], remove: ["ai-ready"]`（pre-fix 三个断言全部
+      会失败）。
+    - 同文件的 harness `reconcileWorkItem` 也按 C2 修正，跟 daemon 保持
+      同构。
+  - 验证：`pnpm -r build` / `pnpm -r typecheck` /
+    `pnpm -r lint --max-warnings 0` /
+    `pnpm -r test -- --maxWorkers=1 --minWorkers=1`（orchestrator 384 +
+    e2e 51 + dashboard 等）全部绿；`git diff --check` 干净。
+
+### Added
+
+- 2026-05-17 — **V4.1 Workflow Spine 闭环落地（任务 11–22）**。在已有的契约 +
+  store + planner + orchestration + aggregate 之上补齐 parent handoff、HTTP
+  路由、daemon 装配、dashboard UI、E2E 与文档收口，使一个大 GitLab Issue
+  能在 IssuePilot 内完成「拆解 → operator 接受 plan → 多个 synthetic task
+  run → 汇总报告 → 父 Issue 切到 `human-review`」的完整闭环（spec §16.5 / §17）。
+  - `apps/orchestrator/src/work-items/handoff.ts`：`writeParentHandoff` 是 V4.1
+    唯一允许动父 Issue label / handoff note 的地方，note 用
+    `<!-- issuepilot:work-item:<id> -->` marker 做幂等更新；
+    `decideParentLabelTransition` 把 `running → completed` 翻译成
+    `add: [handoffLabel], remove: [runningLabel]`，其余转移留给 operator。
+  - orchestrator 新增 8 条工作单元 HTTP 路由：`POST /api/issues/:iid/plan`、
+    `GET /api/work-items`、`GET /api/work-items/:id`、
+    `POST /api/work-items/:id/plan/accept`、
+    `POST /api/work-items/:id/plan/regenerate`、
+    `POST /api/work-items/:id/tasks/:taskId/skip|retry`、
+    `GET /api/work-items/:id/report`。所有 POST 透传
+    `x-issuepilot-operator` header，错误统一映射成 `not_found` / `invalid_iid` /
+    `validation_failed` / `planner_failed` / `work_items_unavailable`。
+  - `apps/orchestrator/src/work-items/service.ts` `createWorkItemService`
+    把 store / planner / orchestration / aggregate / handoff 装到一个 façade，
+    `settleTaskRunFinal` 监听 `dispatch_completed` / `dispatch_failed`，串起
+    "applyTaskRunFinal → aggregate → 更新 WorkItem.status → writeParentHandoff"
+    一条线；`apps/orchestrator/src/daemon.ts` 把它接到 Fastify server 与
+    eventBus 上，并通过 `taskRunIndex` 做 runId↔workItem 的反查。
+  - dashboard 新增 `apps/dashboard/lib/api.ts` work-item 客户端
+    （`planWorkItem` / `listWorkItems` / `getWorkItem` /
+    `acceptWorkItemPlan` / `regenerateWorkItemPlan` /
+    `skipWorkItemTask` / `retryWorkItemTask` / `getWorkItemReport`），
+    全部透传 operator header。
+  - dashboard 新增 `/work-items` 列表（按 6 种状态展示 counters + 表格，
+    空态、行点击进入详情）、`/work-items/[id]` 详情（顶部 WorkItem 元数据 +
+    `PlanEditor` + `TaskList` + `ParentReviewPacket`），并在顶栏导航与
+    Command Center inspector 暴露入口（`Plan work item` 按钮 → 调
+    `planWorkItem(iid)` 后硬导航到 `/work-items/<id>`）。
+  - `PlanEditor`：`plan.status === "draft"` 时支持
+    `title/goal/scope/dependsOn/suggestedValidation` 五个字段的
+    inline editing；接受时只 POST operator 改过的字段（diff against
+    snapshot）。一旦 plan accepted 就锁定，后续只能走 regenerate 起新版本。
+  - `TaskList`：按 effective status（TaskRunLink 优先 TaskNode）分组，
+    failed / needs_rework / blocked 行显示「Retry」，可跳过状态显示
+    「Skip」，draft plan 下两个按钮 disabled。
+  - `ParentReviewPacket`：把 `WorkItemReport` 映射成 status banner（complete
+    /partial/incomplete/draft）、validation summary、risks、每 task 卡片
+    （diff、validation、risks、follow-ups、CI、next action、MR 链接）、
+    open questions、recommended next actions 与 evidence index。
+    内置「Copy as Markdown」按钮把同样的内容复制到剪贴板，`renderMarkdown`
+    与 GitLab handoff note 同源；测试断言 V4.1 永远不输出
+    `ready_to_merge` 字样（spec §17）。
+  - 新增 `apps/orchestrator/src/__tests__/work-items-e2e.test.ts`：使用
+    real WorkItemStore + real planner / orchestration / aggregate /
+    handoff、fake GitLab + fake LLM + fake run dispatch，覆盖 happy path
+    （两 task 全 completed → 父 Issue label 进 `human-review`、note 含
+    work-item marker）、partial 路径（一 task fail → `WorkItem.status`
+    转 `partial`、父 Issue label 不进 `human-review`）、dependency 路径
+    （T2 dependsOn T1，T1 MR 仅 `opened` 未 merged → T2 保持
+    `blocked_by_dependency` 并 emit `task_run_blocked_by_dependency`）。
+  - i18n（`apps/dashboard/i18n/messages/{en,zh}.json`）补齐
+    `nav.workItems`、`workItems.*`（counters / columns / 空态 / 错误）、
+    `workItem.field.*` / `workItem.plan.*` / `workItem.tasks.*` /
+    `workItem.parentReviewPacket.*` / `workItem.action.*` 全集，中英双语
+    同步。
+  - 验证：`pnpm -r build` / `pnpm -r typecheck` / `pnpm -r lint`
+    （`--max-warnings 0`）/ `pnpm -r test`（orchestrator 381 + dashboard 131
+    + e2e 51 + 其它包）全绿；`git diff --check` 干净。
+  - 任务 22 验收清单：`docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine-acceptance.md`
+    给出 V4.1 §17 验收标准的逐项证据（E2E case、组件测试、reconcile
+    `parentIssueLabelMode: "suppressed"` 覆盖、`createIssue` 不调用、
+    全量 build/test/lint 通过、双语文档同步）。
+
+- 2026-05-17 — **V4.1 Workflow Spine 实施 plan 与首批契约落地**。
+  - 新增 `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`：
+    22 任务、TDD 流程的 bite-sized 实施计划，对齐 V4 设计 spec §7
+    V4.1、§9 数据模型、§16 测试策略、§17 验收标准；明确遵守 V4.1 task
+    execution contract（不创建 child Issue、per-task run 不动父 Issue
+    label、`TaskRunLink` 唯一 binding、父 Issue handoff 由 aggregator
+    统一写入）。
+  - 新增 `@issuepilot/shared-contracts` work-item 契约：`WorkItem` /
+    `TaskPlan` / `TaskNode` / `TaskRunLink` / `WorkItemReport`、状态枚举
+    （`planning|ready|running|partial|completed|blocked` 等）和 type
+    guard。`RiskLevel` 与 V2.5 `RunReportArtifact` 共用 `report.ts` 的
+    定义，避免在两处定义不同字面量。
+  - 注册 13 条 V4.1 事件类型：`work_item_created` /
+    `work_item_plan_drafted` / `work_item_plan_accepted` /
+    `work_item_plan_rejected` / `work_item_plan_regenerated` /
+    `work_item_planning_failed` / `task_run_dispatched` /
+    `task_run_completed` / `task_run_failed` / `task_run_skipped` /
+    `task_run_blocked_by_dependency` / `work_item_aggregated` /
+    `work_item_handoff_written`。
+  - 新增 V4.1 HTTP 响应类型：`WorkItemsListResponse`（counters 覆盖全部
+    `WorkItemStatus`）、`WorkItemDetailResponse`（plan history + tasks +
+    runLinks + 可选 report）、`PlanWorkItemRequest`、
+    `AcceptWorkItemPlanRequest`（带 operator edits 数组）、
+    `WorkItemReportResponse`。
+  - 新增 `apps/orchestrator/src/work-items/` 模块（store / planner /
+    validation 三件套）：
+    - `WorkItemStore`：file-backed JSON 持久化，按 spec §10 落到
+      `work-items/`、`task-plans/`、`task-run-links/<taskId>/`、
+      `work-item-reports/` 四个目录；内存缓存只是 fast path，所有写都过
+      `redact()` 落盘；`getCurrentPlan` 返回最高 version 非 `rejected`
+      的 plan；`listAllTaskRunLinks` 按 `WorkItem.taskIds` 反查每个
+      taskId 目录。
+    - `validatePlanDraft`：强制 2–5 任务、依赖图无环（DFS 三色法，含
+      self-loop）、所有 `dependsOn` 目标必须存在、`taskId` 必填且唯一、
+      `title` / `goal` 不能空白、`riskLevel` 必须在 `RISK_LEVEL_VALUES`
+      内；遇到第一条违规即返回稳定 code（i18n / 质量分析友好）。
+    - `WorkItemPlanner`：可注入 `callPlannerLlm` 的拆解器，把大 Issue
+      文本转成 `TaskPlan` draft；JSON 解析失败、LLM 抛错、validation
+      失败统一映射成稳定 code（`planner_call_failed` /
+      `planner_parse_failed` / forwarded validator codes）。
+  - `reconcile.ts` 引入 `parentIssueLabelMode: "active" | "suppressed"`：
+    V2.x 单 Issue→单 MR 路径保持 `"active"`（默认），自动写父 Issue
+    workpad handoff note 并切到 `human-review`；V4.1 synthetic task run
+    设为 `"suppressed"`，只走 push / create MR / update MR，**不**
+    写父 Issue note 也**不**切父 Issue label —— parent handoff 完全由
+    WorkItem aggregator（V4.1 任务 11）统一执行。已有 V2.x 调用方
+    无需改动（参数省略时退回 `"active"`）。
+- 2026-05-17 — **V4.1 任务 8–10：synthetic task run 编排与 WorkItemReport
+  聚合**。建立"plan → ready tasks → synthetic runs → 汇总报告"链路的
+  中间三层。
+  - 任务 8 — `apps/orchestrator/src/work-items/dispatch-task.ts`：synthetic
+    task run 的 dispatch 薄壳。生成新 `runId`、写 `RunRecord(status="claimed")`
+    并附带 `workItem: { workItemId, taskId }` 反向指针，构造任务级
+    branch（`<branch_prefix>/<iid>-<task-slug>`）以及任务级 prompt
+    vars（`workItem.taskId/.taskTitle/.taskGoal/.taskScope/.suggestedValidation/`
+    `.dependsOn/.dependenciesSummary/.riskLevel`），并把
+    `parentIssueLabelMode: "suppressed"` 透传给底层 `dispatch()`。事件
+    发射保留给 orchestration 层，避免 retry / replay 重复 emit。
+  - `apps/orchestrator/src/orchestrator/dispatch.ts` 配套扩展：
+    `DispatchInput` 新增 `parentIssueLabelMode?` 与 `extraPromptVars?`；
+    `DispatchDeps.reconcile` 同步暴露 `parentIssueLabelMode?`，dispatch
+    在调用 `deps.reconcile` 时把字段透传过去。`extraPromptVars` 在合并
+    时不会覆盖 `issue` / `workspace` / `git` / `attempt` 等 canonical key。
+    V2.x 既有调用方无须改动（默认值保持 V2 行为）。
+  - 任务 9 — `apps/orchestrator/src/work-items/orchestration.ts`：
+    plan → ready tasks → runs → status update 三段式纯函数 + I/O 边界。
+    - `computeReadyTasks(plan, links, upstreamMerged)`：纯函数，按
+      `planned/ready/blocked_by_dependency` 状态、活跃 TaskRunLink、
+      已完成 TaskRunLink 与 upstream MR 是否 merged 共同决定哪些任务
+      可以下发。`needs_rework` 不被自动重派，留给 operator 显式 retry。
+    - `tickWorkItem(workItem, plan, links, deps)`：单次 tick。先 await
+      每个 completed link 的 RunReport 拿 `mergeRequest.state`（spec
+      §12.4 的"upstream MR 未合并 → 下游保持 blocked"），再调
+      `computeReadyTasks`，按 `availableSlots()` 节流（V4.1 不引入
+      per-WorkItem 配额，先到先得）。每次成功 dispatch 都写
+      `running` TaskRunLink + `running` TaskNode + emit
+      `task_run_dispatched`；upstream 未 merge 的下游 emit
+      `task_run_blocked_by_dependency`；slot 不够的留到下次 tick，
+      返回值 `{ dispatched, blockedByDependency, blockedBySlots }`
+      让 dashboard 也能看出原因。
+    - `applyTaskRunFinal(input, deps)`：daemon 监听
+      `dispatch_completed` / `dispatch_failed` 后调用，把 RunReport
+      映射成 TaskNodeStatus（completed/failed/blocked，retrying/running
+      回退成 running），写 TaskRunLink（含 `mergeRequest.iid/.url`），
+      在 failed/blocked 时把 `lastError.message` 落进
+      TaskNode.statusReason，并 emit `task_run_completed` / `task_run_failed`
+      （V4.1 事件词表暂没有 `task_run_blocked`，run.blocked 走
+      `task_run_failed` 并在 detail 里保留 `status: "blocked"`，
+      与 `task_run_blocked_by_dependency` 区分语义）。
+  - 任务 10 — `apps/orchestrator/src/work-items/aggregate.ts`：
+    `aggregateWorkItem(workItem, plan, links, deps)` 把每个 task 的
+    `RunReportArtifact` 聚合成单一 `WorkItemReport`：
+    - `overallStatus` 矩阵：每个 task 都有 completed link + 报告 →
+      `complete`；任一 task 缺 link 或缺报告 → `incomplete`；其余存在
+      `failed`/`blocked`/`needs_rework`/`skipped` → `partial`。**任何**
+      情况下都不会输出 `ready_to_merge` 或自动 merge 建议（spec §17 硬
+      约束，单测断言整段 JSON 不含该字符串）。
+    - 每 task 一条 summary：标题、status（取最新 link 状态、回退到
+      TaskNode）、可选 `runId` / `diffSummary` / `mergeRequestUrl` /
+      `ciStatus` / `nextAction`。`nextAction` 仅在能给出有意义指引时
+      才写入（兼容 `exactOptionalPropertyTypes`）。
+    - Evidence 索引同时输出 `index`（扁平时间线）和 `byTask`（按 task
+      折叠卡片），覆盖 `diff` / `validation` / `risk` / `ci` /
+      `review_feedback` 五种 kind。
+    - `recommendedNextActions`：complete 推 reviewer 介入并切
+      human-review；partial 列出具体 failed / blocked / skipped 任务
+      建议 retry / 决策；incomplete 提示等待飞行任务结算后重新聚合。
+    - `validationSummary` / `riskSummary` 按 task 拼接成可读 markdown
+      行，给父 Issue handoff note 与 dashboard Parent Review Packet
+      共用同一份事实源。
+    - 取最新 TaskRunLink（按 `attempt`，平手按 `startedAt`）使重试结果
+      自然覆盖前次。
+  - 测试覆盖：dispatch-task 4 cases、orchestration 13 cases（ready 计算
+    / blocked / 并发限速 / 下游门控 / final 状态映射）、aggregate 7
+    cases（complete / partial / incomplete / 缺 link / never
+    ready_to_merge / evidence kind 索引 / 失败任务 next actions）。
+    全仓 `pnpm -r build` / `pnpm -r test` 通过（orchestrator 343、
+    e2e 51）。`git diff --check` 干净。
+
+### Fixed
+
+- 2026-05-17 — **V4.1 任务 1–7 code review 修复**。
+  - `apps/orchestrator/src/work-items/planner.ts`：收紧
+    `isRawPlanResponse` 的 element 校验，确保数组里 `null` / 字符串等
+    非对象 entry **也**被 funnel 到稳定错误码 `planner_parse_failed`，
+    而不是抛裸 `TypeError`。这一项守住 planner header 注释里承诺的
+    "所有 LLM/parse 失败都映射为稳定 code" 契约（V4 spec §12.1 拆解
+    失败）。补充 `planner.test.ts` 两个回归用例（`[null]`、字符串
+    entry）。
+  - `apps/orchestrator/src/work-items/store.ts`：移除 `loadPlansFromDisk`
+    里的空 `if (plan.workItemId === workItemId) {}` dead 块；把"为何
+    hot-load 整目录"的设计意图改写到函数顶部 leading comment。
+    `workItemId` 参数保留（call site 可读性），仅在体内显式标注未使用。
+
 ### Changed
 
-- 2026-05-17 — **Roadmap 重排：重新划清 V3 / V4 边界**（中英 README +
   主设计 spec 同步）。
   - **V3 收敛为生产化执行平台**：部署形态、worker、sandbox、身份权限、
     预算配额、Postgres 持久化、Webhook + poll、GitLab 审计 / secret 治理、

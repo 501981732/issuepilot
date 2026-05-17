@@ -4,10 +4,8 @@ import * as path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-  CentralWorkflowConfigError,
-  compileCentralWorkflowProject,
-} from "../central.js";
+import { compileCentralWorkflowProject } from "../central.js";
+import type { CentralWorkflowConfigError } from "../central.js";
 
 describe("central workflow config compiler", () => {
   let dir: string;

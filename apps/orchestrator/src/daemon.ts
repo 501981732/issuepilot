@@ -71,7 +71,22 @@ import { createReportStore } from "./reports/store.js";
 import { createRunCancelRegistry } from "./runtime/run-cancel-registry.js";
 import { createConcurrencySlots } from "./runtime/slots.js";
 import { createRuntimeState, type RuntimeState } from "./runtime/state.js";
-import { createServer } from "./server/index.js";
+import { createServer, type WorkItemService } from "./server/index.js";
+import { aggregateWorkItem } from "./work-items/aggregate.js";
+import { runTaskOnce } from "./work-items/dispatch-task.js";
+import { writeParentHandoff } from "./work-items/handoff.js";
+import {
+  createWorkItemPlanner,
+  type RawPlanResponse,
+  type WorkItemPlanner,
+} from "./work-items/planner.js";
+import {
+  createWorkItemService,
+  decideWorkItemStatus,
+  settleTaskRunFinal,
+  tickWorkItem as tickWorkItemImpl,
+} from "./work-items/service.js";
+import { createWorkItemStore } from "./work-items/store.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4738;
@@ -120,6 +135,13 @@ export interface StartDaemonDeps {
   startLoop?: typeof startLoop | undefined;
   state?: RuntimeState | undefined;
   eventBus?: EventBus<OrchestratorEvent> | undefined;
+  /**
+   * V4.1 Workflow Spine: override the planner to skip the real Codex
+   * call. Tests inject a fake that returns a deterministic plan; in
+   * production we fall back to a Codex-backed planner spawned with a
+   * single-turn JSON prompt.
+   */
+  workItemPlanner?: WorkItemPlanner | undefined;
 }
 
 function runKey(
@@ -404,6 +426,29 @@ function readyLabel(workflow: WorkflowConfig): string {
   return workflow.tracker.activeLabels[0] ?? "ai-ready";
 }
 
+/**
+ * Default planner used when no override is supplied. The real
+ * single-workflow daemon currently does not run a Codex single-turn
+ * planner directly (that would require its own RPC handle and a
+ * stable JSON contract); we keep the surface present but fail
+ * deterministically with `planner_call_failed` so the V4.1 HTTP
+ * routes still return a structured 500 to dashboards instead of
+ * crashing the process. Tests inject a real fake planner via
+ * `deps.workItemPlanner`.
+ *
+ * Spec §7.V4.1 calls this out explicitly: the planner Codex contract
+ * lands later in V4.2 once the planner-prompt template stabilises.
+ */
+function createDefaultWorkItemPlanner(): WorkItemPlanner {
+  return createWorkItemPlanner({
+    callPlannerLlm: async (): Promise<RawPlanResponse | string> => {
+      throw new Error(
+        "WorkItemPlanner is not configured for this workflow. Provide deps.workItemPlanner or configure a planner runner.",
+      );
+    },
+  });
+}
+
 async function readLogTail(logFile: string, limit = 200): Promise<string[]> {
   try {
     const content = await fs.readFile(logFile, "utf-8");
@@ -436,6 +481,20 @@ export async function startDaemon(
   const reportStore = createReportStore({
     rootDir: path.join(workflow.workspace.root, ".issuepilot"),
   });
+  // V4.1 Workflow Spine: WorkItem / TaskPlan / TaskRunLink artifacts live
+  // alongside reports under `.issuepilot/` so support tarballs capture
+  // them too. The planner uses a default "we cannot run Codex from here"
+  // fallback so single-workflow daemons that do not opt in still expose
+  // the V4.1 routes (returning planner_failed) instead of crashing.
+  const workItemStore = createWorkItemStore({
+    rootDir: path.join(workflow.workspace.root, ".issuepilot"),
+  });
+  const workItemPlanner =
+    deps.workItemPlanner ?? createDefaultWorkItemPlanner();
+  const taskRunIndex = new Map<
+    string,
+    { workItemId: string; taskId: string }
+  >();
   const runIndex = new Map<string, { projectSlug: string; issueIid: number }>();
   const runCancelRegistry = createRunCancelRegistry();
 
@@ -663,6 +722,546 @@ export async function startDaemon(
   let lastWorkspaceUsageGb: number | undefined;
   let nextWorkspaceCleanupAt: string | undefined;
 
+  const workItemHandoffWorkflow = (() => ({
+    runningLabel: workflow.tracker.runningLabel,
+    handoffLabel: workflow.tracker.handoffLabel,
+    reworkLabel: workflow.tracker.reworkLabel,
+    blockedLabel: workflow.tracker.blockedLabel,
+    readyLabel: readyLabel(workflow),
+  }));
+
+  const workItems: WorkItemService = createWorkItemService({
+    store: workItemStore,
+    planner: workItemPlanner,
+    fetchIssue: async (iid) => {
+      const fullIssue = await gitlab.getIssue(iid);
+      return {
+        iid: fullIssue.iid,
+        title: fullIssue.title,
+        description: fullIssue.description ?? "",
+        url: fullIssue.url,
+        projectId: fullIssue.projectId,
+        labels: [...fullIssue.labels],
+      };
+    },
+    tick: async (wi) => {
+      const plan = await workItemStore.getCurrentPlan(wi.workItemId);
+      if (!plan || plan.status !== "accepted") return;
+      const links = await workItemStore.listAllTaskRunLinks(wi.workItemId);
+      await tickWorkItemImpl(wi, plan, links, {
+        availableSlots: () => slots.available(),
+        getRunReport: (runId) => reportStore.get(runId),
+        dispatchTask: async (task) => {
+          // V4.1 review C1 fix: synthetic task runs now go through the
+          // real V2.x dispatch path with `parentIssueLabelMode:
+          // "suppressed"` (set by `runTaskOnce` on the DispatchInput).
+          // The shim mints `runId` + `branch`, then we build the
+          // DispatchDeps closure around them and call the same
+          // `dispatch()` that V2.x runs use — so we get mirror /
+          // worktree / Codex agent / commits / MR / RunReportArtifact
+          // exactly like a normal Issue run, minus parent-label /
+          // workpad-note writes (which are reconcile.ts's job and
+          // are gated on `parentIssueLabelMode`).
+          //
+          // Two V4.1-specific deltas vs the V2.x dispatch wiring:
+          //   1. `onFailure` does NOT call
+          //      gitlab.transitionLabels(parentIssueIid, ...) — that
+          //      would defeat the suppression invariant. Instead we
+          //      mark the report as failed; the bus listener picks up
+          //      `dispatch_failed`, runs `settleTaskRunFinal`, which
+          //      aggregates and writes (or doesn't write) the parent
+          //      handoff via the WorkItem aggregator alone.
+          //   2. We pre-seed an "initial" RunReportArtifact under the
+          //      synthetic runId so reconcile / failure paths can
+          //      update it instead of guarding for missing reports
+          //      (mirroring V2.x claim-time seeding).
+          const issue = wi.sourceIssue;
+          const parentProjectSlug = slugify(issue.projectId);
+          const titleSlug = slugify(task.title);
+
+          const { runId, branch } = await runTaskOnce({
+            workItem: wi,
+            task,
+            workflow: {
+              git: workflow.git,
+              workspace: workflow.workspace,
+              tracker: {
+                runningLabel: workflow.tracker.runningLabel,
+                handoffLabel: workflow.tracker.handoffLabel,
+                reworkLabel: workflow.tracker.reworkLabel,
+              },
+              ...(workflow.hooks ? { hooks: workflow.hooks } : {}),
+            },
+            promptTemplate: workflow.promptTemplate,
+            state,
+            dispatch: async (input) => {
+              taskRunIndex.set(input.runId, {
+                workItemId: wi.workItemId,
+                taskId: task.taskId,
+              });
+
+              // Seed the initial RunReportArtifact so downstream
+              // updaters (`reconcile`, `markReportFailed`,
+              // `settleTaskRunFinal`) operate on an existing record
+              // rather than racing on `reportStore.get()` returning
+              // undefined. Mirrors V2.x claim seeding (line ~1085).
+              try {
+                const initialReport = createInitialReport({
+                  runId: input.runId,
+                  issue: {
+                    iid: issue.iid,
+                    title: issue.title,
+                    url: issue.url,
+                    projectId: issue.projectId,
+                    labels: [],
+                  },
+                  status: "running",
+                  attempt: 1,
+                  branch: input.branch,
+                  workspacePath: "",
+                  startedAt: new Date().toISOString(),
+                });
+                await reportStore.save(initialReport);
+              } catch (err) {
+                publishEvent({
+                  type: "report_seed_failed",
+                  runId: input.runId,
+                  ts: new Date().toISOString(),
+                  detail: {
+                    reason: err instanceof Error ? err.message : String(err),
+                    workItemId: wi.workItemId,
+                    taskId: task.taskId,
+                  },
+                });
+              }
+
+              // dispatch() drives mirror → worktree → Codex → reconcile
+              // and can take minutes. tickWorkItem (and therefore the
+              // operator-facing `acceptPlan` HTTP request) must NOT
+              // block on it; instead we fire-and-forget. dispatch.ts's
+              // own try/catch turns terminal errors into `onFailure` +
+              // `dispatch_failed` events, which the bus listener turns
+              // into `settleTaskRunFinal`. The .catch here is a final
+              // safety net for unexpected throws outside dispatch.ts's
+              // own envelope.
+              void (async () => {
+                try {
+                  await dispatch(input, buildDeps());
+                } catch (err) {
+                  publishEvent({
+                    type: "task_run_dispatch_uncaught",
+                    runId: input.runId,
+                    ts: new Date().toISOString(),
+                    detail: {
+                      reason:
+                        err instanceof Error ? err.message : String(err),
+                      workItemId: wi.workItemId,
+                      taskId: task.taskId,
+                    },
+                  });
+                }
+              })();
+
+              function buildDeps(): Parameters<typeof dispatch>[1] {
+                return {
+                state,
+                maxAttempts: workflow.agent.maxAttempts,
+                retryBackoffMs: workflow.agent.retryBackoffMs,
+                ensureMirror: async (opts) =>
+                  ensureMirror({
+                    repoUrl: opts.remoteUrl,
+                    projectSlug: parentProjectSlug,
+                    repoCacheRoot: opts.repoCacheRoot,
+                  }),
+                ensureWorktree: async (opts) => {
+                  const result = await ensureWorktree({
+                    mirrorPath: opts.mirrorPath,
+                    projectSlug: parentProjectSlug,
+                    issueIid: issue.iid,
+                    titleSlug,
+                    baseBranch: opts.baseBranch,
+                    branchPrefix: workflow.git.branchPrefix,
+                    workspaceRoot: opts.worktreeRoot,
+                  });
+                  return {
+                    worktreePath: result.workspacePath,
+                    created: !result.reused,
+                  };
+                },
+                runHook: (opts) =>
+                  runHook({
+                    cwd: opts.cwd,
+                    name: opts.name,
+                    script: opts.script,
+                    env: opts.env ?? {},
+                  }),
+                renderPrompt: (opts) =>
+                  workflowLoader.render(
+                    opts.template,
+                    opts.vars as unknown as PromptContext,
+                  ),
+                runAgent: async (opts) => {
+                  const cmd = splitCommand(workflow.codex.command);
+                  const rpc = spawnRpc({ ...cmd, cwd: opts.cwd });
+                  const gitlabToolsAdapter = {
+                    getIssue: async (iid: number) => {
+                      const fullIssue = await gitlab.getIssue(iid);
+                      return {
+                        ...fullIssue,
+                        labels: [...fullIssue.labels],
+                      };
+                    },
+                    transitionLabels: gitlab.transitionLabels,
+                    createIssueNote: gitlab.createIssueNote,
+                    updateIssueNote: (
+                      iid: number,
+                      noteId: number,
+                      update: { body: string },
+                    ) => gitlab.updateIssueNote(iid, noteId, update.body),
+                    createMergeRequest: gitlab.createMergeRequest,
+                    updateMergeRequest: gitlab.updateMergeRequest,
+                    getMergeRequest: gitlab.getMergeRequest,
+                    listMergeRequestNotes: gitlab.listMergeRequestNotes,
+                    getPipelineStatus: gitlab.getPipelineStatus,
+                  };
+                  try {
+                    const result = await driveLifecycle({
+                      rpc,
+                      maxTurns: workflow.agent.maxTurns,
+                      prompt: opts.prompt,
+                      title: issue.title,
+                      cwd: opts.cwd,
+                      threadName: `${workflow.tracker.projectId}#${issue.iid}/${task.taskId}`,
+                      sandboxType: workflow.codex.threadSandbox,
+                      approvalPolicy: workflow.codex.approvalPolicy,
+                      turnSandboxPolicy: workflow.codex.turnSandboxPolicy,
+                      turnTimeoutMs: workflow.codex.turnTimeoutMs,
+                      tools: createGitLabTools(gitlabToolsAdapter, {
+                        id: String(issue.iid),
+                        iid: issue.iid,
+                        title: issue.title,
+                        url: issue.url,
+                        projectId: issue.projectId,
+                        labels: [],
+                      }),
+                      onEvent: (type, data) =>
+                        publishEvent({
+                          type: `codex_${type}`,
+                          runId: input.runId,
+                          ts: new Date().toISOString(),
+                          detail: { data },
+                        }),
+                      onTurnActive: (cancel) =>
+                        runCancelRegistry.register(input.runId, cancel),
+                    });
+                    return {
+                      status: result.status,
+                      summary: result.failureReason,
+                    };
+                  } finally {
+                    runCancelRegistry.unregister(input.runId);
+                    await rpc.close();
+                  }
+                },
+                reconcile: async (opts) => {
+                  const report = await reportStore.get(opts.runId);
+                  const result = await reconcile({
+                    ...opts,
+                    ...(report ? { report } : {}),
+                    git: {
+                      hasNewCommits,
+                      push: pushBranch,
+                    },
+                    gitlab: {
+                      findMergeRequest: (sourceBranch) =>
+                        gitlab.findMergeRequestBySourceBranch(sourceBranch),
+                      createMergeRequest: (mrOpts) =>
+                        gitlab.createMergeRequest({
+                          ...mrOpts,
+                          issueIid: opts.iid,
+                        }),
+                      updateMergeRequest: (mrIid, updates) =>
+                        gitlab.updateMergeRequest(mrIid, updates),
+                      findWorkpadNote: (issueIid, marker) =>
+                        gitlab.findWorkpadNote(issueIid, marker),
+                      createNote: (issueIid, body) =>
+                        gitlab.createIssueNote(issueIid, body),
+                      updateNote: (issueIid, noteId, body) =>
+                        gitlab.updateIssueNote(issueIid, noteId, body),
+                      transitionLabels: async (iid, labelOpts) => {
+                        await gitlab.transitionLabels(iid, labelOpts);
+                      },
+                    },
+                    onEvent: publishEvent,
+                  });
+                  if (report) {
+                    const merged = mergeAgentHandoffIntoReport(
+                      report,
+                      {
+                        reworkLabel: opts.reworkLabel,
+                        ...(opts.agentSummary !== undefined
+                          ? { agentSummary: opts.agentSummary }
+                          : {}),
+                        ...(opts.agentValidation !== undefined
+                          ? { agentValidation: opts.agentValidation }
+                          : {}),
+                        ...(opts.agentRisks !== undefined
+                          ? { agentRisks: opts.agentRisks }
+                          : {}),
+                        ...(opts.noCodeChangeReason !== undefined
+                          ? { noCodeChangeReason: opts.noCodeChangeReason }
+                          : {}),
+                      },
+                      result.mergeRequest
+                        ? {
+                            iid: result.mergeRequest.iid,
+                            ...(result.mergeRequest.webUrl
+                              ? { webUrl: result.mergeRequest.webUrl }
+                              : {}),
+                          }
+                        : null,
+                    );
+                    const nextReport = {
+                      ...merged,
+                      run: {
+                        ...merged.run,
+                        ...(opts.workspacePath &&
+                        opts.workspacePath !== merged.run.workspacePath
+                          ? { workspacePath: opts.workspacePath }
+                          : {}),
+                      },
+                      notes: {
+                        ...merged.notes,
+                        ...(result.handoffNoteId !== undefined
+                          ? { handoffNoteId: result.handoffNoteId }
+                          : {}),
+                      },
+                    };
+                    await reportStore.save(nextReport);
+                  }
+                  return result;
+                },
+                onEvent: publishEvent,
+                // V4.1 onFailure deliberately does NOT touch the
+                // parent Issue label or write a parent-Issue failure
+                // note — that would violate the
+                // `parentIssueLabelMode: "suppressed"` invariant
+                // (synthetic task runs are only allowed to influence
+                // the parent Issue via the WorkItem aggregator). We
+                // just persist the failed report so
+                // `settleTaskRunFinal` (the dispatch_failed bus
+                // listener) sees it; the listener then aggregates
+                // and lets `decideParentLabelTransition` decide the
+                // parent label, which for `partial`/`blocked`
+                // outcomes is intentionally a no-op.
+                onFailure: async (
+                  failedRunId,
+                  classification,
+                  _attempt,
+                ) => {
+                  try {
+                    const report = await reportStore.get(failedRunId);
+                    if (report) {
+                      const failedReport = markReportFailed(report, {
+                        status:
+                          classification.kind === "blocked"
+                            ? "blocked"
+                            : "failed",
+                        endedAt: new Date().toISOString(),
+                        lastError: {
+                          code: classification.code,
+                          message: classification.reason,
+                          classification:
+                            classification.kind === "blocked"
+                              ? "blocked"
+                              : classification.kind === "retryable"
+                                ? "failed"
+                                : classification.kind,
+                        },
+                      });
+                      await reportStore.save(failedReport);
+                    }
+                  } catch (err) {
+                    publishEvent({
+                      type: "report_failure_update_failed",
+                      runId: failedRunId,
+                      ts: new Date().toISOString(),
+                      detail: {
+                        reason:
+                          err instanceof Error ? err.message : String(err),
+                        workItemId: wi.workItemId,
+                        taskId: task.taskId,
+                      },
+                    });
+                  }
+                },
+                };
+              }
+            },
+          });
+          taskRunIndex.set(runId, {
+            workItemId: wi.workItemId,
+            taskId: task.taskId,
+          });
+          return { runId, branch };
+        },
+        saveTaskRunLink: (link) => workItemStore.saveTaskRunLink(link),
+        saveTaskNode: async (taskId, patch) => {
+          const current = await workItemStore.getCurrentPlan(wi.workItemId);
+          if (!current) return;
+          const nextTasks = current.tasks.map((t) =>
+            t.taskId === taskId ? { ...t, ...patch } : t,
+          );
+          await workItemStore.saveTaskPlan({
+            ...current,
+            tasks: nextTasks,
+          });
+        },
+        emit: publishEvent,
+      });
+    },
+    reconcileWorkItem: async (workItemId) => {
+      // V4.1: re-run aggregate + handoff against whatever links are
+      // already on disk. Called by the service layer for operator
+      // actions (skipTask / retryTask) so the dashboard sees the new
+      // aggregate immediately and — critically — so the parent Issue
+      // label can flip when the operator's action satisfies the
+      // "all required tasks completed" condition.
+      //
+      // V4.1 review C2 fix: previously this path called
+      // writeParentHandoff with the unmutated `wi`, so
+      // `previousStatus === currentStatus` and
+      // decideParentLabelTransition always returned an empty
+      // transition. After an operator skipped the last failing task
+      // the WorkItem aggregator reported `complete` but the parent
+      // Issue stayed `ai-running` forever. We now mirror the
+      // status-update + handoff sequence used by `settleTaskRunFinal`
+      // so both code paths produce identical observable behaviour.
+      const wi = await workItemStore.getWorkItem(workItemId);
+      const plan = await workItemStore.getCurrentPlan(workItemId);
+      if (!wi || !plan) return;
+      const links = await workItemStore.listAllTaskRunLinks(workItemId);
+      const ts = new Date().toISOString();
+
+      const report = await aggregateWorkItem(wi, plan, links, {
+        getRunReport: (runId) => reportStore.get(runId),
+      });
+      await workItemStore.saveReport(report);
+      // Note: settleTaskRunFinal already emits `work_item_aggregated`
+      // when a synthetic-run settle path triggers reconcileWorkItem.
+      // For service-level callers (skipTask / retryTask) the
+      // `work_item_handoff_written` event below is enough — it carries
+      // the same workItemId + outcome information observers need, and
+      // skipping the duplicate avoids flooding the parent Issue's
+      // event log on every operator click.
+
+      const previousStatus = wi.status;
+      const nextStatus = decideWorkItemStatus(
+        report.overallStatus,
+        plan,
+        links,
+      );
+      const updated = {
+        ...wi,
+        status: nextStatus,
+        summaryReportId: report.workItemId,
+        updatedAt: ts,
+      };
+      await workItemStore.saveWorkItem(updated);
+
+      await writeParentHandoff({
+        workItem: updated,
+        plan,
+        report,
+        previousStatus,
+        workflow: workItemHandoffWorkflow(),
+        deps: {
+          gitlab: {
+            findWorkpadNote: gitlab.findWorkpadNote,
+            createNote: gitlab.createIssueNote,
+            updateNote: gitlab.updateIssueNote,
+            transitionLabels: async (iid, labelOpts) => {
+              await gitlab.transitionLabels(iid, labelOpts);
+            },
+          },
+          emit: publishEvent,
+        },
+      });
+    },
+    emit: publishEvent,
+  });
+
+  // V4.1 §11: subscribe to dispatch_completed / dispatch_failed events
+  // for synthetic task runs and walk them through the
+  // orchestration/aggregate/handoff path. Recognised by reading the
+  // RunRecord for `workItem`. Non-task runs are ignored.
+  eventBus.subscribe(async (record) => {
+    if (
+      record.type !== "dispatch_completed" &&
+      record.type !== "dispatch_failed"
+    ) {
+      return;
+    }
+    const run = state.getRun(record.runId);
+    const wiMeta =
+      (run as { workItem?: { workItemId: string; taskId: string } } | undefined)
+        ?.workItem ?? taskRunIndex.get(record.runId);
+    if (!wiMeta) return;
+    try {
+      const report = await reportStore.get(record.runId);
+      if (!report) return;
+      await settleTaskRunFinal(
+        {
+          workItemId: wiMeta.workItemId,
+          taskId: wiMeta.taskId,
+          runId: record.runId,
+          runReport: report,
+        },
+        {
+          store: workItemStore,
+          aggregateDeps: { getRunReport: (id) => reportStore.get(id) },
+          parentHandoff: {
+            gitlab: {
+              findWorkpadNote: gitlab.findWorkpadNote,
+              createNote: gitlab.createIssueNote,
+              updateNote: gitlab.updateIssueNote,
+              transitionLabels: async (iid, labelOpts) => {
+                await gitlab.transitionLabels(iid, labelOpts);
+              },
+            },
+            emit: publishEvent,
+          },
+          workflow: workItemHandoffWorkflow(),
+          emit: publishEvent,
+          saveTaskRunLink: (link) => workItemStore.saveTaskRunLink(link),
+          saveTaskNode: async (taskId, patch) => {
+            const current = await workItemStore.getCurrentPlan(
+              wiMeta.workItemId,
+            );
+            if (!current) return;
+            const nextTasks = current.tasks.map((t) =>
+              t.taskId === taskId ? { ...t, ...patch } : t,
+            );
+            await workItemStore.saveTaskPlan({
+              ...current,
+              tasks: nextTasks,
+            });
+          },
+        },
+      );
+    } catch (err) {
+      publishEvent({
+        type: "work_item_settle_failed",
+        runId: record.runId,
+        ts: new Date().toISOString(),
+        detail: {
+          reason: err instanceof Error ? err.message : String(err),
+          ...wiMeta,
+        },
+      });
+    }
+  });
+
   const serverFactory = deps.createServer ?? createServer;
   const app = await serverFactory(
     {
@@ -675,6 +1274,7 @@ export async function startDaemon(
       concurrency: workflow.agent.maxConcurrentAgents,
       workspaceUsageGb: () => lastWorkspaceUsageGb,
       nextCleanupAt: () => nextWorkspaceCleanupAt,
+      workItems,
       readEvents: async (runId, readOpts) => {
         const key = runIndex.get(runId);
         if (!key) return [];

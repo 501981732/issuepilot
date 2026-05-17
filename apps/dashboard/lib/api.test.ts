@@ -2,14 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
+  acceptWorkItemPlan,
   archiveRun,
   getRunDetail,
   getState,
+  getWorkItem,
+  getWorkItemReport,
   listEvents,
   listReports,
   listRuns,
+  listWorkItems,
+  planWorkItem,
+  regenerateWorkItemPlan,
   resolveApiBase,
   retryRun,
+  retryWorkItemTask,
+  skipWorkItemTask,
   stopRun,
 } from "./api";
 
@@ -271,5 +279,124 @@ describe("operator action clients", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const headers = new Headers(init.headers ?? undefined);
     expect(headers.get("x-issuepilot-operator")).toBe("alice");
+  });
+});
+
+describe("V4.1 work item client", () => {
+  it("planWorkItem POSTs /api/issues/:iid/plan with body", async () => {
+    const fetchMock = mockFetch({
+      workItem: { workItemId: "wi_01" },
+      plan: { planId: "tp_01" },
+    });
+    const result = await planWorkItem(42, { regenerate: true });
+    expect(result.workItem.workItemId).toBe("wi_01");
+    const url = fetchMock.mock.calls[0]?.[0];
+    expect(url).toBe(`${FAKE_BASE}/api/issues/42/plan`);
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ iid: 42, regenerate: true });
+  });
+
+  it("planWorkItem propagates operator header", async () => {
+    const fetchMock = mockFetch({ workItem: {}, plan: {} });
+    await planWorkItem(42, {}, { operator: "alice" });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-operator")).toBe("alice");
+  });
+
+  it("listWorkItems GETs /api/work-items and returns counters", async () => {
+    const fetchMock = mockFetch({
+      workItems: [{ workItemId: "wi_01" }],
+      counters: {
+        planning: 0,
+        ready: 1,
+        running: 0,
+        partial: 0,
+        completed: 0,
+        blocked: 0,
+      },
+    });
+    const result = await listWorkItems();
+    expect(result.counters.ready).toBe(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("getWorkItem GETs /api/work-items/:id", async () => {
+    const fetchMock = mockFetch({
+      workItem: { workItemId: "wi_01" },
+      plan: { current: { planId: "tp_01" }, history: [] },
+      tasks: [],
+      runLinks: [],
+    });
+    const result = await getWorkItem("wi_01");
+    expect(result.workItem.workItemId).toBe("wi_01");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("acceptWorkItemPlan POSTs accept body with edits + planId", async () => {
+    const fetchMock = mockFetch({ workItem: {}, plan: {} });
+    await acceptWorkItemPlan(
+      "wi_01",
+      {
+        planId: "tp_01",
+        edits: [{ taskId: "t1", field: "title", after: "X" }],
+        operator: "alice",
+      },
+      { operator: "alice" },
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/plan/accept`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      planId: "tp_01",
+      edits: [{ taskId: "t1", field: "title", after: "X" }],
+      operator: "alice",
+    });
+  });
+
+  it("regenerateWorkItemPlan POSTs /plan/regenerate with empty body", async () => {
+    const fetchMock = mockFetch({ workItem: {}, plan: {} });
+    await regenerateWorkItemPlan("wi_01");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/plan/regenerate`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("skipWorkItemTask POSTs /tasks/:taskId/skip", async () => {
+    const fetchMock = mockFetch({ ok: true });
+    await skipWorkItemTask("wi_01", "t1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/tasks/t1/skip`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("retryWorkItemTask POSTs /tasks/:taskId/retry", async () => {
+    const fetchMock = mockFetch({ ok: true });
+    await retryWorkItemTask("wi_01", "t1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/tasks/t1/retry`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("getWorkItemReport GETs /report and returns optional report", async () => {
+    const fetchMock = mockFetch({ report: undefined });
+    const result = await getWorkItemReport("wi_01");
+    expect(result.report).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/report`,
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 });

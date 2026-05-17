@@ -107,6 +107,22 @@ export const EVENT_TYPE_VALUES = [
   "workspace_cleanup_planned",
   "workspace_cleanup_completed",
   "workspace_cleanup_failed",
+  // V4.1 work item lifecycle
+  "work_item_created",
+  "work_item_plan_drafted",
+  "work_item_plan_accepted",
+  "work_item_plan_rejected",
+  "work_item_plan_regenerated",
+  "work_item_planning_failed",
+  // V4.1 synthetic task runs
+  "task_run_dispatched",
+  "task_run_completed",
+  "task_run_failed",
+  "task_run_skipped",
+  "task_run_blocked_by_dependency",
+  // V4.1 aggregation + parent handoff
+  "work_item_aggregated",
+  "work_item_handoff_written",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPE_VALUES)[number];

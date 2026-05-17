@@ -543,6 +543,10 @@ P0 不暴露任意 GitLab REST 或 GraphQL。
 - 不支持的工具 fast-fail，不能卡住 runner
 - tool schema 使用明确 JSON schema，在 `thread/start` 传给 app-server
 
+边界：IssuePilot 不是纯 toolchain 写入模型。agent 可以通过 allowlist tools 完成
+正常 handoff；orchestrator 仍拥有认领、post-run reconciliation、失败 / 阻塞 /
+closing note、label transition，以及 MR / note / label 兜底写入等确定性平台动作。
+
 GitLab tools 用于让 agent 正常完成 issue handoff。orchestrator 仍保留 deterministic post-run reconciliation。
 
 ## 12. Post-Run Reconciliation
@@ -1056,6 +1060,10 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
 是否真正提升交付质量，再把已经验证的能力平台化。
 
 ### V4：智能研发工作台
+
+V4 的详细设计以
+`docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+为准；该文件同时记录了“先做 V4，再做 V3”的 roadmap 决策。本节只保留产品路线摘要。
 
 目标：先在现有 V2.x 本地 / 团队 runtime 上，超越“单 Issue 单 run”模型，
 成为能理解、拆解、编排和改进研发流程的智能工作台。V4 不负责部署、权限、

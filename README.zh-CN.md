@@ -18,6 +18,17 @@ IssuePilot 是一个开源的本地 AI 工程调度器，用 GitLab Issue 驱动
 Request 的形式交给人工 Review；人工 merge 该 MR 后，IssuePilot 会自动关闭
 对应的 GitLab Issue。
 
+## 产品定位
+
+IssuePilot 的定位是和 Harness Engineer 互补的研发流程层。有 Harness Engineer
+的项目里，Harness Engineer 继续负责仓库内的工程规则、代码约束、验证矩阵、
+实现纪律和局部执行质量；IssuePilot 负责跨 Issue / 多 run 的流程编排、状态
+管理、报告、证据、review feedback 和持续改进闭环。
+
+没有 Harness Engineer 的项目也可以直接使用 IssuePilot。此时
+`issuepilot-config/`、workflow profile、repo-local rules 和 skills 构成最小
+工程约束层，IssuePilot 仍然提供任务拆解、编排、Review Packet 和可审计证据。
+
 ### 核心亮点
 
 - **Issue 驱动的工作认领**：监听 GitLab Issue 看板，自动认领带 `ai-ready`
@@ -34,8 +45,8 @@ Request 的形式交给人工 Review；人工 merge 该 MR 后，IssuePilot 会�
   via `tracker.token_env` 的环境变量路径。
 - **本地单机闭环**:`~/.issuepilot` 下落盘的 worktree + JSONL + run record，
   daemon 重启可恢复 reconciliation，不依赖外部数据库。
-- **与 harness engineering 互补**：面向已经做好 agent harness 的成熟项目使用
-  ——IssuePilot 负责调度与隔离，仓库内 `WORKFLOW.md` 描述提示词与策略。
+- **与 Harness Engineer 互补**：既能和已有 Harness Engineer 的成熟项目配合，
+  也能作为没有 Harness Engineer 项目的本地流程平台直接使用。
 - **公开 SPEC + 参考实现**:`SPEC.md` 与 Symphony Elixir 参考实现保留在仓库
   内，便于团队按需要自建其他语言版本。
 
@@ -84,7 +95,7 @@ IssuePilot 起源于 OpenAI Symphony 的 fork，因此 **整体架构思路是�
 | 运行形态      | 单进程 Elixir 服务 + 可选 status surface         | orchestrator（Fastify daemon）+ 只读 Next.js dashboard（Tailwind/shadcn）       |
 | 工作区策略    | 每 Issue 独立 workspace                          | bare mirror + git worktree（`~/.issuepilot/{repos,workspaces,state}`）          |
 | 事件 / 日志   | 结构化日志 + 可选 status surface                 | JSONL event store + 原子 run record + SSE 实时流 + pino structured logging      |
-| MR/PR 处理    | 由 agent 通过 workflow 内的 tools 自行 push / 写 | adapter 直接 push / 创建 MR，并提供 orchestrator post-run reconciliation 兜底   |
+| MR/PR 处理    | 由 agent 通过 workflow 内的 tools 自行 push / 写 | 混合模型：Codex 可调用窄范围 GitLab dynamic tools，orchestrator 负责认领、reconciliation 和 MR / note / label 兜底写入 |
 | 重启恢复      | tracker + 文件系统驱动                           | label 状态 + handoff note marker（`<!-- issuepilot:run:<runId> -->`）驱动       |
 | 安全姿态      | 实现自行声明 trust posture                       | 拒绝 `danger-full-access` sandbox、token 全链路 redact、Codex cwd 限定 worktree |
 | 公开 SPEC     | `SPEC.md` v1 (language-agnostic)                 | `SPEC.md` 保留为参考；产品 spec 见 `docs/superpowers/specs/`                    |
@@ -558,6 +569,17 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
 预算这些平台底座，而是专注研发流程智能；等能力验证清楚后，再由 V3 把这些
 能力生产化。
 
+- **大 Issue 工作单元 / Parent Review Packet** — *V4.1 已落地*。
+  Operator 可以从 Command Center 选中一个 GitLab 大 Issue，「Plan work item」
+  让 LLM 起草 2–5 个子任务，在 `/work-items/<id>` 接受 / 编辑 / 重新生成
+  plan，每个子任务跑独立的 synthetic task run 并产出独立 MR；
+  Parent Review Packet 把 validation、风险、evidence index、MR 链接、
+  recommended next actions 汇总到一处，所有任务完成后父 Issue 自动切到
+  `human-review` 并写一条带 `<!-- issuepilot:work-item:<id> -->` marker 的
+  handoff note。设计 spec：
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，

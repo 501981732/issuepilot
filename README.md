@@ -22,6 +22,20 @@ worktrees, runs Codex through the app-server protocol, records an auditable even
 trail, hands the result back as a merge request for human review, and closes the
 issue after that MR is manually merged.
 
+## Product Positioning
+
+IssuePilot is designed as a workflow layer that complements Harness Engineer.
+When a project already has a Harness Engineer layer, Harness Engineer should keep
+owning the repository's engineering rules, code constraints, validation matrix,
+implementation discipline, and local execution quality. IssuePilot focuses on
+the cross-issue and multi-run control plane: task orchestration, state
+management, reports, evidence, review feedback, and continuous improvement.
+
+Projects can also use IssuePilot without Harness Engineer. In that mode,
+`issuepilot-config/`, the workflow profile, repo-local rules, and skills form
+the minimum engineering constraint layer, while IssuePilot still provides task
+decomposition, orchestration, Review Packets, and auditable evidence.
+
 ### Highlights
 
 - **Issue-driven work claim** — watches a GitLab issue board and auto-claims
@@ -44,9 +58,9 @@ issue after that MR is manually merged.
 - **Local single-machine loop** — `~/.issuepilot` keeps the worktrees, JSONL
   event store, and run records on disk; the daemon recovers reconciliation on
   restart without requiring an external database.
-- **Complements harness engineering** — designed for mature repos that already
-  ship an agent harness; IssuePilot focuses on scheduling and isolation while
-  `WORKFLOW.md` in your repo owns the prompt and policy.
+- **Complements harness engineering** — works with mature repos that already
+  have Harness Engineer, while still remaining usable as a direct local workflow
+  platform for repos that do not.
 - **Open SPEC + reference implementation** — `SPEC.md` and the Symphony Elixir
   reference implementation remain in the repository, so teams can build their
   own variants in other languages from the same contract.
@@ -102,7 +116,7 @@ it**:
 | Runtime         | Single Elixir service + optional status surface                 | Orchestrator daemon (Fastify) + read-only Next.js dashboard (Tailwind/shadcn)                      |
 | Workspace       | Per-issue workspace                                             | Bare mirror + git worktree under `~/.issuepilot/{repos,workspaces,state}`                          |
 | Events / logs   | Structured logs + optional status surface                       | JSONL event store + atomic run records + SSE live stream + pino structured logging                 |
-| MR / PR writes  | Performed by the agent through workflow-defined tools           | Adapter pushes / opens MRs directly, with orchestrator post-run reconciliation as a fallback       |
+| MR / PR writes  | Performed by the agent through workflow-defined tools           | Hybrid: Codex can use narrow GitLab dynamic tools, while the orchestrator owns claim, reconciliation, and fallback MR / note / label writes |
 | Restart recovery | Tracker + filesystem driven                                    | Driven by labels + handoff note marker (`<!-- issuepilot:run:<runId> -->`)                         |
 | Security stance | Each implementation declares its own trust posture              | Rejects `danger-full-access` sandboxes, redacts tokens end-to-end, pins Codex cwd to the worktree  |
 | Open SPEC       | `SPEC.md` v1 (language-agnostic)                                | `SPEC.md` retained as reference; product spec lives in `docs/superpowers/specs/`                   |
@@ -599,6 +613,15 @@ orchestrates, and improves engineering work. V4 does not own deployment,
 permissions, budgets, or observability; it owns workflow intelligence. V3 later
 productionizes the capabilities that prove valuable here.
 
+- **Work Items / Parent Review Packet for large issues** — *landed in V4.1*.
+  An IssuePilot operator can plan a GitLab Issue from the Command Center,
+  accept / edit / regenerate the LLM-drafted task plan in
+  `/work-items/<id>`, watch every synthetic task run land its own MR, and
+  read a Parent Review Packet (validation, risks, evidence index, MR links)
+  before the parent Issue auto-flips to `human-review`. Spec:
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`;
+  implementation plan:
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.

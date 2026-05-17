@@ -4,6 +4,21 @@ Status: Draft v1 (language-agnostic)
 
 Purpose: Define a service that orchestrates coding agents to get project work done.
 
+> [!NOTE]
+> Repository note for IssuePilot readers: this file remains the original
+> language-agnostic Symphony service specification and is kept as reference
+> material. The active product direction in this repository is IssuePilot: a
+> TypeScript-first, GitLab-first, local-first workflow platform that can either
+> complement a project's Harness Engineer layer or run directly in repositories
+> that do not have one. IssuePilot's current product and architecture source of
+> truth lives under `docs/superpowers/specs/`, especially
+> `docs/superpowers/specs/2026-05-11-issuepilot-design.md`. One important
+> divergence from this Symphony spec is tracker write ownership: IssuePilot is
+> not a pure agent-toolchain write model. Codex may use a narrow GitLab dynamic
+> tool allowlist for the normal handoff path, while the orchestrator owns claim,
+> deterministic post-run reconciliation, fallback MR/note/label writes, and
+> final closing after a human merge.
+
 ## Normative Language
 
 The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHOULD`, `SHOULD NOT`, `RECOMMENDED`, `MAY`, and

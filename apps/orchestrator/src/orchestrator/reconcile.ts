@@ -28,6 +28,22 @@ export interface ReconcileInput {
    * fact source covers dashboard, notes and exports.
    */
   report?: RunReportArtifact | undefined;
+  /**
+   * V4.1 Workflow Spine: V2.x runs (single issue → single MR) use the
+   * default `"active"` mode where reconcile transitions the parent Issue
+   * label to `human-review` and writes the per-run workpad handoff note.
+   *
+   * V4.1 synthetic task runs share the dispatch/reconcile path but do NOT
+   * own the parent Issue lifecycle — that responsibility belongs to the
+   * WorkItem aggregator (`work-items/handoff.ts`). Setting this to
+   * `"suppressed"` keeps all task-level side-effects (push, create/update
+   * MR, return mergeRequest metadata) intact while skipping the parent
+   * Issue label transition and the workpad note write.
+   *
+   * Defaults to `"active"` to preserve V2.x behaviour when callers omit
+   * the flag.
+   */
+  parentIssueLabelMode?: "active" | "suppressed" | undefined;
 }
 
 /**
@@ -245,6 +261,8 @@ function renderNoteBody(
 }
 
 export async function reconcile(input: ReconcileInput): Promise<ReconcileResult> {
+  const suppressParentIssue = input.parentIssueLabelMode === "suppressed";
+
   const hasCommits = await input.git.hasNewCommits(
     input.workspacePath,
     input.baseBranch,
@@ -263,6 +281,14 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
       throw new Error(
         `Reconcile found no new commits on branch ${input.branch} and no explicit no-code-change reason.`,
       );
+    }
+
+    // V4.1 synthetic task runs do not own the parent Issue workpad note or
+    // the parent Issue workflow label. Bail out before touching either; the
+    // WorkItem aggregator (`work-items/handoff.ts`) will write the parent
+    // handoff once every required task is done.
+    if (suppressParentIssue) {
+      return { hadNewCommits: false };
     }
 
     const marker = `<!-- issuepilot:run:${input.runId} -->`;
@@ -334,6 +360,18 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
       ts: now(),
       detail: { mrIid: existingMr.iid },
     });
+  }
+
+  // V4.1: synthetic task runs still want the MR (each task owns one), but
+  // must NOT write a per-run workpad note onto the parent Issue, and must
+  // NOT transition the parent Issue's workflow label. Return early after
+  // the MR step so the caller can record the MR coordinates on the
+  // canonical `TaskRunLink`.
+  if (suppressParentIssue) {
+    return {
+      hadNewCommits: true,
+      mergeRequest: handoffMr,
+    };
   }
 
   const marker = `<!-- issuepilot:run:${input.runId} -->`;

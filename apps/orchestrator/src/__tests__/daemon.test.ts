@@ -658,6 +658,56 @@ describe("startDaemon human-review event publishing", () => {
   // so `/api/runs`, `/api/runs/:runId` and `/api/reports` can return report
   // summaries. We only assert the wiring here; report contents are exercised
   // in the unit tests for the report store, server and dashboard helpers.
+  it("wires a V4.1 work item service into createServer", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-daemon-work-items-"),
+    );
+    const workflow = createWorkflow(root);
+    let serverDeps: ServerDeps | undefined;
+    const createServer = vi.fn(async (deps: ServerDeps) => {
+      serverDeps = deps;
+      return createFakeServer();
+    });
+
+    const daemon = await startDaemon(
+      { workflowPath: workflow.source.path },
+      {
+        workflowLoader: {
+          loadOnce: vi.fn(async () => workflow),
+          start: vi.fn(async () => ({
+            stop: vi.fn(async () => {}),
+          })),
+          render: vi.fn(() => "prompt"),
+        },
+        createGitLab: vi.fn(async () =>
+          createGitLabForHumanReviewScanPollution(),
+        ),
+        createServer,
+        startLoop: vi.fn(() => ({
+          tick: vi.fn(async () => {}),
+          stop: vi.fn(async () => {}),
+        })),
+        state: createRuntimeState(),
+      },
+    );
+
+    try {
+      expect(serverDeps).toBeDefined();
+      expect(serverDeps?.workItems).toBeDefined();
+      expect(typeof serverDeps?.workItems?.planFromIssue).toBe("function");
+      expect(typeof serverDeps?.workItems?.list).toBe("function");
+      expect(typeof serverDeps?.workItems?.detail).toBe("function");
+      expect(typeof serverDeps?.workItems?.acceptPlan).toBe("function");
+      expect(typeof serverDeps?.workItems?.regeneratePlan).toBe("function");
+      expect(typeof serverDeps?.workItems?.skipTask).toBe("function");
+      expect(typeof serverDeps?.workItems?.retryTask).toBe("function");
+      expect(typeof serverDeps?.workItems?.report).toBe("function");
+    } finally {
+      await daemon.stop();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("wires a report store into createServer", async () => {
     const root = await fs.mkdtemp(
       path.join(os.tmpdir(), "issuepilot-daemon-reports-"),

@@ -37,6 +37,7 @@ async function buildTestApp(
     projects?: ProjectSummary[] | (() => ProjectSummary[]);
     operatorActions?: ServerDeps["operatorActions"];
     reports?: ServerDeps["reports"];
+    workItems?: ServerDeps["workItems"];
   } = {},
 ) {
   const state = createRuntimeState();
@@ -57,6 +58,7 @@ async function buildTestApp(
         ? { operatorActions: overrides.operatorActions }
         : {}),
       ...(overrides.reports ? { reports: overrides.reports } : {}),
+      ...(overrides.workItems ? { workItems: overrides.workItems } : {}),
     },
     { port: 0 },
   );
@@ -958,6 +960,349 @@ describe("run reports", () => {
       const resp = await app.inject({ method: "GET", url: "/api/reports" });
       const body = JSON.parse(resp.body) as { reports: unknown[] };
       expect(body.reports).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("V4.1 work item routes", () => {
+  function workItemFixture(over: Partial<{ status: string }> = {}) {
+    return {
+      workItemId: "wi_01",
+      sourceIssue: {
+        projectId: "g/p",
+        iid: 42,
+        url: "https://gl/-/issues/42",
+        title: "Big",
+      },
+      title: "Big",
+      goal: "Ship X",
+      acceptanceCriteria: ["AC1"],
+      status: over.status ?? "ready",
+      taskIds: ["t1", "t2"],
+      createdAt: "2026-05-17T00:00:00.000Z",
+      updatedAt: "2026-05-17T00:00:01.000Z",
+    };
+  }
+
+  function planFixture() {
+    return {
+      planId: "tp_01",
+      workItemId: "wi_01",
+      version: 1,
+      tasks: [],
+      dependencies: [],
+      operatorEdits: [],
+      status: "accepted" as const,
+      acceptedAt: "2026-05-17T00:00:02.000Z",
+    };
+  }
+
+  function buildWorkItemsService(
+    over: Partial<NonNullable<ServerDeps["workItems"]>> = {},
+  ): NonNullable<ServerDeps["workItems"]> {
+    return {
+      planFromIssue: over.planFromIssue ??
+        (async () => ({
+          workItem: workItemFixture(),
+          plan: planFixture(),
+        })),
+      list: over.list ?? (async () => [workItemFixture()]),
+      detail: over.detail ??
+        (async () => ({
+          workItem: workItemFixture(),
+          plan: { current: planFixture(), history: [] },
+          tasks: [],
+          runLinks: [],
+        })),
+      acceptPlan: over.acceptPlan ??
+        (async () => ({
+          workItem: workItemFixture({ status: "ready" }),
+          plan: planFixture(),
+        })),
+      regeneratePlan: over.regeneratePlan ??
+        (async () => ({
+          workItem: workItemFixture({ status: "planning" }),
+          plan: { ...planFixture(), version: 2, status: "draft" as const },
+        })),
+      skipTask: over.skipTask ?? (async () => ({ ok: true as const })),
+      retryTask: over.retryTask ?? (async () => ({ ok: true as const })),
+      report: over.report ?? (async () => undefined),
+    };
+  }
+
+  it("returns 503 work_items_unavailable when service is not wired", async () => {
+    const { app } = await buildTestApp();
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items",
+      });
+      expect(resp.statusCode).toBe(503);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "work_items_unavailable",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/issues/:iid/plan returns work item and plan", async () => {
+    const planFromIssue = vi.fn(async (input: {
+      iid: number;
+      regenerate?: boolean;
+      operator: string;
+    }) => ({
+      workItem: workItemFixture(),
+      plan: planFixture(),
+      _captured: input,
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        planFromIssue: planFromIssue as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/issues/42/plan",
+        headers: { "x-issuepilot-operator": "alice" },
+        payload: { iid: 42, regenerate: false },
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.workItem.workItemId).toBe("wi_01");
+      expect(body.plan.planId).toBe("tp_01");
+      expect(planFromIssue).toHaveBeenCalledWith({
+        iid: 42,
+        regenerate: false,
+        operator: "alice",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/issues/:iid/plan rejects non-numeric iid", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService(),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/issues/abc/plan",
+      });
+      expect(resp.statusCode).toBe(400);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "invalid_iid",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items returns counters keyed by status", async () => {
+    const list = vi.fn(async () => [
+      workItemFixture({ status: "ready" }),
+      { ...workItemFixture({ status: "running" }), workItemId: "wi_02" },
+      { ...workItemFixture({ status: "completed" }), workItemId: "wi_03" },
+    ]);
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ list: list as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items",
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.workItems).toHaveLength(3);
+      expect(body.counters).toEqual({
+        planning: 0,
+        ready: 1,
+        running: 1,
+        partial: 0,
+        completed: 1,
+        blocked: 0,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id 404 when missing", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        detail: (async () => undefined) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_missing",
+      });
+      expect(resp.statusCode).toBe(404);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "not_found",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/plan/accept requires planId", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService(),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/plan/accept",
+        payload: { edits: [] },
+      });
+      expect(resp.statusCode).toBe(400);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "missing_plan_id",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/plan/accept forwards edits + operator", async () => {
+    const acceptPlan = vi.fn(async (input: unknown) => ({
+      workItem: workItemFixture({ status: "ready" }),
+      plan: planFixture(),
+      _captured: input,
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ acceptPlan: acceptPlan as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/plan/accept",
+        headers: { "x-issuepilot-operator": "bob" },
+        payload: {
+          planId: "tp_01",
+          edits: [{ taskId: "t1", field: "title", after: "New title" }],
+        },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(acceptPlan).toHaveBeenCalledWith({
+        planId: "tp_01",
+        edits: [{ taskId: "t1", field: "title", after: "New title" }],
+        operator: "bob",
+        workItemId: "wi_01",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/plan/regenerate calls regeneratePlan", async () => {
+    const regeneratePlan = vi.fn(async () => ({
+      workItem: workItemFixture({ status: "planning" }),
+      plan: { ...planFixture(), version: 2, status: "draft" as const },
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ regeneratePlan: regeneratePlan as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/plan/regenerate",
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(regeneratePlan).toHaveBeenCalledWith("wi_01", "system");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST .../tasks/:taskId/skip returns 200 on ok", async () => {
+    const skipTask = vi.fn(async () => ({ ok: true as const }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ skipTask: skipTask as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/skip",
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(skipTask).toHaveBeenCalledWith("wi_01", "t1", "system");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST .../tasks/:taskId/skip returns 404 on not_found error", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        skipTask: (async () => ({
+          error: { code: "not_found", message: "missing" },
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/missing/skip",
+      });
+      expect(resp.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST .../tasks/:taskId/retry forwards operator", async () => {
+    const retryTask = vi.fn(async () => ({ ok: true as const }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ retryTask: retryTask as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/retry",
+        headers: { "x-issuepilot-operator": "carol" },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(retryTask).toHaveBeenCalledWith("wi_01", "t1", "carol");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/report returns { report } shape", async () => {
+    const report = vi.fn(async () => ({
+      workItemId: "wi_01",
+      overallStatus: "complete" as const,
+      taskSummaries: [],
+      validationSummary: "",
+      riskSummary: "",
+      evidence: { index: [], byTask: {} },
+      openQuestions: [],
+      recommendedNextActions: [],
+      generatedAt: "2026-05-17T00:10:00.000Z",
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ report: report as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/report",
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.report.workItemId).toBe("wi_01");
     } finally {
       await app.close();
     }

@@ -4,16 +4,63 @@ import {
   type EventRecord,
 } from "@issuepilot/observability";
 import type {
+  AcceptWorkItemPlanRequest,
   IssuePilotInternalEvent,
   ProjectSummary,
   RunReportSummary,
+  TaskPlan,
   TeamRuntimeSummary,
+  WorkItem,
+  WorkItemDetailResponse,
+  WorkItemReport,
+  WorkItemStatus,
 } from "@issuepilot/shared-contracts";
+import { WORK_ITEM_STATUS_VALUES } from "@issuepilot/shared-contracts";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { OperatorActionResult } from "../operations/actions.js";
 import type { ReportStore } from "../reports/store.js";
 import type { RuntimeState } from "../runtime/state.js";
+
+/**
+ * V4.1 Workflow Spine work item service.
+ *
+ * Decoupled from any concrete store/orchestration implementation so the
+ * single-workflow daemon can wire it (Task 13) while team-mode daemon
+ * leaves it absent — in which case the routes return a deterministic
+ * 503 `work_items_unavailable` rather than a 5xx.
+ */
+export type WorkItemServiceError = {
+  error: { code: string; message: string };
+};
+
+export interface WorkItemService {
+  planFromIssue(input: {
+    iid: number;
+    regenerate?: boolean;
+    operator: string;
+  }): Promise<{ workItem: WorkItem; plan: TaskPlan } | WorkItemServiceError>;
+  list(): Promise<WorkItem[]>;
+  detail(id: string): Promise<WorkItemDetailResponse | undefined>;
+  acceptPlan(
+    input: AcceptWorkItemPlanRequest & { workItemId: string },
+  ): Promise<{ workItem: WorkItem; plan: TaskPlan } | WorkItemServiceError>;
+  regeneratePlan(
+    id: string,
+    operator: string,
+  ): Promise<{ workItem: WorkItem; plan: TaskPlan } | WorkItemServiceError>;
+  skipTask(
+    workItemId: string,
+    taskId: string,
+    operator: string,
+  ): Promise<{ ok: true } | WorkItemServiceError>;
+  retryTask(
+    workItemId: string,
+    taskId: string,
+    operator: string,
+  ): Promise<{ ok: true } | WorkItemServiceError>;
+  report(id: string): Promise<WorkItemReport | undefined>;
+}
 
 export interface ServerDeps {
   state: RuntimeState;
@@ -79,6 +126,13 @@ export interface ServerDeps {
    * legacy shape so older callers and tests remain unaffected.
    */
   reports?: ReportStore;
+  /**
+   * V4.1 Workflow Spine: WorkItem orchestration façade. When absent,
+   * `/api/issues/:iid/plan` and `/api/work-items/*` routes uniformly
+   * return HTTP 503 `work_items_unavailable` so dashboards see a
+   * deterministic error instead of a route-level 404.
+   */
+  workItems?: WorkItemService;
 }
 
 function resolveSnapshotField<T>(
@@ -441,6 +495,199 @@ export async function createServer(
     }
     return reply.code(statusFromCode(result.code)).send(result);
   });
+
+  function workItemsUnavailable(): {
+    ok: false;
+    code: "work_items_unavailable";
+  } {
+    return { ok: false, code: "work_items_unavailable" } as const;
+  }
+
+  function statusFromWorkItemCode(code: string): number {
+    if (code === "not_found") return 404;
+    if (code === "invalid_status") return 409;
+    if (code === "invalid_iid") return 400;
+    if (code === "missing_plan_id") return 400;
+    if (code === "validation_failed") return 422;
+    if (code === "planner_failed") return 500;
+    if (code === "gitlab_failed") return 500;
+    return 500;
+  }
+
+  app.post<{ Params: { iid: string }; Body?: { regenerate?: boolean } }>(
+    "/api/issues/:iid/plan",
+    async (request, reply) => {
+      if (!deps.workItems) {
+        return reply.code(503).send(workItemsUnavailable());
+      }
+      const iidNum = Number(request.params.iid);
+      if (!Number.isInteger(iidNum) || iidNum <= 0) {
+        return reply
+          .code(400)
+          .send({ ok: false, code: "invalid_iid", message: "iid must be a positive integer" });
+      }
+      const operator = extractOperator(
+        request.headers as Record<string, unknown>,
+      );
+      const regenerate = request.body?.regenerate === true;
+      const result = await deps.workItems.planFromIssue({
+        iid: iidNum,
+        regenerate,
+        operator,
+      });
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.get("/api/work-items", async (_request, reply) => {
+    if (!deps.workItems) {
+      return reply.code(503).send(workItemsUnavailable());
+    }
+    const workItems = await deps.workItems.list();
+    const counters: Record<WorkItemStatus, number> = Object.fromEntries(
+      WORK_ITEM_STATUS_VALUES.map((s) => [s, 0]),
+    ) as Record<WorkItemStatus, number>;
+    for (const wi of workItems) {
+      if (wi.status in counters) counters[wi.status] += 1;
+    }
+    return reply.code(200).send({ workItems, counters });
+  });
+
+  app.get<{ Params: { id: string } }>(
+    "/api/work-items/:id",
+    async (request, reply) => {
+      if (!deps.workItems) {
+        return reply.code(503).send(workItemsUnavailable());
+      }
+      const detail = await deps.workItems.detail(request.params.id);
+      if (!detail) {
+        return reply
+          .code(404)
+          .send({ ok: false, code: "not_found", message: "work item not found" });
+      }
+      return reply.code(200).send(detail);
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body?: {
+      planId?: string;
+      edits?: AcceptWorkItemPlanRequest["edits"];
+    };
+  }>("/api/work-items/:id/plan/accept", async (request, reply) => {
+    if (!deps.workItems) {
+      return reply.code(503).send(workItemsUnavailable());
+    }
+    const planId = request.body?.planId;
+    if (typeof planId !== "string" || planId.length === 0) {
+      return reply.code(400).send({
+        ok: false,
+        code: "missing_plan_id",
+        message: "planId is required",
+      });
+    }
+    const edits = Array.isArray(request.body?.edits) ? request.body.edits : [];
+    const operator = extractOperator(
+      request.headers as Record<string, unknown>,
+    );
+    const result = await deps.workItems.acceptPlan({
+      planId,
+      edits,
+      operator,
+      workItemId: request.params.id,
+    });
+    if ("error" in result) {
+      return reply
+        .code(statusFromWorkItemCode(result.error.code))
+        .send({ ok: false, ...result.error });
+    }
+    return reply.code(200).send(result);
+  });
+
+  app.post<{ Params: { id: string } }>(
+    "/api/work-items/:id/plan/regenerate",
+    async (request, reply) => {
+      if (!deps.workItems) {
+        return reply.code(503).send(workItemsUnavailable());
+      }
+      const operator = extractOperator(
+        request.headers as Record<string, unknown>,
+      );
+      const result = await deps.workItems.regeneratePlan(
+        request.params.id,
+        operator,
+      );
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    "/api/work-items/:id/tasks/:taskId/skip",
+    async (request, reply) => {
+      if (!deps.workItems) {
+        return reply.code(503).send(workItemsUnavailable());
+      }
+      const operator = extractOperator(
+        request.headers as Record<string, unknown>,
+      );
+      const result = await deps.workItems.skipTask(
+        request.params.id,
+        request.params.taskId,
+        operator,
+      );
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    "/api/work-items/:id/tasks/:taskId/retry",
+    async (request, reply) => {
+      if (!deps.workItems) {
+        return reply.code(503).send(workItemsUnavailable());
+      }
+      const operator = extractOperator(
+        request.headers as Record<string, unknown>,
+      );
+      const result = await deps.workItems.retryTask(
+        request.params.id,
+        request.params.taskId,
+        operator,
+      );
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/work-items/:id/report",
+    async (request, reply) => {
+      if (!deps.workItems) {
+        return reply.code(503).send(workItemsUnavailable());
+      }
+      const report = await deps.workItems.report(request.params.id);
+      return reply.code(200).send({ report });
+    },
+  );
 
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 4738;

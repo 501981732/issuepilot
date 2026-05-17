@@ -2,8 +2,12 @@ import { describe, expect, it, expectTypeOf } from "vitest";
 
 import type {
   AcceptWorkItemPlanRequest,
+  MarkTaskReworkRequest,
   PlanWorkItemRequest,
+  ReplanTaskRequest,
+  UnskipTaskRequest,
   WorkItemDetailResponse,
+  WorkItemGraphResponse,
   WorkItemReportResponse,
   WorkItemsListResponse,
 } from "../api.js";
@@ -91,5 +95,57 @@ describe("V4.1 API contracts", () => {
     expectTypeOf<WorkItemReportResponse>()
       .toHaveProperty("report")
       .toEqualTypeOf<WorkItemReport | undefined>();
+  });
+});
+
+describe("V4.2 API contracts", () => {
+  it("ReplanTaskRequest requires a human-readable reason", () => {
+    const req: ReplanTaskRequest = { reason: "Sub-task was too broad" };
+    expect(req.reason.length).toBeGreaterThan(0);
+    expectTypeOf<ReplanTaskRequest>()
+      .toHaveProperty("reason")
+      .toEqualTypeOf<string>();
+    expectTypeOf<ReplanTaskRequest>()
+      .toHaveProperty("hint")
+      .toEqualTypeOf<string | undefined>();
+  });
+
+  it("MarkTaskReworkRequest mirrors review-driven rework", () => {
+    const req: MarkTaskReworkRequest = { reason: "Reviewer asked for tests" };
+    expect(req.reason.length).toBeGreaterThan(0);
+    expectTypeOf<MarkTaskReworkRequest>()
+      .toHaveProperty("reason")
+      .toEqualTypeOf<string>();
+  });
+
+  it("UnskipTaskRequest may omit operator (server falls back to header)", () => {
+    const req: UnskipTaskRequest = {};
+    expect(req.operator).toBeUndefined();
+    expectTypeOf<UnskipTaskRequest>()
+      .toHaveProperty("operator")
+      .toEqualTypeOf<string | undefined>();
+  });
+
+  it("WorkItemGraphResponse exposes layered DAG + critical path", () => {
+    const r: WorkItemGraphResponse = {
+      levels: [["t1"], ["t2", "t3"]],
+      edges: [
+        { from: "t1", to: "t2" },
+        { from: "t1", to: "t3" },
+      ],
+      criticalPathTaskIds: ["t1", "t2"],
+    };
+    expect(r.levels.length).toBe(2);
+    expect(r.edges).toHaveLength(2);
+    expect(r.criticalPathTaskIds).toEqual(["t1", "t2"]);
+    expectTypeOf<WorkItemGraphResponse>()
+      .toHaveProperty("levels")
+      .toEqualTypeOf<string[][]>();
+    expectTypeOf<WorkItemGraphResponse>()
+      .toHaveProperty("edges")
+      .toEqualTypeOf<Array<{ from: string; to: string }>>();
+    expectTypeOf<WorkItemGraphResponse>()
+      .toHaveProperty("criticalPathTaskIds")
+      .toEqualTypeOf<string[]>();
   });
 });

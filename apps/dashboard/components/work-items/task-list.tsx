@@ -1,11 +1,12 @@
 "use client";
 
-import type {
-  MarkTaskReworkRequest,
-  ReplanTaskRequest,
-  TaskNode,
-  TaskNodeStatus,
-  TaskRunLink,
+import {
+  effectiveTaskStatus,
+  type MarkTaskReworkRequest,
+  type ReplanTaskRequest,
+  type TaskNode,
+  type TaskNodeStatus,
+  type TaskRunLink,
 } from "@issuepilot/shared-contracts";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
@@ -110,10 +111,16 @@ export function TaskList({
   const groups = new Map<TaskNodeStatus, TaskNode[]>();
   for (const task of tasks) {
     const link = linkByTask.get(task.taskId);
-    const effectiveStatus = link?.status ?? task.status;
-    const list = groups.get(effectiveStatus) ?? [];
+    // V4.2 review I1: operator-driven `needs_rework` / `skipped` on the
+    // TaskNode must win over a historical TaskRunLink so the dashboard
+    // groups / renders / picks buttons consistently with the
+    // orchestrator's `aggregate.effectiveTaskStatus`. Otherwise an
+    // operator who marked a `completed` task for rework would still
+    // see it grouped under "Completed" with a Mark-rework button.
+    const status = effectiveTaskStatus(task, link);
+    const list = groups.get(status) ?? [];
     list.push(task);
-    groups.set(effectiveStatus, list);
+    groups.set(status, list);
   }
 
   return (
@@ -131,7 +138,7 @@ export function TaskList({
               <ul className="flex flex-col gap-2">
                 {(groups.get(status) ?? []).map((task) => {
                   const link = linkByTask.get(task.taskId);
-                  const effectiveStatus = link?.status ?? task.status;
+                  const effectiveStatus = effectiveTaskStatus(task, link);
                   // V4.2 button-visibility table (see design plan §17):
                   //
                   // status                 | Skip | Retry | Mark rework | Replan | Unskip

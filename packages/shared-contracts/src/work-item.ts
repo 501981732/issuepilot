@@ -226,6 +226,31 @@ export interface TaskRunLink {
 }
 
 /**
+ * V4.2 review I1：操作员驱动状态优先于历史 TaskRunLink。
+ *
+ * - `needs_rework` / `skipped` 是操作员对 task 的显式状态，应该胜过
+ *   旧 TaskRunLink 的 `completed` / `failed` / `blocked` —— 否则
+ *   dashboard 仍然把 task 渲染为 `completed`，按钮可见性、Mark
+ *   rework / Retry 都会错位。
+ * - 其他情况下沿用历史规则：TaskRunLink.status 是 task 的 canonical
+ *   状态（completed / failed / blocked / running），仅当没有 link 时
+ *   才回落到 task.status（planned / ready / blocked_by_dependency）。
+ *
+ * orchestrator 端的 aggregate.effectiveTaskStatus 与 dashboard 端的
+ * task-list rendering 共用这个函数，保证 spec §9.x 状态枚举对调度
+ * （orchestration）、聚合（aggregate）和 UI 渲染三处统一。
+ */
+export function effectiveTaskStatus(
+  task: Pick<TaskNode, "status">,
+  link: Pick<TaskRunLink, "status"> | undefined,
+): TaskNodeStatus {
+  if (task.status === "needs_rework" || task.status === "skipped") {
+    return task.status;
+  }
+  return link?.status ?? task.status;
+}
+
+/**
  * Spec §9.5：大 Issue 级别的汇总报告，是 Parent Review Packet、GitLab
  * handoff note、Markdown export 的统一来源（spec §13 / §15）。V4.1 即使
  * 报告完整，也不允许在 recommendedNextActions 输出 `ready_to_merge`，最多

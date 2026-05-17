@@ -1,13 +1,14 @@
-import type {
-  RunReportArtifact,
-  TaskNode,
-  TaskNodeStatus,
-  TaskPlan,
-  TaskRunLink,
-  WorkItem,
-  WorkItemEvidenceEntry,
-  WorkItemReport,
-  WorkItemReportStatus,
+import {
+  effectiveTaskStatus,
+  type RunReportArtifact,
+  type TaskNode,
+  type TaskNodeStatus,
+  type TaskPlan,
+  type TaskRunLink,
+  type WorkItem,
+  type WorkItemEvidenceEntry,
+  type WorkItemReport,
+  type WorkItemReportStatus,
 } from "@issuepilot/shared-contracts";
 
 /**
@@ -218,16 +219,6 @@ function pickLatestLinkByTask(
  * task that already has a TaskRunLink (the link is preserved for
  * audit, but the task is now off-plan).
  */
-function effectiveTaskStatus(
-  task: TaskNode,
-  link: TaskRunLink | undefined,
-): TaskNodeStatus {
-  if (task.status === "needs_rework" || task.status === "skipped") {
-    return task.status;
-  }
-  return link?.status ?? task.status;
-}
-
 function decideOverallStatus(
   entries: Array<{
     task: TaskNode;

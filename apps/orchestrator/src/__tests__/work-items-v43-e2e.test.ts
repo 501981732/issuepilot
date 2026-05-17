@@ -60,6 +60,7 @@ interface FakeGitlabState {
   notes: Array<{ id: number; iid: number; body: string }>;
   labelLog: Array<{ iid: number; add: string[]; remove: string[] }>;
   createIssue: ReturnType<typeof vi.fn>;
+  childIssues: unknown[];
   nextNoteId: number;
 }
 
@@ -68,9 +69,15 @@ function makeFakeGitlab() {
     notes: [],
     labelLog: [],
     createIssue: vi.fn(),
+    childIssues: [],
     nextNoteId: 1,
   };
   const adapter = {
+    createIssue: async (...args: unknown[]): Promise<never> => {
+      state.createIssue(...args);
+      state.childIssues.push(args);
+      throw new Error("child issue creation is forbidden in V4.3");
+    },
     findWorkpadNote: async (
       iid: number,
       marker: string,
@@ -686,7 +693,11 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
 
     const scan = await scanRunEvidence({ taskWorktreePath, runId: "run_T1" });
     const evidence = mergeReportEvidence([], scan);
-    const followUps = appendOversizedFollowUps([], scan.oversized, scan.rejected);
+    const followUps = appendOversizedFollowUps(
+      ["ordinary reviewer follow-up"],
+      scan.oversized,
+      scan.rejected,
+    );
     harness.reports.set(
       "run_T1",
       fakeRunReport({
@@ -718,12 +729,13 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
         expect.objectContaining({ label: "escape" }),
       ]),
     );
-    expect(report?.openQuestions.join("\n")).toContain(
-      "evidence oversized: recordings/too-large.webm (51.0MB)",
+    expect(report?.openQuestions).toEqual(
+      expect.arrayContaining([
+        "Task T1 evidence issue: evidence oversized: recordings/too-large.webm (51.0MB)",
+        "Task T1 evidence issue: evidence rejected: ../../etc/passwd escapes evidence dir",
+      ]),
     );
-    expect(report?.openQuestions.join("\n")).toContain(
-      "evidence rejected: ../../etc/passwd escapes evidence dir",
-    );
+    expect(report?.openQuestions).not.toContain("ordinary reviewer follow-up");
 
     await expect(
       serveEvidenceFile({

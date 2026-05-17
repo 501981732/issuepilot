@@ -843,7 +843,7 @@ git add apps/orchestrator/src/work-items/evidence-merge.ts \
 git commit -m "feat(orchestrator): daemon-level evidence scan hook patches reportStore"
 ```
 
-> Team daemon 同样 hook 留到任务 12 一并合并（与 project-aware file routing 一起做，避免重复触碰同一文件）。
+> Team daemon 当前尚无 synthetic task dispatch runner；team-mode scan hook 留到 team dispatch runner 落地时接线。任务 12 只处理 project-aware report/file routing 隔离。
 
 ---
 
@@ -1243,7 +1243,7 @@ git add apps/orchestrator/src/daemon.ts \
         apps/orchestrator/src/__tests__/daemon.test.ts \
         apps/orchestrator/src/team/daemon.ts \
         apps/orchestrator/src/team/__tests__/work-items.test.ts
-git commit -m "feat(orchestrator): wire V4.3 evidence scanning into single + team daemons"
+git commit -m "feat(orchestrator): wire V4.3 single-daemon evidence and team project reports"
 ```
 
 ---

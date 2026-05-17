@@ -580,6 +580,21 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`；
   实施计划：
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`。
+- **Task Graph 视图 + 依赖图执行 + branch chaining** — *V4.2 已落地*。
+  `/work-items/<id>` 现在可以在分组列表和 SVG Task Graph
+  （topology 布局 + critical path 高亮）之间切换；orchestration 真正
+  遵守 `dependsOn`：单上游依赖、上游 `completed` 且 MR 仍 `opened` 时，
+  下游 task 在 dispatch 时基于 `origin/<上游分支>` 开 worktree，使线性
+  重构链不需要等上游 MR merge 才能继续推进；operator 可以对单 task
+  做 replan（生成新 plan version，未 replan 的 task 继承 status /
+  runIds）、把已完成 task 反弹回 `needs_rework`、对 skipped task
+  做 unskip，所有这些动作都走 aggregator + `reconcileWorkItem`，不绕过
+  父 Issue label 状态机。team daemon
+  `apps/orchestrator/src/team/daemon.ts` 装配 per-project
+  `WorkItemService`，dashboard 顶栏新增 Project Switcher，所有
+  work-item API 自动带 `x-issuepilot-project` header；两个 project
+  的 WorkItem 完全互不可见。实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，

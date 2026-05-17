@@ -622,6 +622,22 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`;
   implementation plan:
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`.
+- **Task Graph + dependency execution + branch chaining** — *landed in
+  V4.2*. The `/work-items/<id>` page now toggles between the grouped task
+  list and an SVG Task Graph (topology layout, critical-path highlight).
+  Orchestration honours `dependsOn`: when a downstream task has a single
+  upstream that is `completed` but whose MR is still `opened`, the daemon
+  dispatches the downstream task on `origin/<upstream-branch>` so a linear
+  refactor chain can land without waiting for every MR to merge. Operators
+  can replan a single task (new plan version, non-replanned tasks inherit
+  status / runIds), mark a completed task back to `needs_rework`, and
+  un-skip a previously-skipped task — all routed through the same
+  aggregator path that drives parent Issue labels, never bypassing it.
+  Team-mode `apps/orchestrator/src/team/daemon.ts` now wires per-project
+  `WorkItemService` instances; every dashboard work-item API call sends
+  `x-issuepilot-project` so two projects never see each other's WorkItems.
+  Implementation plan:
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.

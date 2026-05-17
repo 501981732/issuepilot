@@ -844,7 +844,97 @@ V4.1 invariants worth knowing as an operator:
   ("reviewer to inspect the linked MRs"). Auto-merge is reserved for
   later phases.
 
-### 5.8 Current V2 boundaries and gaps
+### 5.8 V4.2 Task Graph — graph view, replan, mark-rework, branch chaining, team-mode project switcher
+
+V4.2 builds on V4.1's WorkItem foundation and adds four operator-facing
+capabilities without changing the V4.1 contract (parent Issue label is
+still aggregator-owned; synthetic task runs never flip it themselves).
+
+1. **Task Graph view**. Open `/work-items/<id>?view=graph` — or click
+   the **Graph** button in the work-item header — to switch the Tasks
+   section from a grouped list to an SVG dependency graph. Nodes show
+   `taskId` + title + status badge, edges show `dependsOn` directions,
+   and nodes on the critical path are highlighted. Click **List** to
+   switch back. The view choice is reflected in the URL so the link is
+   shareable.
+2. **Single-task replan**. On any task row, click **Replan** to open
+   a dialog asking for a `reason` (required) and an optional `hint`.
+   Submitting POSTs to
+   `/api/work-items/<id>/tasks/<taskId>/replan`. IssuePilot drafts a
+   new plan version that replaces *only* the targeted task; the
+   non-replanned tasks inherit their previous `status` and `runIds`
+   so an in-flight workflow does not reset. The previous plan is
+   marked `superseded` and the new plan starts as `draft` so you can
+   review / accept it before dispatch runs again.
+3. **Mark rework + retry**. On a `completed` (or `failed` / `blocked`)
+   task row, click **Mark for rework** and provide a `reason`. The
+   service flips the task to `needs_rework`, persists the reason,
+   reconciles the WorkItem (which moves it back from `completed` to
+   `partial` so the parent Issue label re-enters `ai-rework`), then
+   you can click **Retry** to dispatch the task again on a fresh
+   branch.
+4. **Unskip**. Tasks that were skipped (operator decision or
+   `failed → skip`) now expose a **Cancel skip** button. POST
+   `/api/work-items/<id>/tasks/<taskId>/unskip` flips the task back to
+   `ready`; orchestration re-dispatches it on the next tick.
+5. **Branch chaining**. When a downstream task `dependsOn` exactly
+   one upstream task, and that upstream is `completed` but the
+   upstream MR is still `opened` (not merged), the daemon dispatches
+   the downstream task using `origin/<upstream-branch>` as the
+   `DispatchInput.baseBranch`. This lets a linear refactor land its
+   pieces end-to-end without waiting for every MR to merge. Multi
+   -upstream tasks still wait for *all* upstream MRs to merge before
+   dispatch (no implicit merge-commit synthesis).
+6. **Team-mode project switcher**. When the orchestrator runs in
+   team-mode (started via `issuepilot start --config issuepilot.team.yaml`),
+   the dashboard top bar renders a **Project** dropdown. Pick a
+   project — the selection is persisted in `localStorage` and every
+   subsequent work-item API call sends `x-issuepilot-project: <id>`.
+   Each project has its own `.issuepilot/` workspace namespace, so
+   project A's WorkItems are never visible to project B (and vice
+   versa). A missing header returns `400 project_header_required`;
+   an unknown project id returns `404 project_not_found`.
+
+CLI / direct HTTP equivalents:
+
+```bash
+# Replan a single task
+curl -X POST -H 'content-type: application/json' \
+  -d '{"reason": "missing audit log", "hint": "use writeAudit()"}' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/replan
+
+# Mark a completed task back to needs_rework
+curl -X POST -H 'content-type: application/json' \
+  -d '{"reason": "reviewer wants extra tests"}' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/mark-rework
+
+# Cancel a skip
+curl -X POST http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/unskip
+
+# Read the task graph projection
+curl http://127.0.0.1:4738/api/work-items/<wi>/graph
+
+# Team-mode: scope a call to a specific project
+curl -H 'x-issuepilot-project: platform-web' \
+  http://127.0.0.1:4738/api/work-items
+```
+
+V4.2 invariants worth knowing as an operator:
+
+- Parent Issue label transitions still go through the aggregator
+  path. `markNeedsRework` / `unskipTask` / `replanTask` all run
+  `reconcileWorkItem`, so the parent Issue label and handoff note
+  follow the same state machine `settleTaskRunFinal` uses.
+- Replan **does not** reuse the prior runId. The old `TaskRunLink` is
+  retained as historical evidence; the new plan version dispatches a
+  fresh run when accepted.
+- Branch chaining falls back safely: if the upstream task is failed
+  or marked `needs_rework`, the downstream chain returns to
+  `blocked_by_dependency` and waits for an operator decision. Any
+  in-flight downstream run keeps running and reports its outcome
+  back to the aggregator like normal.
+
+### 5.9 Current V2 boundaries and gaps
 
 The main V2 surface is complete. **Explicitly out of scope** for V2 (will be
 handled in V3 / V4):

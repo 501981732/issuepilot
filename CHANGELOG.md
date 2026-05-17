@@ -2,7 +2,61 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [Unreleased] V4.2 Task Graph
+
+### Added
+
+- 2026-05-17 — **V4.2 Task Graph**：在 V4.1 Workflow Spine 基础上加入依赖
+  图执行、Task Graph 可视化、单 task replan、local mark-rework / unskip、
+  branch chaining、team-mode 多 project work-items 装配。设计源头是
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  §7 V4.2，实施计划是
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`。
+  - **数据模型**（`@issuepilot/shared-contracts`）：`TaskNode` 增加
+    `needsReworkReason`；`TaskPlan` 增加 `replanOf: { planId, taskId }`；
+    `TaskPlanEdit.field` 联合类型加入 `"replan"`；`TaskNode.runIds`
+    在 dispatch 时按时间顺序 append，replan 时保留作为历史证据。
+  - **事件**：新增 `task_marked_needs_rework` / `task_replanned` /
+    `task_unskipped` / `task_graph_recomputed`，envelope 与 V4.1
+    `IssuePilotInternalEvent` 完全一致。
+  - **orchestrator HTTP API**：新增 4 条 work-item 路由
+    `POST /api/work-items/:id/tasks/:taskId/replan`、
+    `POST /api/work-items/:id/tasks/:taskId/mark-rework`、
+    `POST /api/work-items/:id/tasks/:taskId/unskip`、
+    `GET  /api/work-items/:id/graph`；全部 work-item 路由（含
+    V4.1 既有路由）支持 `x-issuepilot-project` header 做 team-mode
+    路由分发，缺 header → 400 `project_header_required`，未知
+    project id → 404 `project_not_found`。
+  - **orchestration**：`tickWorkItem` 在 dispatch 单上游依赖的 task
+    时调用 `decideEffectiveBase`，上游 `completed` 且 MR 未 merged
+    时下游 `DispatchInput.baseBranch === origin/<上游分支>`（线性
+    chaining）；多上游或上游失败回退为「等所有上游 merged」的
+    `blocked_by_dependency` 状态。`task_run_dispatched` 事件在 chain
+    场景下附带 `chainedFrom` / `baseOverride` 用于审计。
+  - **team daemon**：`apps/orchestrator/src/team/daemon.ts` 装配
+    `workItemsByProject: Map<string, WorkItemService>`，每个 project
+    独享 `.issuepilot/` workspace 命名空间；planner / fetchIssue /
+    tick 在 V4.2 仍是 operator-driven stub（Phase 3 再接 GitLab
+    adapter）。
+  - **dashboard**：新增 Task Graph SVG 视图（topology layout + critical
+    path 高亮）、list/graph view toggle、单 task replan dialog、mark
+    rework dialog、unskip 按钮、team-mode 顶栏 Project Switcher
+    （`localStorage` 持久化 + `x-issuepilot-project` header 自动注入）。
+  - **测试**：orchestrator 用例从 384 提升到 448（+64 / +16.7%），新增
+    branch-chain 单测、replan / mark-rework / unskip / graph service 单测、
+    `work-items-v42-e2e.test.ts` 端到端覆盖 chain + replan + mark-rework
+    + unskip、`team/work-items.test.ts` HTTP 路由层 project header 隔离
+    覆盖；dashboard 增量增加 TaskGraph / ViewToggle / Replan / MarkRework /
+    ProjectSwitcher 组件测试。`tests/e2e` 51 个 V1/V2 happy-path 用例
+    全部保持通过。
+  - **不变量保持**：父 Issue label / handoff note 仍只由 aggregator 经
+    `decideWorkItemStatus` + `writeParentHandoff` 写入；replan / mark-rework
+    / unskip 全部走 `reconcileWorkItem`；不创建 child GitLab Issue；
+    synthetic task run 的 `parentIssueLabelMode` 仍是 `"suppressed"`；
+    `aggregate.decideOverallStatus` 增加 operator-driven 状态
+    （`skipped` / `needs_rework`）的 carve-out，使 `markNeedsRework`
+    能让 WorkItem 从 `completed` 回到 `partial` 并触发父 Issue label
+    转 `ai-rework`，而不是悄悄无效。
 
 ### Fixed
 

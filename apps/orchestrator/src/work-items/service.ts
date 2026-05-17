@@ -537,9 +537,35 @@ export function createWorkItemService(
       return { ok: true } as const;
     },
 
-    async unskipTask() {
-      // Implemented in task 10.
-      return errorResult("not_implemented", "unskipTask not implemented");
+    async unskipTask({ workItemId, taskId, operator }) {
+      const wi = await deps.store.getWorkItem(workItemId);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const plan = await deps.store.getCurrentPlan(workItemId);
+      if (!plan) return errorResult("not_found", "plan not found");
+      const task = plan.tasks.find((t) => t.taskId === taskId);
+      if (!task) return errorResult("not_found", "task not found");
+      if (task.status !== "skipped") {
+        return errorResult(
+          "invalid_status",
+          `task ${taskId} status ${task.status} is not skipped`,
+        );
+      }
+
+      const ts = now();
+      const nextTasks: TaskNode[] = plan.tasks.map((t) => {
+        if (t.taskId !== taskId) return t;
+        const { statusReason: _ignored, ...rest } = t;
+        return { ...rest, status: "ready" as const };
+      });
+      await deps.store.saveTaskPlan({ ...plan, tasks: nextTasks });
+      deps.emit({
+        type: "task_unskipped",
+        ts,
+        detail: { workItemId, taskId, operator },
+      });
+      // Re-evaluate orchestration so the task may dispatch this tick.
+      await deps.tick(wi);
+      return { ok: true } as const;
     },
 
     async graph() {

@@ -150,8 +150,29 @@ function safeParseJson(s: string): unknown {
   }
 }
 
+/**
+ * LLM output is untrusted: the planner contract (see header) promises that
+ * EVERY parse problem becomes `planner_parse_failed` instead of an uncaught
+ * exception. We therefore validate not just the envelope (`{ tasks: [...] }`)
+ * but also each element shape — `null`, primitives, or objects missing
+ * `taskId` / `title` would otherwise crash the `tasks.map(...)` projection
+ * with a raw `TypeError`. Anything that fails this guard is funnelled into
+ * the stable `planner_parse_failed` code in `draft()`.
+ *
+ * Deeper field validation (riskLevel value set, dependsOn cycles, 2–5 task
+ * count, etc.) still lives in `plan-validation.ts`; this guard only ensures
+ * the projection is safe and the response has the minimal shape promised
+ * by the LLM contract.
+ */
 function isRawPlanResponse(value: unknown): value is RawPlanResponse {
   if (!value || typeof value !== "object") return false;
   const tasks = (value as { tasks?: unknown }).tasks;
-  return Array.isArray(tasks);
+  if (!Array.isArray(tasks)) return false;
+  return tasks.every(
+    (t) =>
+      !!t &&
+      typeof t === "object" &&
+      typeof (t as { taskId?: unknown }).taskId === "string" &&
+      typeof (t as { title?: unknown }).title === "string",
+  );
 }

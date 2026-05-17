@@ -109,7 +109,17 @@ export function createWorkItemStore(
     bucket.add(plan.planId);
   }
 
-  async function loadPlansFromDisk(workItemId: string): Promise<void> {
+  /**
+   * Hot-load every plan file once into the in-memory index. Plans are stored
+   * flat as `task-plans/<planId>.json` (spec §10), so we cannot stat a single
+   * file to answer `getCurrentPlan(workItemId)` — we must scan the directory
+   * and rebuild `plansByWorkItem`. `workItemId` is accepted by name so the
+   * intent at the call site stays readable, but the loader deliberately
+   * indexes every plan it sees (already-cached ones are skipped via
+   * `plansById.has(planId)`), since the next `getCurrentPlan` for a sibling
+   * WorkItem will then hit the cache without re-reading disk.
+   */
+  async function loadPlansFromDisk(_workItemId: string): Promise<void> {
     const dir = join(opts.rootDir, TASK_PLANS_DIR);
     let entries: string[];
     try {
@@ -124,10 +134,6 @@ export function createWorkItemStore(
       const plan = await readJson<TaskPlan>(join(dir, entry));
       if (!plan) continue;
       indexPlan(plan);
-      if (plan.workItemId === workItemId) {
-        // continue scanning rest in case the disk has multiple plans for
-        // the same workItem; we want them all indexed.
-      }
     }
   }
 

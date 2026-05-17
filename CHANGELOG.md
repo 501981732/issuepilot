@@ -54,7 +54,23 @@
     WorkItem aggregator（V4.1 任务 11）统一执行。已有 V2.x 调用方
     无需改动（参数省略时退回 `"active"`）。
 
+### Fixed
+
+- 2026-05-17 — **V4.1 任务 1–7 code review 修复**。
+  - `apps/orchestrator/src/work-items/planner.ts`：收紧
+    `isRawPlanResponse` 的 element 校验，确保数组里 `null` / 字符串等
+    非对象 entry **也**被 funnel 到稳定错误码 `planner_parse_failed`，
+    而不是抛裸 `TypeError`。这一项守住 planner header 注释里承诺的
+    "所有 LLM/parse 失败都映射为稳定 code" 契约（V4 spec §12.1 拆解
+    失败）。补充 `planner.test.ts` 两个回归用例（`[null]`、字符串
+    entry）。
+  - `apps/orchestrator/src/work-items/store.ts`：移除 `loadPlansFromDisk`
+    里的空 `if (plan.workItemId === workItemId) {}` dead 块；把"为何
+    hot-load 整目录"的设计意图改写到函数顶部 leading comment。
+    `workItemId` 参数保留（call site 可读性），仅在体内显式标注未使用。
+
 ### Changed
+
   主设计 spec 同步）。
   - **V3 收敛为生产化执行平台**：部署形态、worker、sandbox、身份权限、
     预算配额、Postgres 持久化、Webhook + poll、GitLab 审计 / secret 治理、

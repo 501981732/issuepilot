@@ -102,6 +102,31 @@ describe("createWorkItemPlanner", () => {
     if (!result.ok) expect(result.code).toBe("planner_parse_failed");
   });
 
+  // Regression guard: LLM output is untrusted. A `tasks` array whose
+  // entries are `null` (a frequent malformation right after a re-prompt)
+  // used to crash with an uncaught TypeError in `tasks.map`, escaping the
+  // documented stable-error-code contract (see planner.ts header). Both
+  // null entries and primitive entries must surface as `planner_parse_failed`.
+  it("emits planner_parse_failed when tasks contains a null entry", async () => {
+    const planner = createWorkItemPlanner({
+      callPlannerLlm: async () =>
+        ({ tasks: [null] }) as unknown as RawPlanResponse,
+    });
+    const result = await planner.draft({ issue: baseIssue });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("planner_parse_failed");
+  });
+
+  it("emits planner_parse_failed when tasks contains a primitive entry", async () => {
+    const planner = createWorkItemPlanner({
+      callPlannerLlm: async () =>
+        ({ tasks: ["t1" as unknown] }) as unknown as RawPlanResponse,
+    });
+    const result = await planner.draft({ issue: baseIssue });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("planner_parse_failed");
+  });
+
   it("forwards the validator error code (too_few_tasks)", async () => {
     const planner = createWorkItemPlanner({
       callPlannerLlm: async () => ({ tasks: [] }),

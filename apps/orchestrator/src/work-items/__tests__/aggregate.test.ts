@@ -159,6 +159,39 @@ async function aggregate(
   });
 }
 
+function idsByEvidenceKey(
+  entries: Array<{
+    kind: string;
+    text?: string;
+    label: string;
+    evidenceId: string;
+    source?: { relPath?: string };
+  }>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry.source?.relPath) {
+      out.set(`${entry.kind}:${entry.source.relPath}`, entry.evidenceId);
+      continue;
+    }
+    if (entry.kind === "validation" && entry.text) {
+      out.set(`validation:${entry.text}`, entry.evidenceId);
+      continue;
+    }
+    if (entry.kind === "risk" && entry.text) {
+      const level = entry.label.match(/\(([^)]+)\)/)?.[1] ?? "";
+      out.set(`risk:${level}:${entry.text}`, entry.evidenceId);
+      continue;
+    }
+    if (entry.kind === "test_result") {
+      const command = entry.text?.match(/^command: (.+)$/m)?.[1] ?? "";
+      const name = entry.label.replace(/^Check [^:]+: /, "");
+      out.set(`test_result:${name}:${command}`, entry.evidenceId);
+    }
+  }
+  return out;
+}
+
 describe("aggregateWorkItem", () => {
   it("returns AggregateResult with report and missing", async () => {
     const links = [
@@ -395,6 +428,212 @@ describe("aggregateWorkItem", () => {
         t2: { passed: 0, failed: 0, skipped: 1, unknown: 1 },
       },
     });
+  });
+
+  it("keeps report.evidence ids stable when evidence order changes", async () => {
+    const links = [
+      link({ taskId: "t1", runId: "run_a" }),
+      link({ taskId: "t2", runId: "run_b" }),
+    ];
+    const screenshot: ReportEvidence = {
+      kind: "screenshot",
+      label: "Login",
+      relPath: "evidence/login.png",
+    };
+    const recording: ReportEvidence = {
+      kind: "recording",
+      label: "Login video",
+      relPath: "evidence/login.webm",
+    };
+    const first = await aggregate(
+      plan,
+      links,
+      new Map([
+        [
+          "run_a",
+          report({ runId: "run_a", evidence: [screenshot, recording] }),
+        ],
+        ["run_b", report({ runId: "run_b" })],
+      ]),
+    );
+    const second = await aggregate(
+      plan,
+      links,
+      new Map([
+        [
+          "run_a",
+          report({ runId: "run_a", evidence: [recording, screenshot] }),
+        ],
+        ["run_b", report({ runId: "run_b" })],
+      ]),
+    );
+
+    const firstIds = idsByEvidenceKey(first.report.evidence.byTask["t1"] ?? []);
+    const secondIds = idsByEvidenceKey(
+      second.report.evidence.byTask["t1"] ?? [],
+    );
+    expect(secondIds.get("screenshot:evidence/login.png")).toBe(
+      firstIds.get("screenshot:evidence/login.png"),
+    );
+    expect(secondIds.get("recording:evidence/login.webm")).toBe(
+      firstIds.get("recording:evidence/login.webm"),
+    );
+  });
+
+  it("keeps report.evidence id stable when metadata changes but relPath remains", async () => {
+    const links = [
+      link({ taskId: "t1", runId: "run_a" }),
+      link({ taskId: "t2", runId: "run_b" }),
+    ];
+    const first = await aggregate(
+      plan,
+      links,
+      new Map([
+        [
+          "run_a",
+          report({
+            runId: "run_a",
+            evidence: [
+              {
+                kind: "screenshot",
+                label: "Login v1",
+                relPath: "evidence/login.png",
+                mediaType: "image/png",
+                capturedAt: "2026-05-17T00:02:00.000Z",
+              },
+            ],
+          }),
+        ],
+        ["run_b", report({ runId: "run_b" })],
+      ]),
+    );
+    const second = await aggregate(
+      plan,
+      links,
+      new Map([
+        [
+          "run_a",
+          report({
+            runId: "run_a",
+            evidence: [
+              {
+                kind: "screenshot",
+                label: "Login after copy edit",
+                relPath: "evidence/login.png",
+                mediaType: "image/webp",
+                capturedAt: "2026-05-17T00:03:00.000Z",
+                confidence: "system-derived",
+              },
+            ],
+          }),
+        ],
+        ["run_b", report({ runId: "run_b" })],
+      ]),
+    );
+
+    expect(
+      second.report.evidence.byTask["t1"]?.find((e) =>
+        e.source?.relPath === "evidence/login.png"
+      )?.evidenceId,
+    ).toBe(
+      first.report.evidence.byTask["t1"]?.find((e) =>
+        e.source?.relPath === "evidence/login.png"
+      )?.evidenceId,
+    );
+  });
+
+  it("keeps legacy validation, risk, and check ids stable when arrays reorder", async () => {
+    const links = [
+      link({ taskId: "t1", runId: "run_a" }),
+      link({ taskId: "t2", runId: "run_b" }),
+    ];
+    const first = await aggregate(
+      plan,
+      links,
+      new Map([
+        [
+          "run_a",
+          report({
+            runId: "run_a",
+            validation: ["pnpm test", "pnpm lint"],
+            risks: [
+              { level: "medium", text: "API contract changed" },
+              { level: "high", text: "Auth path changed" },
+            ],
+            checks: [
+              {
+                name: "unit",
+                status: "passed",
+                command: "pnpm test",
+                durationMs: 1200,
+              },
+              {
+                name: "lint",
+                status: "passed",
+                command: "pnpm lint",
+                durationMs: 500,
+              },
+            ],
+          }),
+        ],
+        ["run_b", report({ runId: "run_b" })],
+      ]),
+    );
+    const second = await aggregate(
+      plan,
+      links,
+      new Map([
+        [
+          "run_a",
+          report({
+            runId: "run_a",
+            validation: ["pnpm lint", "pnpm test"],
+            risks: [
+              { level: "high", text: "Auth path changed" },
+              { level: "medium", text: "API contract changed" },
+            ],
+            checks: [
+              {
+                name: "lint",
+                status: "passed",
+                command: "pnpm lint",
+                durationMs: 700,
+              },
+              {
+                name: "unit",
+                status: "passed",
+                command: "pnpm test",
+                durationMs: 1600,
+              },
+            ],
+          }),
+        ],
+        ["run_b", report({ runId: "run_b" })],
+      ]),
+    );
+
+    const firstIds = idsByEvidenceKey(first.report.evidence.byTask["t1"] ?? []);
+    const secondIds = idsByEvidenceKey(
+      second.report.evidence.byTask["t1"] ?? [],
+    );
+    expect(secondIds.get("validation:pnpm test")).toBe(
+      firstIds.get("validation:pnpm test"),
+    );
+    expect(secondIds.get("validation:pnpm lint")).toBe(
+      firstIds.get("validation:pnpm lint"),
+    );
+    expect(secondIds.get("risk:medium:API contract changed")).toBe(
+      firstIds.get("risk:medium:API contract changed"),
+    );
+    expect(secondIds.get("risk:high:Auth path changed")).toBe(
+      firstIds.get("risk:high:Auth path changed"),
+    );
+    expect(secondIds.get("test_result:unit:pnpm test")).toBe(
+      firstIds.get("test_result:unit:pnpm test"),
+    );
+    expect(secondIds.get("test_result:lint:pnpm lint")).toBe(
+      firstIds.get("test_result:lint:pnpm lint"),
+    );
   });
 
   it("derives ciSummary using worst status across task reports", async () => {

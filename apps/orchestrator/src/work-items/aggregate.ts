@@ -109,6 +109,18 @@ export async function aggregateWorkItem(
     ({ task, link, report }) => {
       const status: TaskNodeStatus = effectiveTaskStatus(task, link);
       const taskEvidence: WorkItemEvidenceEntry[] = [];
+      const duplicateSeedCounts = new Map<string, number>();
+      const stableSeed = (input: {
+        kind: WorkItemEvidenceEntry["kind"];
+        runId: string;
+        parts: string[];
+      }): string =>
+        stableOccurrenceSeed(duplicateSeedCounts, {
+          taskId: task.taskId,
+          kind: input.kind,
+          runId: input.runId,
+          parts: input.parts,
+        });
 
       if (report) {
         if (report.diff?.summary) {
@@ -121,8 +133,7 @@ export async function aggregateWorkItem(
                 label: `Diff: ${report.diff.filesChanged} file(s) changed`,
                 text: report.diff.summary,
                 confidence: "ai-claim",
-                seed: legacySeed({
-                  taskId: task.taskId,
+                seed: stableSeed({
                   kind: "diff",
                   runId: report.runId,
                   parts: [
@@ -136,7 +147,7 @@ export async function aggregateWorkItem(
             ),
           );
         }
-        for (const [index, v] of (report.handoff?.validation ?? []).entries()) {
+        for (const v of report.handoff?.validation ?? []) {
           taskEvidence.push(
             applyConfirmation(
               buildEvidenceEntry({
@@ -146,18 +157,17 @@ export async function aggregateWorkItem(
                 label: "Validation",
                 text: v,
                 confidence: "ai-claim",
-                seed: legacySeed({
-                  taskId: task.taskId,
+                seed: stableSeed({
                   kind: "validation",
                   runId: report.runId,
-                  parts: [String(index), v],
+                  parts: [v],
                 }),
               }),
               confirmations,
             ),
           );
         }
-        for (const [index, r] of (report.handoff?.risks ?? []).entries()) {
+        for (const r of report.handoff?.risks ?? []) {
           taskEvidence.push(
             applyConfirmation(
               buildEvidenceEntry({
@@ -167,11 +177,10 @@ export async function aggregateWorkItem(
                 label: `Risk (${r.level})`,
                 text: r.text,
                 confidence: "ai-claim",
-                seed: legacySeed({
-                  taskId: task.taskId,
+                seed: stableSeed({
                   kind: "risk",
                   runId: report.runId,
-                  parts: [String(index), r.level, r.text],
+                  parts: [r.level, r.text],
                 }),
               }),
               confirmations,
@@ -191,15 +200,10 @@ export async function aggregateWorkItem(
                   ? { href: report.ci.pipelineUrl }
                   : {}),
                 capturedAt: report.ci.checkedAt,
-                seed: legacySeed({
-                  taskId: task.taskId,
+                seed: stableSeed({
                   kind: "ci",
                   runId: report.runId,
-                  parts: [
-                    report.ci.status,
-                    report.ci.pipelineUrl ?? "",
-                    report.ci.checkedAt,
-                  ],
+                  parts: [report.ci.pipelineUrl ?? "ci"],
                 }),
               }),
               confirmations,
@@ -207,7 +211,7 @@ export async function aggregateWorkItem(
           );
         }
         if (report.reviewFeedback) {
-          for (const [index, c] of report.reviewFeedback.comments.entries()) {
+          for (const c of report.reviewFeedback.comments) {
             taskEvidence.push(
               applyConfirmation(
                 buildEvidenceEntry({
@@ -221,18 +225,10 @@ export async function aggregateWorkItem(
                   text: c.body,
                   confidence: "ai-claim",
                   capturedAt: c.createdAt,
-                  seed: legacySeed({
-                    taskId: task.taskId,
+                  seed: stableSeed({
                     kind: "review_feedback",
                     runId: report.runId,
-                    parts: [
-                      String(index),
-                      c.author,
-                      c.url,
-                      c.createdAt,
-                      c.body,
-                      String(c.resolved),
-                    ],
+                    parts: [c.url || c.body || c.author],
                   }),
                 }),
                 confirmations,
@@ -240,7 +236,7 @@ export async function aggregateWorkItem(
             );
           }
         }
-        for (const [index, evidence] of (report.evidence ?? []).entries()) {
+        for (const evidence of report.evidence ?? []) {
           taskEvidence.push(
             applyConfirmation(
               buildEvidenceEntry({
@@ -267,29 +263,17 @@ export async function aggregateWorkItem(
                       },
                     }
                   : {}),
-                seed: legacySeed({
-                  taskId: task.taskId,
+                seed: stableSeed({
                   kind: evidence.kind,
                   runId: report.runId,
-                  parts: [
-                    String(index),
-                    evidence.label,
-                    evidence.relPath ?? "",
-                    evidence.href ?? "",
-                    evidence.mediaType ?? "",
-                    evidence.capturedAt ?? "",
-                    evidence.confidence ?? "",
-                  ],
+                  parts: [evidence.relPath ?? evidence.href ?? evidence.label],
                 }),
               }),
               confirmations,
             ),
           );
         }
-        for (const [index, check] of (Array.isArray(report.checks)
-          ? report.checks
-          : []
-        ).entries()) {
+        for (const check of Array.isArray(report.checks) ? report.checks : []) {
           taskEvidence.push(
             applyConfirmation(
               buildEvidenceEntry({
@@ -299,18 +283,10 @@ export async function aggregateWorkItem(
                 label: `Check ${check.status}: ${check.name}`,
                 text: formatCheckText(check),
                 confidence: "system-derived",
-                seed: legacySeed({
-                  taskId: task.taskId,
+                seed: stableSeed({
                   kind: "test_result",
                   runId: report.runId,
-                  parts: [
-                    String(index),
-                    check.name,
-                    check.status,
-                    check.command ?? "",
-                    check.details ?? "",
-                    String(check.durationMs ?? ""),
-                  ],
+                  parts: [stableCheckIdentity(check)],
                 }),
               }),
               confirmations,
@@ -407,6 +383,28 @@ function legacySeed(input: {
   parts: string[];
 }): string {
   return [input.taskId, input.kind, input.runId, ...input.parts].join("\n");
+}
+
+function stableOccurrenceSeed(
+  counts: Map<string, number>,
+  input: {
+    taskId: string;
+    kind: WorkItemEvidenceEntry["kind"];
+    runId: string;
+    parts: string[];
+  },
+): string {
+  const base = legacySeed(input);
+  const seen = counts.get(base) ?? 0;
+  counts.set(base, seen + 1);
+  return seen === 0 ? base : `${base}\nduplicate:${seen + 1}`;
+}
+
+function stableCheckIdentity(
+  check: RunReportArtifact["checks"][number],
+): string {
+  if (check.name && check.command) return `${check.name}\n${check.command}`;
+  return check.name || check.command || check.details || "check";
 }
 
 function applyConfirmation(

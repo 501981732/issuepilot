@@ -4,9 +4,34 @@
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- 2026-05-17 — **Roadmap 重排：重新划清 V3 / V4 边界**（中英 README +
+- 2026-05-17 — **V4.1 Workflow Spine 实施 plan 与首批契约落地**。
+  - 新增 `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`：
+    22 任务、TDD 流程的 bite-sized 实施计划，对齐 V4 设计 spec §7
+    V4.1、§9 数据模型、§16 测试策略、§17 验收标准；明确遵守 V4.1 task
+    execution contract（不创建 child Issue、per-task run 不动父 Issue
+    label、`TaskRunLink` 唯一 binding、父 Issue handoff 由 aggregator
+    统一写入）。
+  - 新增 `@issuepilot/shared-contracts` work-item 契约：`WorkItem` /
+    `TaskPlan` / `TaskNode` / `TaskRunLink` / `WorkItemReport`、状态枚举
+    （`planning|ready|running|partial|completed|blocked` 等）和 type
+    guard。`RiskLevel` 与 V2.5 `RunReportArtifact` 共用 `report.ts` 的
+    定义，避免在两处定义不同字面量。
+  - 注册 13 条 V4.1 事件类型：`work_item_created` /
+    `work_item_plan_drafted` / `work_item_plan_accepted` /
+    `work_item_plan_rejected` / `work_item_plan_regenerated` /
+    `work_item_planning_failed` / `task_run_dispatched` /
+    `task_run_completed` / `task_run_failed` / `task_run_skipped` /
+    `task_run_blocked_by_dependency` / `work_item_aggregated` /
+    `work_item_handoff_written`。
+  - 新增 V4.1 HTTP 响应类型：`WorkItemsListResponse`（counters 覆盖全部
+    `WorkItemStatus`）、`WorkItemDetailResponse`（plan history + tasks +
+    runLinks + 可选 report）、`PlanWorkItemRequest`、
+    `AcceptWorkItemPlanRequest`（带 operator edits 数组）、
+    `WorkItemReportResponse`。
+
+### Changed
   主设计 spec 同步）。
   - **V3 收敛为生产化执行平台**：部署形态、worker、sandbox、身份权限、
     预算配额、Postgres 持久化、Webhook + poll、GitLab 审计 / secret 治理、

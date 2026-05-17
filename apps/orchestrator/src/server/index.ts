@@ -652,6 +652,33 @@ export async function createServer(
     return { ok: false, code, message };
   }
 
+  function requiredQueryString(value: unknown, name: string) {
+    if (typeof value !== "string" || value.length === 0) {
+      return {
+        ok: false as const,
+        body: routeError(
+          "validation_failed",
+          `${name} must be a non-empty string`,
+        ),
+      };
+    }
+    return { ok: true as const, value };
+  }
+
+  function optionalQueryString(value: unknown, name: string) {
+    if (value === undefined) return { ok: true as const, value: undefined };
+    if (typeof value !== "string" || value.length === 0) {
+      return {
+        ok: false as const,
+        body: routeError(
+          "validation_failed",
+          `${name} must be a non-empty string`,
+        ),
+      };
+    }
+    return { ok: true as const, value };
+  }
+
   app.post<{ Params: { iid: string }; Body?: { regenerate?: boolean } }>(
     "/api/issues/:iid/plan",
     async (request, reply) => {
@@ -971,30 +998,31 @@ export async function createServer(
 
   app.get<{
     Params: { id: string };
-    Querystring: { runId?: string; path?: string; project?: string };
+    Querystring: { runId?: unknown; path?: unknown; project?: unknown };
   }>("/api/work-items/:id/evidence/file", async (request, reply) => {
+    const project = optionalQueryString(request.query.project, "project");
+    if (!project.ok) return reply.code(400).send(project.body);
     const ctx = resolveWorkItemService(
       request.headers as Record<string, unknown>,
-      request.query.project,
+      project.value,
     );
     if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
 
-    const { runId, path: relPath } = request.query;
-    if (!runId || !relPath) {
-      return reply
-        .code(400)
-        .send(routeError("validation_failed", "runId and path are required"));
-    }
+    const runId = requiredQueryString(request.query.runId, "runId");
+    if (!runId.ok) return reply.code(400).send(runId.body);
+    const relPath = requiredQueryString(request.query.path, "path");
+    if (!relPath.ok) return reply.code(400).send(relPath.body);
 
     const detail = await ctx.service.detail(request.params.id);
-    const linked = detail?.runLinks.some((link) => link.runId === runId) ?? false;
+    const linked =
+      detail?.runLinks.some((link) => link.runId === runId.value) ?? false;
     if (!linked) {
       return reply
         .code(404)
         .send(routeError("not_found", "run is not linked to work item"));
     }
 
-    const report = await deps.reports?.get(runId);
+    const report = await deps.reports?.get(runId.value);
     const taskWorktreePath = report?.run.workspacePath;
     if (!taskWorktreePath) {
       return reply
@@ -1004,8 +1032,8 @@ export async function createServer(
 
     const result = await serveEvidenceFile({
       taskWorktreePath,
-      runId,
-      relPath,
+      runId: runId.value,
+      relPath: relPath.value,
     });
     if (!result.ok) {
       const status =

@@ -1599,6 +1599,50 @@ describe("V4.1 work item routes", () => {
     }
   });
 
+  it("GET /api/work-items/:id/evidence/file returns 400 for malformed runId or path query", async () => {
+    const detail = vi.fn(async () => ({
+      workItem: workItemFixture(),
+      plan: { current: planFixture(), history: [] },
+      tasks: [],
+      runLinks: [
+        {
+          taskId: "t1",
+          runId: "run-1",
+          attempt: 1,
+          status: "completed" as const,
+          branch: "ai/42-t1",
+          startedAt: "2026-05-17T00:00:00.000Z",
+        },
+      ],
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ detail: detail as never }),
+    });
+    const cases = [
+      { path: "screenshots/login.png" },
+      { runId: "run-1" },
+      { runId: ["run-1", "run-2"], path: "screenshots/login.png" },
+      { runId: "run-1", path: ["screenshots/login.png", "other.png"] },
+    ];
+    try {
+      for (const query of cases) {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/work-items/wi_01/evidence/file",
+          query,
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          ok: false,
+          code: "validation_failed",
+        });
+      }
+      expect(detail).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm stamps confirmedBy + returns report", async () => {
     const confirmTaskEvidence = vi.fn(async () => ({
       evidenceId: "ev-screenshot",
@@ -1789,6 +1833,49 @@ describe("V4.1 work item routes", () => {
       expect(fileResp.statusCode).toBe(200);
       expect(fileResp.headers["content-type"]).toContain("image/png");
       expect(detailA).toHaveBeenCalledWith("wi_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/evidence/file returns 400 for ambiguous project fallback", async () => {
+    const detailA = vi.fn(async () => ({
+      workItem: workItemFixture(),
+      plan: { current: planFixture(), history: [] },
+      tasks: [],
+      runLinks: [
+        {
+          taskId: "t1",
+          runId: "run-1",
+          attempt: 1,
+          status: "completed" as const,
+          branch: "ai/42-t1",
+          startedAt: "2026-05-17T00:00:00.000Z",
+        },
+      ],
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItemsByProject: new Map([
+        ["proj-a", buildWorkItemsService({ detail: detailA as never })],
+        ["proj-b", buildWorkItemsService()],
+      ]) as never,
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence/file",
+        query: {
+          project: ["proj-a", "proj-b"],
+          runId: "run-1",
+          path: "screenshots/login.png",
+        },
+      });
+      expect(resp.statusCode).toBe(400);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "validation_failed",
+      });
+      expect(detailA).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

@@ -9,11 +9,14 @@ export const revalidate = 0;
 
 export default async function WorkItemDetailRoute(props: {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{ view?: string }>;
 }) {
   const { id } = await props.params;
+  const sp = props.searchParams ? await props.searchParams : {};
+  const initialView = sp.view === "graph" ? "graph" : "list";
   try {
     const detail = await getWorkItem(id);
-    return <WorkItemDetail initial={detail} />;
+    return <WorkItemDetail initial={detail} initialView={initialView} />;
   } catch (err) {
     const error = err as Error & { status?: number };
     if (error.status === 404) {

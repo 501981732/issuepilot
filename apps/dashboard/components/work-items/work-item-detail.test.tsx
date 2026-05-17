@@ -11,11 +11,16 @@ vi.mock("../../lib/api", () => ({
   skipWorkItemTask: vi.fn(),
   retryWorkItemTask: vi.fn(),
   getWorkItem: vi.fn(),
+  getWorkItemGraph: vi.fn(),
+  replanWorkItemTask: vi.fn(),
+  markWorkItemTaskRework: vi.fn(),
+  unskipWorkItemTask: vi.fn(),
 }));
 
 import {
   acceptWorkItemPlan,
   getWorkItem,
+  getWorkItemGraph,
   regenerateWorkItemPlan,
   retryWorkItemTask,
   skipWorkItemTask,
@@ -144,6 +149,37 @@ describe("WorkItemDetail", () => {
       }),
     );
     await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+  });
+
+  it("V4.2: shows the view toggle and switches to TaskGraph when graph data loads", async () => {
+    vi.mocked(getWorkItemGraph).mockResolvedValue({
+      levels: [["T1"]],
+      edges: [],
+      criticalPathTaskIds: ["T1"],
+    });
+    const detail = acceptedDetail();
+    detail.tasks = [
+      {
+        taskId: "T1",
+        title: "T1 Title",
+        goal: "g",
+        scope: "s",
+        dependsOn: [],
+        suggestedValidation: [],
+        status: "ready",
+        runIds: [],
+        riskLevel: "medium",
+      },
+    ];
+    render(<WorkItemDetail initial={detail} operator="alice" />);
+    // List view by default.
+    expect(screen.getByText("Tasks")).toBeInTheDocument();
+    // Toggle Graph
+    fireEvent.click(screen.getByRole("button", { name: /Graph/ }));
+    await waitFor(() => expect(getWorkItemGraph).toHaveBeenCalledWith("wi_1"));
+    await waitFor(() =>
+      expect(screen.getByTestId("task-graph-node-T1")).toBeInTheDocument(),
+    );
   });
 
   it("invokes skipWorkItemTask / retryWorkItemTask from task list", async () => {

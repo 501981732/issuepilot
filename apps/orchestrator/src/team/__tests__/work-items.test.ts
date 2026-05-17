@@ -2,17 +2,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type {
-  WorkflowConfig,
-  CompileCentralWorkflowProjectInput,
-} from "@issuepilot/workflow";
+import type { WorkflowConfig } from "@issuepilot/workflow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LeaseStore } from "../../runtime/leases.js";
 import {
   createServer as realCreateServer,
   type ServerDeps,
-  type WorkItemService,
 } from "../../server/index.js";
 import type { TeamConfig } from "../config.js";
 import { startTeamDaemon } from "../daemon.js";

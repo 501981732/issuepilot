@@ -1,8 +1,8 @@
 "use client";
 
 import type { ProjectSummary } from "@issuepilot/shared-contracts";
-import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+import { useEffect, useState } from "react";
 
 import { setActiveWorkItemsProject } from "../../lib/api";
 

@@ -1,9 +1,9 @@
 "use client";
 
 import type { MarkTaskReworkRequest } from "@issuepilot/shared-contracts";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { useTranslations } from "next-intl";
 
 import { Button } from "../ui/button";
 

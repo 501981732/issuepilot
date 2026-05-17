@@ -19,7 +19,12 @@ const STATUS_CLASS: Record<TaskPlan["status"], string> = {
   superseded: "bg-fg-subtle/20 text-fg-subtle",
 };
 
-type EditableField = TaskPlanEdit["field"];
+// `TaskPlanEdit["field"]` includes `"replan"` (V4.2) which is *not*
+// an inline-editable field — it's a side-channel operator action that
+// produces a brand-new plan version, not a string/array tweak on the
+// current task. Narrow the editor's field set to the inline-editable
+// subset so `fields` below stays type-safe against `Editable`.
+type EditableField = Exclude<TaskPlanEdit["field"], "replan">;
 
 type Editable = Pick<
   TaskNode,

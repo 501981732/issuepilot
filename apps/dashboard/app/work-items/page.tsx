@@ -1,8 +1,8 @@
 "use client";
 
 import type { WorkItemsListResponse } from "@issuepilot/shared-contracts";
-import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+import { useEffect, useState } from "react";
 
 import { WorkItemsList } from "../../components/work-items/work-items-list";
 import { listWorkItems } from "../../lib/api";

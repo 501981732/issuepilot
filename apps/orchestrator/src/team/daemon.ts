@@ -12,7 +12,13 @@ import {
   createRuntimeState,
   type RuntimeState,
 } from "../runtime/state.js";
-import { createServer } from "../server/index.js";
+import { createServer, type WorkItemService } from "../server/index.js";
+import {
+  createWorkItemPlanner,
+  type RawPlanResponse,
+} from "../work-items/planner.js";
+import { createWorkItemService } from "../work-items/service.js";
+import { createWorkItemStore } from "../work-items/store.js";
 
 import {
   loadTeamConfig as defaultLoadTeamConfig,
@@ -22,6 +28,7 @@ import {
   createProjectRegistry as defaultCreateProjectRegistry,
   type CentralWorkflowCompilerLike,
   type ProjectRegistry,
+  type RegisteredProject,
 } from "./registry.js";
 
 /**
@@ -89,10 +96,75 @@ function deriveLeaseFilePath(config: TeamConfig): string {
 type TeamEvent = IssuePilotInternalEvent;
 
 /**
+ * V4.2: build a per-project work-item service for team-mode. The service is
+ * intentionally minimal:
+ *
+ *  - planner: returns a deterministic 503 — team-mode does not yet ship the
+ *    planner runner, but we still want the route layer to respond
+ *    consistently instead of crashing.
+ *  - fetchIssue: stubbed for the same reason; once `Phase 3` lands a real
+ *    GitLab adapter under team-mode this will swap in the project's
+ *    {@link RegisteredProject.workflow} tracker credentials.
+ *  - tick: no-op — team-mode does not auto-poll GitLab and currently does
+ *    not dispatch synthetic task runs. The dispatch wiring lives in the
+ *    single-project daemon, follow-up tracked alongside the team-mode
+ *    workspace retention task.
+ *  - reconcileWorkItem: no-op — there is no parent Issue label transition
+ *    to run until the GitLab adapter is wired.
+ *
+ * The store is scoped under the project's own
+ * `workspace.root/.issuepilot/` so team daemons never accidentally cross
+ * project namespaces.
+ */
+function buildProjectWorkItemService(
+  project: RegisteredProject,
+  eventBus: EventBus<TeamEvent>,
+): WorkItemService {
+  const store = createWorkItemStore({
+    rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
+  });
+  const planner = createWorkItemPlanner({
+    callPlannerLlm: async (): Promise<RawPlanResponse | string> => {
+      throw new Error(
+        "WorkItemPlanner is not configured for team-mode. Phase 3 will wire a per-project planner runner.",
+      );
+    },
+  });
+  return createWorkItemService({
+    store,
+    planner,
+    fetchIssue: async () => {
+      throw new Error(
+        `team-mode planFromIssue is not wired yet for project ${project.id}: configure a GitLab adapter`,
+      );
+    },
+    tick: async () => {},
+    reconcileWorkItem: async () => {},
+    emit: (event) => {
+      eventBus.publish({
+        type: event.type,
+        ts: event.ts,
+        runId: event.runId ?? null,
+        detail: { ...event.detail, project: project.id },
+      } as unknown as TeamEvent);
+    },
+  });
+}
+
+/**
  * Phase 1 team-mode entrypoint: parse the team config, load each enabled
  * project workflow, and bring up the Fastify server with project-aware
  * `/api/state`. No GitLab polling is wired up yet — the goal is to give the
  * dashboard and CLI a stable shell to talk to.
+ *
+ * V4.2 (Task Graph): team-mode now also wires per-project
+ * {@link WorkItemService} instances under `workItemsByProject`. work-items
+ * routes are **operator-driven** in team-mode — the daemon does NOT
+ * auto-poll GitLab; `planFromIssue` / `acceptPlan` / `dispatch` only run
+ * when the dashboard or CLI explicitly triggers them. This matches Phase
+ * 1's "stable shell" stance and avoids surprising side effects across
+ * projects. See `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-
+ * graph.md` §14 for the rationale.
  */
 export async function startTeamDaemon(
   options: StartTeamDaemonOptions,
@@ -137,6 +209,21 @@ export async function startTeamDaemon(
   const host = options.host ?? config.server.host;
   const port = options.port ?? config.server.port;
 
+  // V4.2: assemble per-project work-item services keyed by the project id
+  // exposed in `x-issuepilot-project`. Header is required by the server
+  // route layer when this map is non-empty; team-mode never falls back to
+  // a default service to keep operator actions strictly project-scoped.
+  // team-mode work-items routes do NOT auto-poll GitLab — planFromIssue /
+  // acceptPlan / dispatch are operator-driven (see daemon.ts header comment
+  // and §17 of the design spec).
+  const workItemsByProject = new Map<string, WorkItemService>();
+  for (const project of registry.enabledProjects()) {
+    workItemsByProject.set(
+      project.id,
+      buildProjectWorkItemService(project, eventBus),
+    );
+  }
+
   const app = await createServerImpl(
     {
       state,
@@ -158,6 +245,7 @@ export async function startTeamDaemon(
       projects: () => registry.summaries(),
       readEvents: async () => [],
       readLogsTail: async () => [],
+      workItemsByProject,
     },
     { host, port },
   );

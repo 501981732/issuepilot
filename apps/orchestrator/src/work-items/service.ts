@@ -366,6 +366,13 @@ export function createWorkItemService(
         detail: { workItemId, taskId, operator, retried: true },
       });
       await deps.tick(wi);
+      // V4.2 review C2: after tick may have flipped the task back to
+      // `running`, the WorkItem-level aggregate / parent label should
+      // catch up (e.g. partial → running on retry-after-rework so the
+      // parent Issue label swaps `ai-rework` → `ai-running`). Without
+      // this reconcile, the label transition only happens when the
+      // next dispatch settles, which is sometimes never.
+      await deps.reconcileWorkItem(workItemId);
       return { ok: true } as const;
     },
 
@@ -566,6 +573,11 @@ export function createWorkItemService(
       });
       // Re-evaluate orchestration so the task may dispatch this tick.
       await deps.tick(wi);
+      // V4.2 review C2 follow-through: unskip can push WorkItem.status
+      // back from `partial` to `running` (the task is in flight again),
+      // which the parent Issue label must reflect. See retryTask above
+      // for the same rationale.
+      await deps.reconcileWorkItem(workItemId);
       return { ok: true } as const;
     },
 

@@ -148,6 +148,34 @@ describe("decideParentLabelTransition", () => {
     const r = decideParentLabelTransition("running", "blocked", workflow);
     expect(r).toEqual({ add: [], remove: [] });
   });
+
+  // V4.2 review C2 — the §12.3 rework loop needs the parent label to
+  // actually move back from `human-review` when an operator marks a
+  // completed task for rework, and forward again once the rework
+  // round-trips through retry + re-completion.
+  it("completed → partial swaps human-review for ai-rework (markNeedsRework path)", () => {
+    const r = decideParentLabelTransition("completed", "partial", workflow);
+    expect(r.add).toEqual(["ai-rework"]);
+    expect(r.remove).toEqual(["human-review"]);
+  });
+
+  it("partial → running swaps ai-rework for ai-running (retry path)", () => {
+    const r = decideParentLabelTransition("partial", "running", workflow);
+    expect(r.add).toEqual(["ai-running"]);
+    expect(r.remove).toEqual(["ai-rework"]);
+  });
+
+  it("partial → completed swaps ai-rework for human-review (rework loop closed)", () => {
+    const r = decideParentLabelTransition("partial", "completed", workflow);
+    expect(r.add).toEqual(["human-review"]);
+    expect(r.remove).toEqual(["ai-rework"]);
+  });
+
+  it("completed → running swaps human-review for ai-running (operator retried without rework)", () => {
+    const r = decideParentLabelTransition("completed", "running", workflow);
+    expect(r.add).toEqual(["ai-running"]);
+    expect(r.remove).toEqual(["human-review"]);
+  });
 });
 
 describe("renderWorkItemHandoffNoteBody", () => {

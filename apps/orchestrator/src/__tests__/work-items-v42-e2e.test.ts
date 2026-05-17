@@ -675,6 +675,139 @@ describe("V4.2 Task Graph end-to-end", () => {
     expect(events.some((e) => e.type === "task_marked_needs_rework")).toBe(
       true,
     );
+
+    // V4.2 review C2: the parent Issue label must actually transition
+    // from `human-review` back to `ai-rework` so the §12.3 rework loop
+    // is visible at the GitLab UI level. Pre-fix `decideParentLabelTransition`
+    // had no rule for `completed → partial`, so the label silently
+    // stayed at `human-review` and the rework intent was invisible.
+    const reworkTransition = gitlabFake.state.labelLog.find(
+      (entry) =>
+        entry.add.includes("ai-rework") &&
+        entry.remove.includes("human-review"),
+    );
+    expect(reworkTransition, "expected ai-rework label transition").toBeDefined();
+    // writeParentHandoff emits a single `work_item_handoff_written`
+    // event that carries the label transition in its detail.
+    const handoffEvent = events.find(
+      (e) =>
+        e.type === "work_item_handoff_written" &&
+        Array.isArray(e.detail.labelAdd) &&
+        (e.detail.labelAdd as string[]).includes("ai-rework"),
+    );
+    expect(handoffEvent, "expected handoff event with ai-rework").toBeDefined();
+  });
+
+  // V4.2 review C2 follow-through: retrying the rework'd task should
+  // close the loop by moving the parent label ai-rework → ai-running,
+  // and once everything settles complete again the label flips back to
+  // human-review. Pre-fix neither transition existed.
+  it("rework round-trip: ai-rework → ai-running on retry, then human-review when complete again", async () => {
+    const store = createWorkItemStore({ rootDir });
+    const reportByRunId = new Map<string, RunReportArtifact>();
+    const gitlabFake = makeFakeGitlab();
+    const events: Array<{
+      type: string;
+      runId?: string;
+      detail: Record<string, unknown>;
+    }> = [];
+    const dispatches: DispatchCall[] = [];
+    const harness = buildHarness({
+      store,
+      reportByRunId,
+      gitlab: gitlabFake.adapter,
+      events,
+      dispatches,
+      plannerState: {
+        initial: twoTaskPlan(),
+        replanResponses: new Map(),
+      },
+    });
+
+    const planRes = await harness.service.planFromIssue({
+      iid: 42,
+      operator: "alice",
+    });
+    if ("error" in planRes) throw new Error("plan failed");
+    const wiId = planRes.workItem.workItemId;
+    await harness.service.acceptPlan({
+      workItemId: wiId,
+      planId: planRes.plan.planId,
+      operator: "alice",
+      edits: [],
+    });
+
+    // Both tasks complete with merged MRs → WorkItem.status = completed.
+    for (const link of await store.listAllTaskRunLinks(wiId)) {
+      reportByRunId.set(
+        link.runId,
+        fakeRunReport({
+          runId: link.runId,
+          mrIid: 9300 + link.taskId.length,
+          mrState: "merged",
+        }),
+      );
+      await harness.settle(link.runId);
+    }
+    expect(((await store.getWorkItem(wiId)) as WorkItem).status).toBe(
+      "completed",
+    );
+
+    // markNeedsRework → ai-rework transition (regression coverage —
+    // shared with the test above, but here we want a clean labelLog
+    // snapshot before the retry round-trip assertions below).
+    await harness.service.markNeedsRework({
+      workItemId: wiId,
+      taskId: "T2",
+      reason: "Reviewer wants extra tests",
+      operator: "alice",
+    });
+    const labelsAfterRework = gitlabFake.state.labelLog.length;
+
+    // Operator clicks Retry → ai-rework → ai-running.
+    await harness.service.retryTask(wiId, "T2", "alice");
+    const retryTransition = gitlabFake.state.labelLog
+      .slice(labelsAfterRework)
+      .find(
+        (entry) =>
+          entry.add.includes("ai-running") &&
+          entry.remove.includes("ai-rework"),
+      );
+    expect(
+      retryTransition,
+      "expected ai-running label transition on retry",
+    ).toBeDefined();
+
+    // The retry produced a fresh running TaskRunLink for T2. Settle it
+    // as merged and the rework loop closes: ai-running → human-review.
+    const latestLinks = await store.listAllTaskRunLinks(wiId);
+    const newT2Link = latestLinks
+      .filter((l) => l.taskId === "T2")
+      .sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""))
+      .at(-1);
+    if (!newT2Link) throw new Error("expected a fresh T2 link after retry");
+    reportByRunId.set(
+      newT2Link.runId,
+      fakeRunReport({
+        runId: newT2Link.runId,
+        mrIid: 9400,
+        mrState: "merged",
+      }),
+    );
+    await harness.settle(newT2Link.runId);
+
+    expect(((await store.getWorkItem(wiId)) as WorkItem).status).toBe(
+      "completed",
+    );
+    const closeTransition = gitlabFake.state.labelLog.find(
+      (entry) =>
+        entry.add.includes("human-review") &&
+        entry.remove.includes("ai-running"),
+    );
+    expect(
+      closeTransition,
+      "expected human-review label transition when rework loop closes",
+    ).toBeDefined();
   });
 
   // Review C1: after a task settles `completed`, operator marks it back

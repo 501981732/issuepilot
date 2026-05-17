@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { createEventBus } from "@issuepilot/observability";
 import {
   RUN_REPORT_VERSION,
@@ -971,6 +975,14 @@ describe("run reports", () => {
 });
 
 describe("V4.1 work item routes", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+    );
+  });
+
   function workItemFixture(over: Partial<{ status: string }> = {}) {
     return {
       workItemId: "wi_01",
@@ -1046,7 +1058,139 @@ describe("V4.1 work item routes", () => {
           criticalPathTaskIds: ["t1", "t2"],
         })),
       report: over.report ?? (async () => undefined),
+      getReportMarkdown: over.getReportMarkdown ??
+        (async () => "# Work item report\n"),
+      getEvidence: over.getEvidence ??
+        (async () => ({
+          index: [],
+          byTask: {},
+          missing: [],
+        })),
+      confirmTaskEvidence: over.confirmTaskEvidence ??
+        (async (_workItemId, _taskId, evidenceId) => ({
+          evidenceId,
+          confirmedAt: "2026-05-17T00:20:00.000Z",
+          report: workItemReportFixture(),
+        })),
     };
+  }
+
+  function workItemReportFixture() {
+    return {
+      workItemId: "wi_01",
+      overallStatus: "complete" as const,
+      taskSummaries: [],
+      validationSummary: "",
+      riskSummary: "",
+      evidence: { index: [], byTask: {} },
+      openQuestions: [],
+      recommendedNextActions: [],
+      humanReviewChecklist: [],
+      generatedAt: "2026-05-17T00:10:00.000Z",
+    };
+  }
+
+  function evidenceResponseFixture() {
+    return {
+      index: [
+        {
+          evidenceId: "ev-screenshot",
+          taskId: "t1",
+          kind: "screenshot" as const,
+          label: "Login screenshot",
+          confidence: "ai-claim" as const,
+          source: { runId: "run-1", relPath: "screenshots/login.png" },
+        },
+      ],
+      byTask: {
+        t1: [
+          {
+            evidenceId: "ev-screenshot",
+            taskId: "t1",
+            kind: "screenshot" as const,
+            label: "Login screenshot",
+            confidence: "ai-claim" as const,
+            source: { runId: "run-1", relPath: "screenshots/login.png" },
+          },
+        ],
+      },
+      missing: [{ taskId: "t2", reason: "no-run-report" as const }],
+    };
+  }
+
+  function runReportFixture(
+    over: Partial<RunReportArtifact> = {},
+  ): RunReportArtifact {
+    return {
+      version: RUN_REPORT_VERSION,
+      runId: "run-1",
+      issue: {
+        projectId: "group/project",
+        iid: 42,
+        title: "Fix checkout",
+        url: "https://gitlab.example.com/issues/42",
+        labels: ["human-review"],
+      },
+      run: {
+        status: "completed",
+        attempt: 1,
+        branch: "ai/42-fix-checkout",
+        workspacePath: "/tmp/ws",
+        startedAt: "2026-05-16T00:00:00.000Z",
+        endedAt: "2026-05-16T00:05:00.000Z",
+        durations: { totalMs: 300000 },
+      },
+      handoff: {
+        summary: "Updated checkout copy.",
+        validation: ["pnpm test passed"],
+        risks: [],
+        followUps: [],
+        nextAction: "Review and merge the MR.",
+      },
+      diff: { summary: "1 file changed", filesChanged: 1, notableFiles: [] },
+      checks: [],
+      mergeReadiness: {
+        mode: "dry-run",
+        status: "ready",
+        reasons: [],
+        evaluatedAt: "2026-05-16T00:06:00.000Z",
+      },
+      notes: {},
+      ...over,
+    };
+  }
+
+  function buildReportStoreByRun(reports: RunReportArtifact[]) {
+    const byRun = new Map(reports.map((report) => [report.runId, report]));
+    return {
+      save: async () => {},
+      get: async (runId: string) => byRun.get(runId),
+      summary: (runId: string) => {
+        const report = byRun.get(runId);
+        return report ? buildRunReportSummary(report) : undefined;
+      },
+      allSummaries: () => [...byRun.values()].map(buildRunReportSummary),
+    };
+  }
+
+  async function createEvidencePng(runId = "run-1") {
+    const taskWorktreePath = await mkdtemp(
+      path.join(tmpdir(), "issuepilot-server-evidence-"),
+    );
+    tempDirs.push(taskWorktreePath);
+    const evidenceDir = path.join(
+      taskWorktreePath,
+      ".issuepilot",
+      "evidence",
+      runId,
+      "screenshots",
+    );
+    await mkdir(evidenceDir, { recursive: true });
+    const png = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+    await writeFile(path.join(evidenceDir, "login.png"), png);
+    return { taskWorktreePath, png };
   }
 
   it("returns 503 work_items_unavailable when service is not wired", async () => {
@@ -1298,18 +1442,7 @@ describe("V4.1 work item routes", () => {
   });
 
   it("GET /api/work-items/:id/report returns { report } shape", async () => {
-    const report = vi.fn(async () => ({
-      workItemId: "wi_01",
-      overallStatus: "complete" as const,
-      taskSummaries: [],
-      validationSummary: "",
-      riskSummary: "",
-      evidence: { index: [], byTask: {} },
-      openQuestions: [],
-      recommendedNextActions: [],
-      humanReviewChecklist: [],
-      generatedAt: "2026-05-17T00:10:00.000Z",
-    }));
+    const report = vi.fn(async () => workItemReportFixture());
     const { app } = await buildTestApp(async () => [], {
       workItems: buildWorkItemsService({ report: report as never }),
     });
@@ -1321,6 +1454,341 @@ describe("V4.1 work item routes", () => {
       expect(resp.statusCode).toBe(200);
       const body = JSON.parse(resp.body);
       expect(body.report.workItemId).toBe("wi_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/report.md returns markdown body", async () => {
+    const getReportMarkdown = vi.fn(async () => "# Review packet\n\nReady.");
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        getReportMarkdown: getReportMarkdown as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/report.md",
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(resp.headers["content-type"]).toContain("text/markdown");
+      expect(resp.body).toBe("# Review packet\n\nReady.");
+      expect(getReportMarkdown).toHaveBeenCalledWith("wi_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/report.md returns 404 report_not_ready when no plan accepted", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        getReportMarkdown: (async () => ({
+          error: { code: "report_not_ready", message: "report not ready" },
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/report.md",
+      });
+      expect(resp.statusCode).toBe(404);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "report_not_ready",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/evidence returns grouped + missing", async () => {
+    const getEvidence = vi.fn(async () => evidenceResponseFixture());
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ getEvidence: getEvidence as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence",
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(JSON.parse(resp.body)).toEqual(evidenceResponseFixture());
+      expect(getEvidence).toHaveBeenCalledWith("wi_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/evidence/file streams png and infers content-type", async () => {
+    const { taskWorktreePath, png } = await createEvidencePng();
+    const report = runReportFixture({
+      run: { ...runReportFixture().run, workspacePath: taskWorktreePath },
+    });
+    const { app } = await buildTestApp(async () => [], {
+      reports: buildReportStoreByRun([report]),
+      workItems: buildWorkItemsService({
+        detail: (async () => ({
+          workItem: workItemFixture(),
+          plan: { current: planFixture(), history: [] },
+          tasks: [],
+          runLinks: [
+            {
+              taskId: "t1",
+              runId: "run-1",
+              attempt: 1,
+              status: "completed",
+              branch: "ai/42-t1",
+              startedAt: "2026-05-17T00:00:00.000Z",
+            },
+          ],
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence/file?runId=run-1&path=screenshots/login.png",
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(resp.headers["content-type"]).toContain("image/png");
+      expect(Buffer.from(resp.rawPayload)).toEqual(png);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/evidence/file returns 403 when path tries to escape via ../", async () => {
+    const { taskWorktreePath } = await createEvidencePng();
+    const report = runReportFixture({
+      run: { ...runReportFixture().run, workspacePath: taskWorktreePath },
+    });
+    const { app } = await buildTestApp(async () => [], {
+      reports: buildReportStoreByRun([report]),
+      workItems: buildWorkItemsService({
+        detail: (async () => ({
+          workItem: workItemFixture(),
+          plan: { current: planFixture(), history: [] },
+          tasks: [],
+          runLinks: [
+            {
+              taskId: "t1",
+              runId: "run-1",
+              attempt: 1,
+              status: "completed",
+              branch: "ai/42-t1",
+              startedAt: "2026-05-17T00:00:00.000Z",
+            },
+          ],
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence/file?runId=run-1&path=../secret.png",
+      });
+      expect(resp.statusCode).toBe(403);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "forbidden",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm stamps confirmedBy + returns report", async () => {
+    const confirmTaskEvidence = vi.fn(async () => ({
+      evidenceId: "ev-screenshot",
+      confirmedAt: "2026-05-17T00:20:00.000Z",
+      report: {
+        ...workItemReportFixture(),
+        evidence: {
+          index: [
+            {
+              evidenceId: "ev-screenshot",
+              taskId: "t1",
+              kind: "screenshot" as const,
+              label: "Login screenshot",
+              confidence: "human-confirmed" as const,
+              confirmedBy: "alice",
+              confirmedAt: "2026-05-17T00:20:00.000Z",
+            },
+          ],
+          byTask: {},
+        },
+      },
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        confirmTaskEvidence: confirmTaskEvidence as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/evidence/ev-screenshot/confirm",
+        payload: { operator: "alice" },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(confirmTaskEvidence).toHaveBeenCalledWith(
+        "wi_01",
+        "t1",
+        "ev-screenshot",
+        { operator: "alice" },
+      );
+      expect(JSON.parse(resp.body)).toMatchObject({
+        evidenceId: "ev-screenshot",
+        confirmedAt: "2026-05-17T00:20:00.000Z",
+        report: {
+          evidence: {
+            index: [
+              {
+                evidenceId: "ev-screenshot",
+                confidence: "human-confirmed",
+                confirmedBy: "alice",
+              },
+            ],
+          },
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm returns 404 when evidenceId is unknown", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        confirmTaskEvidence: (async () => ({
+          error: { code: "not_found", message: "evidence not found" },
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/evidence/missing/confirm",
+        payload: { operator: "alice" },
+      });
+      expect(resp.statusCode).toBe(404);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "not_found",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/evidence/file returns 404 when runId is not linked to this WorkItem", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        detail: (async () => ({
+          workItem: workItemFixture(),
+          plan: { current: planFixture(), history: [] },
+          tasks: [],
+          runLinks: [],
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence/file?runId=other-run&path=screenshots/login.png",
+      });
+      expect(resp.statusCode).toBe(404);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "not_found",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm returns 404 when evidenceId belongs to another task", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        confirmTaskEvidence: (async () => ({
+          error: { code: "not_found", message: "evidence not found" },
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t2/evidence/ev-screenshot/confirm",
+        payload: { operator: "alice" },
+      });
+      expect(resp.statusCode).toBe(404);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "not_found",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("routes go through x-issuepilot-project header or ?project= fallback in team mode", async () => {
+    const { taskWorktreePath } = await createEvidencePng();
+    const report = runReportFixture({
+      run: { ...runReportFixture().run, workspacePath: taskWorktreePath },
+    });
+    const getEvidenceA = vi.fn(async () => evidenceResponseFixture());
+    const getEvidenceB = vi.fn(async () => ({
+      index: [],
+      byTask: {},
+      missing: [],
+    }));
+    const detailA = vi.fn(async () => ({
+      workItem: workItemFixture(),
+      plan: { current: planFixture(), history: [] },
+      tasks: [],
+      runLinks: [
+        {
+          taskId: "t1",
+          runId: "run-1",
+          attempt: 1,
+          status: "completed",
+          branch: "ai/42-t1",
+          startedAt: "2026-05-17T00:00:00.000Z",
+        },
+      ],
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      reports: buildReportStoreByRun([report]),
+      workItemsByProject: new Map([
+        [
+          "proj-a",
+          buildWorkItemsService({
+            detail: detailA as never,
+            getEvidence: getEvidenceA as never,
+          }),
+        ],
+        ["proj-b", buildWorkItemsService({ getEvidence: getEvidenceB as never })],
+      ]) as never,
+    });
+    try {
+      const evidenceResp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence",
+        headers: { "x-issuepilot-project": "proj-a" },
+      });
+      expect(evidenceResp.statusCode).toBe(200);
+      expect(getEvidenceA).toHaveBeenCalledWith("wi_01");
+      expect(getEvidenceB).toHaveBeenCalledTimes(0);
+
+      const fileResp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/evidence/file?project=proj-a&runId=run-1&path=screenshots/login.png",
+      });
+      expect(fileResp.statusCode).toBe(200);
+      expect(fileResp.headers["content-type"]).toContain("image/png");
+      expect(detailA).toHaveBeenCalledWith("wi_01");
     } finally {
       await app.close();
     }

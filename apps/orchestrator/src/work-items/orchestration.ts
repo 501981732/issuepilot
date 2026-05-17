@@ -324,7 +324,13 @@ export async function tickWorkItem(
       branch,
       startedAt: ts,
     });
-    await deps.saveTaskNode(t.taskId, { status: "running" });
+    // Spec §9.3：`task.runIds` 按时间顺序 append。每次 dispatch 都把
+    // 新的 runId 追加进去；replan 时 `previousTask.runIds` 是历史
+    // 证据，replan 后继续保留。
+    await deps.saveTaskNode(t.taskId, {
+      status: "running",
+      runIds: [...t.runIds, runId],
+    });
     deps.emit({
       type: "task_run_dispatched",
       runId,

@@ -11,7 +11,7 @@ import { ThemeToggle } from "./theme-toggle";
 
 interface NavItem {
   href: string;
-  labelKey: "commandCenter" | "reports";
+  labelKey: "commandCenter" | "reports" | "workItems";
   icon: React.ReactNode;
   match: (pathname: string) => boolean;
 }
@@ -32,6 +32,27 @@ function HomeIcon() {
       <path d="M4 11.5 12 4l8 7.5" />
       <path d="M5.5 10.5V20h13v-9.5" />
       <path d="M10 20v-5h4v5" />
+    </svg>
+  );
+}
+
+function WorkItemsIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={16}
+      height={16}
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="4" y="4" width="7" height="7" rx="1.4" />
+      <rect x="13" y="4" width="7" height="7" rx="1.4" />
+      <rect x="4" y="13" width="7" height="7" rx="1.4" />
+      <rect x="13" y="13" width="7" height="7" rx="1.4" />
     </svg>
   );
 }
@@ -61,6 +82,12 @@ const NAV: NavItem[] = [
     labelKey: "commandCenter",
     icon: <HomeIcon />,
     match: (p) => p === "/" || p.startsWith("/runs"),
+  },
+  {
+    href: "/work-items",
+    labelKey: "workItems",
+    icon: <WorkItemsIcon />,
+    match: (p) => p.startsWith("/work-items"),
   },
   {
     href: "/reports",

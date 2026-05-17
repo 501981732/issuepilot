@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import type { RunWithReport } from "../../lib/api";
+import { planWorkItem, type RunWithReport } from "../../lib/api";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import {
   PIPELINE_TONES,
@@ -36,6 +37,9 @@ export function ReviewPacketInspector({
 }: ReviewPacketInspectorProps) {
   const t = useTranslations("inspector");
   const tCommon = useTranslations("common");
+  const tWorkItem = useTranslations("workItem.action");
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
 
   // When a sheet closes, the parent clears the selectedRunId before the
   // slide-out animation finishes. Cache the last non-null run so the
@@ -47,6 +51,29 @@ export function ReviewPacketInspector({
   }, [run]);
 
   const display = run ?? (variant === "sheet" ? cachedRun : null);
+
+  const issueIid = display?.issue?.iid;
+  const linkedWorkItemId = display?.workItem?.workItemId;
+  const handlePlan = useCallback(async () => {
+    if (!issueIid || planning) return;
+    setPlanError(null);
+    setPlanning(true);
+    try {
+      const { workItem } = await planWorkItem(issueIid);
+      // Hard-navigate so the new /work-items/<id> route renders with a
+      // fresh server fetch — the daemon writes WorkItem state to disk
+      // and the detail page re-fetches via getWorkItem(id).
+      if (typeof window !== "undefined") {
+        window.location.href = `/work-items/${encodeURIComponent(
+          workItem.workItemId,
+        )}`;
+      }
+    } catch (err) {
+      setPlanError((err as Error).message);
+    } finally {
+      setPlanning(false);
+    }
+  }, [issueIid, planning]);
 
   if (!display) {
     return (
@@ -155,6 +182,30 @@ export function ReviewPacketInspector({
           {t("missingReport")}
         </p>
       )}
+
+      {issueIid && !linkedWorkItemId ? (
+        <div className="flex flex-col gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handlePlan}
+            disabled={planning}
+          >
+            {planning ? tWorkItem("planning") : tWorkItem("planWorkItem")}
+          </Button>
+          {planError ? (
+            <span className="text-[11px] text-danger-fg">{planError}</span>
+          ) : null}
+        </div>
+      ) : linkedWorkItemId ? (
+        <Link
+          href={`/work-items/${encodeURIComponent(linkedWorkItemId)}`}
+          className="text-[11px] font-medium text-info hover:underline"
+        >
+          {linkedWorkItemId}
+        </Link>
+      ) : null}
     </>
   );
 

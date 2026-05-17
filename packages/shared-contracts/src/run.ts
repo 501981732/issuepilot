@@ -96,6 +96,15 @@ export interface RunRecord {
    * never reached `human-review`).
    */
   latestReviewFeedback?: ReviewFeedbackSummary;
+  /**
+   * V4.1 Workflow Spine: synthetic task run metadata. Set by
+   * `apps/orchestrator/src/work-items/dispatch-task.ts` so the daemon
+   * can recognise dispatch_completed / dispatch_failed events that
+   * belong to a WorkItem task and route them through the orchestration
+   * `applyTaskRunFinal` + aggregator + handoff path. Absent on the
+   * V2.x single-issue runs to keep them legacy-compatible.
+   */
+  workItem?: { workItemId: string; taskId: string };
 }
 
 /**

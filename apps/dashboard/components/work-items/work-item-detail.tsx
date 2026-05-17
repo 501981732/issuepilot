@@ -19,6 +19,7 @@ import {
 import { cn } from "../../lib/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
+import { ParentReviewPacket } from "./parent-review-packet";
 import { PlanEditor } from "./plan-editor";
 import { TaskList } from "./task-list";
 
@@ -224,6 +225,8 @@ export function WorkItemDetail({
           actionsEnabled
         />
       ) : null}
+
+      {planAccepted ? <ParentReviewPacket report={data.report} /> : null}
     </div>
   );
 }

@@ -1,0 +1,122 @@
+// @vitest-environment jsdom
+import type { WorkItemReport } from "@issuepilot/shared-contracts";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import { renderWithIntl as render } from "../../test/intl";
+
+import { ParentReviewPacket } from "./parent-review-packet";
+
+const baseReport = (over: Partial<WorkItemReport> = {}): WorkItemReport => ({
+  workItemId: "wi_1",
+  overallStatus: "complete",
+  taskSummaries: [
+    {
+      taskId: "T1",
+      title: "T1 Title",
+      taskStatus: "completed",
+      validation: ["pnpm test"],
+      risks: [{ level: "medium", text: "schema rename" }],
+      followUps: ["docs"],
+      mergeRequestUrl: "https://gl/-/mr/7",
+      diffSummary: "+10/-2 in src",
+      ciStatus: "success",
+      nextAction: "request human review",
+    },
+  ],
+  validationSummary: "All synthetic tests pass",
+  riskSummary: "Medium risk schema rename",
+  evidence: {
+    index: [
+      {
+        taskId: "T1",
+        kind: "diff",
+        label: "diff link",
+        href: "https://gl/-/mr/7/diffs",
+      },
+      {
+        taskId: "T1",
+        kind: "validation",
+        label: "pnpm test passed",
+      },
+    ],
+    byTask: {},
+  },
+  openQuestions: ["Q1"],
+  recommendedNextActions: ["Reviewer to inspect MR"],
+  generatedAt: "2026-05-17T01:00:00.000Z",
+  ...over,
+});
+
+describe("ParentReviewPacket", () => {
+  it("shows empty state when no report is provided", () => {
+    render(<ParentReviewPacket />);
+    expect(
+      screen.getByText(/Aggregation pending/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Copy as Markdown/i)).not.toBeInTheDocument();
+  });
+
+  it("renders complete status banner with summaries, evidence and next actions", () => {
+    render(<ParentReviewPacket report={baseReport()} />);
+    expect(screen.getByText("All tasks completed")).toBeInTheDocument();
+    expect(screen.getByText("All synthetic tests pass")).toBeInTheDocument();
+    expect(screen.getByText("Medium risk schema rename")).toBeInTheDocument();
+    expect(screen.getByText("T1 Title")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "MR ↗" })).toHaveAttribute(
+      "href",
+      "https://gl/-/mr/7",
+    );
+    expect(
+      screen.getByRole("link", { name: "diff link" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Reviewer to inspect MR")).toBeInTheDocument();
+  });
+
+  it("renders partial status banner with the partial label", () => {
+    render(
+      <ParentReviewPacket report={baseReport({ overallStatus: "partial" })} />,
+    );
+    expect(
+      screen.getByText("Partial — operator action required"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders incomplete status banner when the report itself is unreliable", () => {
+    render(
+      <ParentReviewPacket
+        report={baseReport({ overallStatus: "incomplete" })}
+      />,
+    );
+    expect(screen.getByText("Awaiting more task runs")).toBeInTheDocument();
+  });
+
+  it("never surfaces a `ready_to_merge` recommendation", () => {
+    render(
+      <ParentReviewPacket
+        report={baseReport({
+          overallStatus: "complete",
+          recommendedNextActions: [
+            "Reviewer to inspect the linked MRs and decide next steps.",
+          ],
+        })}
+      />,
+    );
+    expect(screen.queryByText(/ready_to_merge/i)).not.toBeInTheDocument();
+  });
+
+  it("Copy as Markdown writes a markdown blob to navigator.clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(<ParentReviewPacket report={baseReport()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const md = writeText.mock.calls[0]![0] as string;
+    expect(md).toContain("# Parent Review Packet");
+    expect(md).toContain("All synthetic tests pass");
+    expect(md).toContain("T1 Title");
+  });
+});

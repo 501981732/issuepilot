@@ -56,6 +56,7 @@ IssuePilot P0 是：
 - orchestrator 必须独立于 Next.js。Next.js 只负责 dashboard。
 - orchestrator HTTP API 使用 Fastify。
 - dashboard UI 使用 Tailwind/shadcn。
+- 任何涉及 UI、UX、前端交互、页面布局、视觉风格或可用性体验的设计/实现/评审任务，必须先启用 `ui-ux-pro-max` skill（用户写作 `ux-ux-pro-max` 时按同一技能理解），再开始方案或代码修改。
 - GitLab 凭据从 `tracker.token_env` 配置的环境变量读取；不要把 token 写入 workflow 文件、日志、dashboard 数据或 prompt。
 - mirror、worktree、branch、fetch、push 等 Git 操作优先通过 `execa` 调用真实 Git CLI。
 - Codex 的 cwd 和 sandbox 必须限制在当前 issue worktree。

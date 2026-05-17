@@ -182,7 +182,8 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
   切到 `ai-failed` / `ai-blocked`。父 Issue 的 handoff / failure / blocked / closing
   note 和 label transition 由 WorkItem 汇总阶段统一决定：所有必需 task 完成后才能
   进入 `human-review`；存在失败 / blocked task 时 WorkItem 保持 `partial` / `blocked`
-  并等待 operator 决策。
+  并等待 operator 决策。实现上 synthetic task run 必须绕过现有 per-run 父 Issue
+  label writer，只允许 WorkItem 聚合阶段调用该 writer。
 - **Evidence 通过 report 绑定**。子任务 evidence 不复制到 `TaskNode`；`TaskRunLink`
   指向 run/report，`WorkItemReport` 汇总各 task report 的 evidence index。
 - **状态回写只影响本地 WorkItem**。子任务状态变化不直接改 GitLab label；父 Issue
@@ -436,9 +437,13 @@ V4 继续 local-first，存储在 `~/.issuepilot/...` 下，和 reports / events
 ```text
 work-items/<workItemId>.json
 task-plans/<planId>.json
+task-run-links/<taskId>/<runId>.json
 work-item-reports/<workItemId>.json
 recommendations/<recommendationId>.json
 ```
+
+`TaskRunLink` 也可以在实现中被索引回 `WorkItem.taskIds` / `TaskNode.runIds`，但
+`task-run-links/<taskId>/<runId>.json` 是 canonical binding record。
 
 V4 不引入 Postgres。生产级 schema、migration、backup / restore 留给 V3。
 
@@ -499,7 +504,10 @@ V4 不引入 Postgres。生产级 schema、migration、backup / restore 留给 V
 
 - 被阻塞任务保持 `blocked_by_dependency`。
 - Task Graph 明确展示阻塞边。
-- 上游完成后，下游自动进入 `ready`。
+- 上游完成但 MR 尚未合入 workflow `base_branch` 时，下游仍保持
+  `blocked_by_dependency`；V4.1 不从上游 task branch 派生下游 task branch。
+- 只有当 operator 明确确认下游不需要共享代码状态，或上游 MR 已合入
+  `base_branch` 并刷新 workspace 后，下游才进入 `ready`。
 - 上游取消时，下游需要 operator 决定跳过、重规划或取消。
 
 ### 12.5 汇总报告不完整

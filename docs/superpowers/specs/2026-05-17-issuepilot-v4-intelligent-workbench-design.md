@@ -11,6 +11,11 @@
 - `README.md`
 - `README.zh-CN.md`
 
+## 实施计划
+
+- V4.1 Workflow Spine：`docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`
+  （已落地，覆盖 §17 V4.1 验收标准）。
+
 ## 1. Roadmap 决策
 
 IssuePilot 接下来先做 V4，再做 V3。这里的 V3 / V4 是能力域编号，不表示

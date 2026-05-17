@@ -44,7 +44,8 @@ workspace 的团队 daemon。
   - [5.4 Phase 3 — CI 状态自动回流](#54-phase-3--ci-状态自动回流)
   - [5.5 Phase 4 — Review feedback sweep](#55-phase-4--review-feedback-sweep)
   - [5.6 Phase 5 — Workspace retention 自动清理](#56-phase-5--workspace-retention-自动清理)
-  - [5.7 V2 当前的边界与未覆盖](#57-v2-当前的边界与未覆盖)
+  - [5.7 V4.1 Workflow Spine — 大 Issue 端到端走一圈](#57-v41-workflow-spine--大-issue-端到端走一圈)
+  - [5.8 V2 当前的边界与未覆盖](#58-v2-当前的边界与未覆盖)
 - [Part 6 — 日常运维与排障](#part-6--日常运维与排障)
   - [6.1 在哪里看什么](#61-在哪里看什么)
   - [6.2 失败 / blocked run 取证](#62-失败--blocked-run-取证)
@@ -741,7 +742,72 @@ Workspace cleanup dry-run
 **操作 runbook**（误删 / 清理失败诊断 / 临时禁用）：
 [`docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md`](./docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md)。
 
-### 5.7 V2 当前的边界与未覆盖
+### 5.7 V4.1 Workflow Spine — 大 Issue 端到端走一圈
+
+V4.1 把 IssuePilot 从「一个 Issue 一个 run」升级成可以把一个大 GitLab
+Issue 拆成 2–5 个有顺序的子任务、为每个子任务派发一个 synthetic task
+run（独立分支 + 独立 MR），最后回写一份 Parent Review Packet 到父
+Issue 的工作台。
+
+Operator 操作流：
+
+1. 在 **Command Center** (`/`) 选中一个 `issue.iid` 指向你想拆解的大
+   Issue 的 run，点击右侧 inspector 的 **Plan work item**。orchestrator
+   会 POST `/api/issues/:iid/plan`，让 LLM 起草一份 `TaskPlan`，
+   dashboard 会硬跳转到 `/work-items/<id>`。
+2. 在 **Work item detail** 页 (`/work-items/<id>`) 审阅 plan。当
+   `plan.status === "draft"` 时可以：
+   - 点 **Edit** 直接修改每个任务的 `title` / `goal` / `scope` /
+     `dependsOn` / `suggestedValidation`。
+   - 点 **Accept plan** — 只 POST operator 实际改过的字段，
+     `WorkItem.status` 切到 `ready`，orchestration 会立即派发所有依赖
+     已满足且 concurrency slot 还有余量的 task。
+   - 点 **Regenerate** — orchestrator 把当前 draft 标记 `superseded`，
+     向 planner 请求一份新版本作为新的 draft。
+3. 每个 synthetic task run 落地后，**Tasks** 区会按生效状态分组
+   （`ready` / `running` / `completed` / `failed` / `blocked` /
+   `needs_rework` / `blocked_by_dependency` / `skipped`）。每行带 MR
+   链接；failed / needs-rework / blocked 行有 **Retry**，blocked /
+   blocked-by-dependency / failed 行有 **Skip**。
+4. 等所有 task 都 settle 后，**Parent Review Packet** 卡片会渲染
+   `WorkItemReport`：validation summary、风险摘要、按任务的卡片
+   （diff、validation、风险、follow-ups、CI、MR、next action）、
+   evidence index 和 recommended next actions。可以用
+   **Copy as Markdown** 一键复制成 Markdown 贴到 Slack / code review
+   线程里。
+5. orchestrator 会在父 Issue 写**单条** workpad note，note 里带
+   marker `<!-- issuepilot:work-item:<id> -->`，每次 reconcile 都更新
+   同一条 note。当 *所有* 必需 task 都 `completed` 时，IssuePilot 把
+   父 Issue label 从 `ai-running` 切到 `human-review`；部分失败 /
+   失败 / 阻塞场景下父 label 不动，由 operator 决定下一步。
+
+CLI / 直接 HTTP 调用（脚本和 CI 校验时方便）：
+
+```bash
+# 为某个 GitLab Issue iid 起草 plan
+curl -X POST -H 'content-type: application/json' \
+  -d '{"iid": 42}' \
+  http://127.0.0.1:4738/api/issues/42/plan
+
+# 列出所有 WorkItem 及其状态计数
+curl http://127.0.0.1:4738/api/work-items
+
+# 读取最新聚合的 WorkItemReport
+curl http://127.0.0.1:4738/api/work-items/<id>/report
+```
+
+V4.1 的几个不变量（operator 视角）：
+
+- IssuePilot **绝不**创建子 GitLab Issue；父 Issue 是唯一被追踪的
+  对象，每个 task 自己有一条 MR。
+- synthetic task run **绝不**直接改父 Issue label，那是 aggregator
+  的职责。看到 task run 改了父 label 请提 bug —— 说明
+  `parentIssueLabelMode: "suppressed"` 没生效。
+- dashboard **不会**对一个 work item 给出 `ready_to_merge` 推荐；
+  V4.1 给出的最强推荐就是「请进入人工 review」。auto-merge 留给后续
+  阶段。
+
+### 5.8 V2 当前的边界与未覆盖
 
 V2 主体已完成，**显式不在 V2 范围**的能力（会在 V3 / V4 处理）：
 

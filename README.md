@@ -613,6 +613,15 @@ orchestrates, and improves engineering work. V4 does not own deployment,
 permissions, budgets, or observability; it owns workflow intelligence. V3 later
 productionizes the capabilities that prove valuable here.
 
+- **Work Items / Parent Review Packet for large issues** — *landed in V4.1*.
+  An IssuePilot operator can plan a GitLab Issue from the Command Center,
+  accept / edit / regenerate the LLM-drafted task plan in
+  `/work-items/<id>`, watch every synthetic task run land its own MR, and
+  read a Parent Review Packet (validation, risks, evidence index, MR links)
+  before the parent Issue auto-flips to `human-review`. Spec:
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`;
+  implementation plan:
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.

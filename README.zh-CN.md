@@ -569,6 +569,17 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
 预算这些平台底座，而是专注研发流程智能；等能力验证清楚后，再由 V3 把这些
 能力生产化。
 
+- **大 Issue 工作单元 / Parent Review Packet** — *V4.1 已落地*。
+  Operator 可以从 Command Center 选中一个 GitLab 大 Issue，「Plan work item」
+  让 LLM 起草 2–5 个子任务，在 `/work-items/<id>` 接受 / 编辑 / 重新生成
+  plan，每个子任务跑独立的 synthetic task run 并产出独立 MR；
+  Parent Review Packet 把 validation、风险、evidence index、MR 链接、
+  recommended next actions 汇总到一处，所有任务完成后父 Issue 自动切到
+  `human-review` 并写一条带 `<!-- issuepilot:work-item:<id> -->` marker 的
+  handoff note。设计 spec：
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，

@@ -6,6 +6,75 @@
 
 ### Added
 
+- 2026-05-17 — **V4.1 Workflow Spine 闭环落地（任务 11–22）**。在已有的契约 +
+  store + planner + orchestration + aggregate 之上补齐 parent handoff、HTTP
+  路由、daemon 装配、dashboard UI、E2E 与文档收口，使一个大 GitLab Issue
+  能在 IssuePilot 内完成「拆解 → operator 接受 plan → 多个 synthetic task
+  run → 汇总报告 → 父 Issue 切到 `human-review`」的完整闭环（spec §16.5 / §17）。
+  - `apps/orchestrator/src/work-items/handoff.ts`：`writeParentHandoff` 是 V4.1
+    唯一允许动父 Issue label / handoff note 的地方，note 用
+    `<!-- issuepilot:work-item:<id> -->` marker 做幂等更新；
+    `decideParentLabelTransition` 把 `running → completed` 翻译成
+    `add: [handoffLabel], remove: [runningLabel]`，其余转移留给 operator。
+  - orchestrator 新增 8 条工作单元 HTTP 路由：`POST /api/issues/:iid/plan`、
+    `GET /api/work-items`、`GET /api/work-items/:id`、
+    `POST /api/work-items/:id/plan/accept`、
+    `POST /api/work-items/:id/plan/regenerate`、
+    `POST /api/work-items/:id/tasks/:taskId/skip|retry`、
+    `GET /api/work-items/:id/report`。所有 POST 透传
+    `x-issuepilot-operator` header，错误统一映射成 `not_found` / `invalid_iid` /
+    `validation_failed` / `planner_failed` / `work_items_unavailable`。
+  - `apps/orchestrator/src/work-items/service.ts` `createWorkItemService`
+    把 store / planner / orchestration / aggregate / handoff 装到一个 façade，
+    `settleTaskRunFinal` 监听 `dispatch_completed` / `dispatch_failed`，串起
+    "applyTaskRunFinal → aggregate → 更新 WorkItem.status → writeParentHandoff"
+    一条线；`apps/orchestrator/src/daemon.ts` 把它接到 Fastify server 与
+    eventBus 上，并通过 `taskRunIndex` 做 runId↔workItem 的反查。
+  - dashboard 新增 `apps/dashboard/lib/api.ts` work-item 客户端
+    （`planWorkItem` / `listWorkItems` / `getWorkItem` /
+    `acceptWorkItemPlan` / `regenerateWorkItemPlan` /
+    `skipWorkItemTask` / `retryWorkItemTask` / `getWorkItemReport`），
+    全部透传 operator header。
+  - dashboard 新增 `/work-items` 列表（按 6 种状态展示 counters + 表格，
+    空态、行点击进入详情）、`/work-items/[id]` 详情（顶部 WorkItem 元数据 +
+    `PlanEditor` + `TaskList` + `ParentReviewPacket`），并在顶栏导航与
+    Command Center inspector 暴露入口（`Plan work item` 按钮 → 调
+    `planWorkItem(iid)` 后硬导航到 `/work-items/<id>`）。
+  - `PlanEditor`：`plan.status === "draft"` 时支持
+    `title/goal/scope/dependsOn/suggestedValidation` 五个字段的
+    inline editing；接受时只 POST operator 改过的字段（diff against
+    snapshot）。一旦 plan accepted 就锁定，后续只能走 regenerate 起新版本。
+  - `TaskList`：按 effective status（TaskRunLink 优先 TaskNode）分组，
+    failed / needs_rework / blocked 行显示「Retry」，可跳过状态显示
+    「Skip」，draft plan 下两个按钮 disabled。
+  - `ParentReviewPacket`：把 `WorkItemReport` 映射成 status banner（complete
+    /partial/incomplete/draft）、validation summary、risks、每 task 卡片
+    （diff、validation、risks、follow-ups、CI、next action、MR 链接）、
+    open questions、recommended next actions 与 evidence index。
+    内置「Copy as Markdown」按钮把同样的内容复制到剪贴板，`renderMarkdown`
+    与 GitLab handoff note 同源；测试断言 V4.1 永远不输出
+    `ready_to_merge` 字样（spec §17）。
+  - 新增 `apps/orchestrator/src/__tests__/work-items-e2e.test.ts`：使用
+    real WorkItemStore + real planner / orchestration / aggregate /
+    handoff、fake GitLab + fake LLM + fake run dispatch，覆盖 happy path
+    （两 task 全 completed → 父 Issue label 进 `human-review`、note 含
+    work-item marker）、partial 路径（一 task fail → `WorkItem.status`
+    转 `partial`、父 Issue label 不进 `human-review`）、dependency 路径
+    （T2 dependsOn T1，T1 MR 仅 `opened` 未 merged → T2 保持
+    `blocked_by_dependency` 并 emit `task_run_blocked_by_dependency`）。
+  - i18n（`apps/dashboard/i18n/messages/{en,zh}.json`）补齐
+    `nav.workItems`、`workItems.*`（counters / columns / 空态 / 错误）、
+    `workItem.field.*` / `workItem.plan.*` / `workItem.tasks.*` /
+    `workItem.parentReviewPacket.*` / `workItem.action.*` 全集，中英双语
+    同步。
+  - 验证：`pnpm -r build` / `pnpm -r typecheck` / `pnpm -r lint`
+    （`--max-warnings 0`）/ `pnpm -r test`（orchestrator 381 + dashboard 131
+    + e2e 51 + 其它包）全绿；`git diff --check` 干净。
+  - 任务 22 验收清单：`docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine-acceptance.md`
+    给出 V4.1 §17 验收标准的逐项证据（E2E case、组件测试、reconcile
+    `parentIssueLabelMode: "suppressed"` 覆盖、`createIssue` 不调用、
+    全量 build/test/lint 通过、双语文档同步）。
+
 - 2026-05-17 — **V4.1 Workflow Spine 实施 plan 与首批契约落地**。
   - 新增 `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`：
     22 任务、TDD 流程的 bite-sized 实施计划，对齐 V4 设计 spec §7

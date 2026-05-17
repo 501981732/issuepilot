@@ -1,7 +1,9 @@
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 
 import { WorkItemDetail } from "../../../components/work-items/work-item-detail";
+import { PROJECT_COOKIE_KEY } from "../../../lib/active-project-cookie";
 import { getWorkItem } from "../../../lib/api";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +16,19 @@ export default async function WorkItemDetailRoute(props: {
   const { id } = await props.params;
   const sp = props.searchParams ? await props.searchParams : {};
   const initialView = sp.view === "graph" ? "graph" : "list";
+  // V4.2 team-mode: the orchestrator requires `x-issuepilot-project`
+  // on every work-item route when `workItemsByProject` is wired. SSR
+  // can't read the operator's localStorage, so ProjectSwitcher mirrors
+  // the selection into a cookie that this Server Component reads here.
+  // Without this the team-mode SSR fetch returns HTTP 400
+  // `project_header_required` and the detail page renders an error
+  // instead of the work item.
+  const project = cookies().get(PROJECT_COOKIE_KEY)?.value;
   try {
-    const detail = await getWorkItem(id);
+    const detail = await getWorkItem(
+      id,
+      project ? { project } : {},
+    );
     return <WorkItemDetail initial={detail} initialView={initialView} />;
   } catch (err) {
     const error = err as Error & { status?: number };

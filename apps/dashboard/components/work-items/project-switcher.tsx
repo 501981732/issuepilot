@@ -4,10 +4,32 @@ import type { ProjectSummary } from "@issuepilot/shared-contracts";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
+import {
+  PROJECT_COOKIE_KEY,
+  PROJECT_COOKIE_MAX_AGE_SECONDS,
+} from "../../lib/active-project-cookie";
 import { setActiveWorkItemsProject } from "../../lib/api";
 
-export const PROJECT_STORAGE_KEY = "issuepilot.workItems.activeProject";
+export const PROJECT_STORAGE_KEY = PROJECT_COOKIE_KEY;
 export const PROJECT_CHANGED_EVENT = "issuepilot:project-changed";
+
+/**
+ * Mirror the active project selection into a cookie so Server
+ * Components (work-items detail page) can read it during SSR and
+ * attach `x-issuepilot-project` to the orchestrator request. The
+ * cookie is intentionally a perfect mirror of localStorage so both
+ * SSR and CSR see the same value. See review §C3.
+ */
+function writeProjectCookie(value: string): void {
+  if (typeof document === "undefined") return;
+  const encoded = encodeURIComponent(value);
+  document.cookie = `${PROJECT_COOKIE_KEY}=${encoded}; path=/; max-age=${PROJECT_COOKIE_MAX_AGE_SECONDS}; samesite=lax`;
+}
+
+function clearProjectCookie(): void {
+  if (typeof document === "undefined") return;
+  document.cookie = `${PROJECT_COOKIE_KEY}=; path=/; max-age=0; samesite=lax`;
+}
 
 export interface ProjectSwitcherProps {
   /**
@@ -40,18 +62,25 @@ export function ProjectSwitcher({
 }: ProjectSwitcherProps) {
   const t = useTranslations("workItem.projectSwitcher");
   const enabled = projects.filter((p) => p.enabled);
-  const [value, setValue] = useState<string>(() => {
-    if (typeof window === "undefined") return "";
-    return window.localStorage.getItem(PROJECT_STORAGE_KEY) ?? "";
-  });
+  // V4.2 review I2: keep the initial render deterministic across SSR
+  // and CSR (both start with ""). The persisted selection is read in
+  // the post-mount effect below so React does not see a hydration
+  // mismatch when the switcher ever ends up inside an SSR'd tree.
+  const [value, setValue] = useState<string>("");
 
   useEffect(() => {
-    // On hydrate, push the persisted value into the API client too so
-    // subsequent fetches carry the header even before a user clicks the
-    // dropdown.
     if (mode !== "team") return;
-    if (value) setActiveWorkItemsProject(value);
-  }, [mode, value]);
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(PROJECT_STORAGE_KEY) ?? "";
+    if (stored) {
+      setValue(stored);
+      setActiveWorkItemsProject(stored);
+      // Mirror into the cookie too — operators may have set
+      // localStorage in a previous session before the cookie path
+      // existed. Without this the SSR detail page would still 400.
+      writeProjectCookie(stored);
+    }
+  }, [mode]);
 
   if (mode !== "team") return null;
 
@@ -68,8 +97,10 @@ export function ProjectSwitcher({
           if (typeof window !== "undefined") {
             if (next) {
               window.localStorage.setItem(PROJECT_STORAGE_KEY, next);
+              writeProjectCookie(next);
             } else {
               window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+              clearProjectCookie();
             }
           }
           setActiveWorkItemsProject(next || null);

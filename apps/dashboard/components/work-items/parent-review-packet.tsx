@@ -72,7 +72,7 @@ export function ParentReviewPacket({ report, project }: ParentReviewPacketProps)
     } catch {
       // best-effort copy; ignore failures
     }
-  }, [report]);
+  }, [project, report]);
 
   if (!report) {
     return (

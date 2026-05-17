@@ -166,7 +166,40 @@
       "groupPlanned": "已规划",
       "actionSkip": "跳过",
       "actionRetry": "重试",
-      "actionUnskip": "取消跳过"
+      "actionUnskip": "取消跳过",
+      "actionMarkRework": "打回返工",
+      "actionReplan": "重新规划"
+    },
+    "taskGraph": {
+      "title": "任务依赖图",
+      "empty": "暂无可视化的任务。",
+      "ariaLabel": "任务依赖图",
+      "edgesAriaLabel": "依赖边",
+      "nodesAriaLabel": "任务"
+    },
+    "viewToggle": {
+      "list": "列表",
+      "graph": "图谱"
+    },
+    "replanDialog": {
+      "title": "重新规划任务",
+      "reasonLabel": "重规划原因",
+      "reasonPlaceholder": "为什么需要重新规划这个任务？",
+      "hintLabel": "给 planner 的提示（可选）",
+      "hintPlaceholder": "例如：拆分为认证 + API 两个任务",
+      "submit": "重新规划",
+      "cancel": "取消"
+    },
+    "reworkDialog": {
+      "title": "标记为返工",
+      "reasonLabel": "Reviewer 反馈",
+      "reasonPlaceholder": "operator 希望调整什么？",
+      "submit": "标记",
+      "cancel": "取消"
+    },
+    "projectSwitcher": {
+      "label": "项目",
+      "all": "全部项目"
     },
     "parentReviewPacket": {
       "title": "父 Issue Review Packet",

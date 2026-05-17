@@ -1,5 +1,6 @@
 import type {
   AcceptWorkItemPlanRequest,
+  ConfirmEvidenceResponse,
   IssuePilotEvent,
   MarkTaskReworkRequest,
   OrchestratorStateSnapshot,
@@ -12,6 +13,7 @@ import type {
   TaskPlan,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemEvidenceResponse,
   WorkItemGraphResponse,
   WorkItemReportResponse,
   WorkItemsListResponse,
@@ -143,6 +145,38 @@ export async function apiGet<T>(
   }
 
   return (await response.json()) as T;
+}
+
+async function apiGetText(
+  path: string,
+  opts: ApiGetOptions = {},
+): Promise<string> {
+  const url = `${resolveApiBase()}${path}`;
+  const headers: Record<string, string> = { accept: "text/markdown" };
+  const project = resolveProjectHeader(opts);
+  if (project) headers["x-issuepilot-project"] = project;
+  const response = await fetch(url, {
+    method: "GET",
+    headers,
+    signal: opts.signal,
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = await response.text().catch(() => null);
+    }
+    throw new ApiError(
+      `GET ${path} failed: HTTP ${response.status}`,
+      response.status,
+      body,
+    );
+  }
+
+  return response.text();
 }
 
 export function getState(
@@ -442,6 +476,58 @@ export function getWorkItemReport(
     `/api/work-items/${encodeURIComponent(id)}/report`,
     opts,
   );
+}
+
+export function getWorkItemEvidence(
+  id: string,
+  opts: ApiGetOptions = {},
+): Promise<WorkItemEvidenceResponse> {
+  return apiGet<WorkItemEvidenceResponse>(
+    `/api/work-items/${encodeURIComponent(id)}/evidence`,
+    opts,
+  );
+}
+
+export function getWorkItemReportMarkdown(
+  id: string,
+  opts: ApiGetOptions = {},
+): Promise<string> {
+  return apiGetText(
+    `/api/work-items/${encodeURIComponent(id)}/report.md`,
+    opts,
+  );
+}
+
+export function confirmWorkItemTaskEvidence(
+  id: string,
+  taskId: string,
+  evidenceId: string,
+  opts: OperatorActionOptions = {},
+): Promise<ConfirmEvidenceResponse> {
+  return postWorkItemAction<ConfirmEvidenceResponse>(
+    `/api/work-items/${encodeURIComponent(id)}/tasks/${encodeURIComponent(
+      taskId,
+    )}/evidence/${encodeURIComponent(evidenceId)}/confirm`,
+    {},
+    opts,
+  );
+}
+
+export function buildEvidenceFileUrl(
+  id: string,
+  runId: string,
+  relPath: string,
+  opts: { project?: string } = {},
+): string {
+  const search = new URLSearchParams({
+    runId,
+    path: relPath,
+  });
+  const project = resolveProjectHeader(opts);
+  if (project) search.set("project", project);
+  return `${resolveApiBase()}/api/work-items/${encodeURIComponent(
+    id,
+  )}/evidence/file?${search.toString()}`;
 }
 
 /**

@@ -4,11 +4,15 @@ import {
   ApiError,
   acceptWorkItemPlan,
   archiveRun,
+  buildEvidenceFileUrl,
+  confirmWorkItemTaskEvidence,
   getRunDetail,
   getState,
   getWorkItem,
+  getWorkItemEvidence,
   getWorkItemGraph,
   getWorkItemReport,
+  getWorkItemReportMarkdown,
   listEvents,
   listReports,
   listRuns,
@@ -42,6 +46,15 @@ function mockFetch(body: unknown, init: { status?: number } = {}) {
     new Response(JSON.stringify(body), {
       status: init.status ?? 200,
       headers: { "content-type": "application/json" },
+    }),
+  );
+}
+
+function mockFetchText(body: string, init: { status?: number } = {}) {
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(body, {
+      status: init.status ?? 200,
+      headers: { "content-type": "text/markdown" },
     }),
   );
 }
@@ -535,5 +548,97 @@ describe("V4.2 work item client", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const headers = new Headers(init.headers ?? undefined);
     expect(headers.get("x-issuepilot-project")).toBe("infra-tools");
+  });
+});
+
+describe("V4.3 evidence client", () => {
+  beforeEach(() => {
+    setActiveWorkItemsProject(null);
+  });
+  afterEach(() => {
+    setActiveWorkItemsProject(null);
+  });
+
+  it("getWorkItemEvidence GETs /api/work-items/:id/evidence", async () => {
+    const fetchMock = mockFetch({
+      index: [{ evidenceId: "ev-1", taskId: "t1" }],
+      byTask: { t1: [{ evidenceId: "ev-1", taskId: "t1" }] },
+      missing: [],
+    });
+
+    const result = await getWorkItemEvidence("wi_01", {
+      project: "platform-web",
+    });
+
+    expect(result.index[0]?.evidenceId).toBe("ev-1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/evidence`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-project")).toBe("platform-web");
+  });
+
+  it("getWorkItemReportMarkdown GETs report.md and returns raw markdown", async () => {
+    const fetchMock = mockFetchText("# Review Packet\n\n- ready");
+
+    const markdown = await getWorkItemReportMarkdown("wi 01/2");
+
+    expect(markdown).toBe("# Review Packet\n\n- ready");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi%2001%2F2/report.md`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("accept")).toBe("text/markdown");
+  });
+
+  it("confirmWorkItemTaskEvidence POSTs the correct path", async () => {
+    const fetchMock = mockFetch({
+      evidenceId: "ev-1",
+      confirmedAt: "2026-05-17T10:00:00.000Z",
+      report: { workItemId: "wi_01" },
+    });
+
+    const result = await confirmWorkItemTaskEvidence(
+      "wi_01",
+      "task one",
+      "ev/a",
+      { operator: "alice", project: "platform-web" },
+    );
+
+    expect(result.evidenceId).toBe("ev-1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/tasks/task%20one/evidence/ev%2Fa/confirm`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({});
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-operator")).toBe("alice");
+    expect(headers.get("x-issuepilot-project")).toBe("platform-web");
+  });
+
+  it("buildEvidenceFileUrl encodes relPath and appends project query in team mode", () => {
+    const url = buildEvidenceFileUrl(
+      "wi 01/2",
+      "run 1/2",
+      "screenshots/login page.png",
+      { project: "platform-web" },
+    );
+
+    expect(url).toBe(
+      `${FAKE_BASE}/api/work-items/wi%2001%2F2/evidence/file?runId=run+1%2F2&path=screenshots%2Flogin+page.png&project=platform-web`,
+    );
+  });
+
+  it("buildEvidenceFileUrl uses the active project as query fallback", () => {
+    setActiveWorkItemsProject("infra-tools");
+
+    expect(buildEvidenceFileUrl("wi_01", "run-1", "recordings/demo.mov")).toBe(
+      `${FAKE_BASE}/api/work-items/wi_01/evidence/file?runId=run-1&path=recordings%2Fdemo.mov&project=infra-tools`,
+    );
   });
 });

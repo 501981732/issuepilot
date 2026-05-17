@@ -201,7 +201,7 @@
         "validation": "验证",
         "risk": "风险",
         "ci": "CI",
-        "review": "Review"
+        "review": "评审反馈"
       },
       "confirmAction": "确认",
       "confirmedBy": "由 {confirmedBy} 确认"
@@ -274,7 +274,7 @@
         "validation": "验证",
         "risk": "风险",
         "ci": "CI",
-        "review_feedback": "Review"
+        "review_feedback": "评审反馈"
       },
       "kinds": {
         "screenshot": "截图",
@@ -286,7 +286,7 @@
         "validation": "验证",
         "risk": "风险",
         "ci": "CI",
-        "review_feedback": "Review"
+        "review_feedback": "评审反馈"
       },
       "missingReasons": {
         "no-run-report": "任务有关联 run，但 run report 缺失。",

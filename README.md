@@ -22,6 +22,20 @@ worktrees, runs Codex through the app-server protocol, records an auditable even
 trail, hands the result back as a merge request for human review, and closes the
 issue after that MR is manually merged.
 
+## Product Positioning
+
+IssuePilot is designed as a workflow layer that complements Harness Engineer.
+When a project already has a Harness Engineer layer, Harness Engineer should keep
+owning the repository's engineering rules, code constraints, validation matrix,
+implementation discipline, and local execution quality. IssuePilot focuses on
+the cross-issue and multi-run control plane: task orchestration, state
+management, reports, evidence, review feedback, and continuous improvement.
+
+Projects can also use IssuePilot without Harness Engineer. In that mode,
+`issuepilot-config/`, the workflow profile, repo-local rules, and skills form
+the minimum engineering constraint layer, while IssuePilot still provides task
+decomposition, orchestration, Review Packets, and auditable evidence.
+
 ### Highlights
 
 - **Issue-driven work claim** — watches a GitLab issue board and auto-claims
@@ -44,9 +58,9 @@ issue after that MR is manually merged.
 - **Local single-machine loop** — `~/.issuepilot` keeps the worktrees, JSONL
   event store, and run records on disk; the daemon recovers reconciliation on
   restart without requiring an external database.
-- **Complements harness engineering** — designed for mature repos that already
-  ship an agent harness; IssuePilot focuses on scheduling and isolation while
-  `WORKFLOW.md` in your repo owns the prompt and policy.
+- **Complements harness engineering** — works with mature repos that already
+  have Harness Engineer, while still remaining usable as a direct local workflow
+  platform for repos that do not.
 - **Open SPEC + reference implementation** — `SPEC.md` and the Symphony Elixir
   reference implementation remain in the repository, so teams can build their
   own variants in other languages from the same contract.

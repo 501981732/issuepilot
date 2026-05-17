@@ -57,6 +57,17 @@
 
 ### Added
 
+- 2026-05-17 — **V4.2 Task Graph 实施计划起草**。新增
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`，覆盖
+  V4 spec §7 V4.2 的六项能力：依赖图执行 + 线性 branch chaining、Task
+  Graph 可视化（topology SVG）、单 task 重规划保留 plan version、Mark
+  rework / Unskip / Retry 操作完整化、team-mode daemon 装配 work-items
+  service 并通过 `x-issuepilot-project` header 隔离多 project。计划共
+  25 个 TDD 任务（含 contract / orchestration / dispatch / service / server /
+  daemon / dashboard / i18n / E2E / 文档 / 验收），均以 V4.1 已落地代码
+  作为抓手，不引入 reactflow / dagre 以控制 dashboard bundle 增长。
+  对应 spec：`docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`。
+
 - 2026-05-17 — **V4.1 Workflow Spine 闭环落地（任务 11–22）**。在已有的契约 +
   store + planner + orchestration + aggregate 之上补齐 parent handoff、HTTP
   路由、daemon 装配、dashboard UI、E2E 与文档收口，使一个大 GitLab Issue

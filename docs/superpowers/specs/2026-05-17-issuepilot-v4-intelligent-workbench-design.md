@@ -152,6 +152,32 @@ V4 按 6 个中阶段设计。V4.1 必须先做；V4.2-V4.6 可根据 dog-food �
 
 - 一个复杂 Issue 能从“未拆解”走到“多个子任务 run + 汇总报告”。
 - 不要求拆解算法很强，但要求流程完整、状态可追踪、报告能看懂。
+- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.6 的深度图形视图、
+  长期质量趋势、自动改进建议和多 agent 分工均在后续阶段展开。
+
+#### V4.1 Task execution contract
+
+V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约：
+
+- **不创建 child GitLab Issue**。父 GitLab Issue 仍是唯一 tracker source of
+  truth；子任务只存在于 IssuePilot 本地 WorkItem / TaskPlan / WorkItemReport 中。
+- **每个 TaskNode 触发一个 synthetic task run**。run 复用现有 IssuePilot runner、
+  workspace、event store 和 RunReportArtifact，但 prompt context 额外带上
+  `workItemId`、`taskId`、task title、task goal、task scope、依赖摘要和建议验证方式。
+- **默认一 task 一 branch / worktree**。branch 建议形态为
+  `<branch_prefix>/<iid>-<task-slug>`，workspace 仍位于当前 IssuePilot workspace
+  root 下；V4.1 不做多个 task 共享同一 branch 的实现。
+- **GitLab note 以父 Issue 为落点**。V4.1 不为每个子任务新建 Issue，也不要求每个
+  task 写独立 handoff note；父 Issue 最终写入或更新 WorkItem 级 handoff / summary
+  note，dashboard 负责展示 task 粒度细节。
+- **MR 策略保持保守**。V4.1 可以为每个 task run 创建或更新独立 MR，也可以在实现
+  plan 中先限制为单 task 顺序执行；无论哪种实现，`TaskRunLink` 必须记录
+  task、run、branch、MR 和 report 的绑定关系。是否合并多个 task MR 到一个总 MR
+  不属于 V4.1。
+- **Evidence 通过 report 绑定**。子任务 evidence 不复制到 `TaskNode`；`TaskRunLink`
+  指向 run/report，`WorkItemReport` 汇总各 task report 的 evidence index。
+- **状态回写只影响本地 WorkItem**。子任务状态变化不直接改 GitLab label；父 Issue
+  的 workflow label 仍由现有 IssuePilot run / human-review / rework 机制控制。
 
 ### V4.2：Task Graph
 
@@ -251,6 +277,36 @@ V4 不替换 V2.x runtime，而是在现有结构上新增一层 **Workflow Inte
 
 ## 9. 数据模型
 
+### 9.0 生命周期状态
+
+V4.1 planning 前必须固定核心对象状态，避免实现时各 package 使用不同枚举。
+
+| 对象 | 状态 | 含义 |
+| --- | --- | --- |
+| `WorkItem` | `planning` | 已创建本地 work item，正在生成或编辑 plan |
+| `WorkItem` | `ready` | plan 已接受，存在可执行 task |
+| `WorkItem` | `running` | 至少一个 task run 正在执行 |
+| `WorkItem` | `partial` | 部分 task 成功，部分失败 / blocked / skipped |
+| `WorkItem` | `completed` | 所有必需 task 完成并生成总报告 |
+| `WorkItem` | `blocked` | 缺少信息、权限、依赖或人工决策 |
+| `TaskPlan` | `draft` | AI 生成或 operator 正在编辑的 plan |
+| `TaskPlan` | `accepted` | operator 接受，可进入执行 |
+| `TaskPlan` | `rejected` | operator 拒绝，保留为历史版本 |
+| `TaskPlan` | `superseded` | 被后续版本替换 |
+| `TaskNode` | `planned` | 在 accepted plan 中，但依赖尚未判断 |
+| `TaskNode` | `blocked_by_dependency` | 上游 task 未完成或失败 |
+| `TaskNode` | `ready` | 可触发 run |
+| `TaskNode` | `running` | 至少一个 linked run 正在执行 |
+| `TaskNode` | `completed` | 当前 task 满足建议验证并产出 report |
+| `TaskNode` | `failed` | run 失败，需要重试或重规划 |
+| `TaskNode` | `blocked` | 缺少信息、权限或环境条件 |
+| `TaskNode` | `needs_rework` | review / CI / operator 要求返工 |
+| `TaskNode` | `skipped` | operator 明确跳过 |
+| `WorkItemReport` | `draft` | 正在聚合或部分数据缺失 |
+| `WorkItemReport` | `partial` | 可读但存在失败 / blocked / skipped task |
+| `WorkItemReport` | `complete` | 所有必需 task 均已汇总 |
+| `WorkItemReport` | `incomplete` | report 依赖的 run / evidence 缺失 |
+
 ### 9.1 WorkItem
 
 代表一个大 Issue 的 V4 工作单元。它不是替代 GitLab Issue，而是 IssuePilot 对
@@ -305,7 +361,8 @@ reviewer 能独立理解。
 
 ### 9.4 TaskRunLink
 
-连接子任务和现有 run / report。
+连接子任务和现有 run / report。V4.1 中它是 synthetic task run 的唯一绑定记录；
+实现不得只靠 branch name、MR title 或 report 文件名反推 task 归属。
 
 关键字段：
 
@@ -314,6 +371,8 @@ reviewer 能独立理解。
 - `attempt`
 - `status`
 - `reportId`
+- `branch`
+- `mergeRequest`
 - `startedAt`
 - `completedAt`
 
@@ -369,8 +428,8 @@ V4 不引入 Postgres。生产级 schema、migration、backup / restore 留给 V
 3. Workflow Intelligence Layer 生成 `TaskPlan` 草案。
 4. Dashboard 展示子任务列表 / Task Graph，Operator 可以接受、编辑、删除、重排。
 5. Operator 接受 plan 后，IssuePilot 创建 `WorkItem` 和 accepted `TaskPlan`。
-6. 每个 `TaskNode` 触发现有 IssuePilot run。
-7. 子任务 run 完成后，`TaskRunLink` 记录 run 与 task 的关系。
+6. 每个 `TaskNode` 按 V4.1 Task execution contract 触发现有 IssuePilot run。
+7. 子任务 run 完成后，`TaskRunLink` 记录 task、run、branch、MR 和 report 的关系。
 8. `WorkItemReport` 汇总所有子任务结果。
 9. Dashboard、GitLab note、Markdown export 都从 `WorkItemReport` 渲染。
 

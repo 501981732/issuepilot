@@ -1,5 +1,4 @@
 import type {
-  RiskLevel,
   RunReportArtifact,
   TaskNode,
   TaskNodeStatus,
@@ -373,9 +372,3 @@ function deriveTaskNextAction(
       return undefined;
   }
 }
-
-// Keep a reference to RiskLevel so the type stays imported even when no
-// runtime branch consumes it directly. This lets future task summary
-// extensions add `highestRisk` without re-wiring the import set.
-const _riskLevels: readonly RiskLevel[] = ["low", "medium", "high"];
-void _riskLevels;

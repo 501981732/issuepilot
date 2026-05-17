@@ -108,13 +108,19 @@ export async function runTaskOnce(
   // RunEntry's open shape lets us stash V4.1 metadata before the
   // shared-contracts `RunRecord.workItem` field lands in task 13. The
   // daemon can read it via `state.getRun(runId)["workItem"]`.
+  //
+  // We deliberately keep `issue.title` set to the **parent** Issue title
+  // (not the task title): the runtime-state record represents the run
+  // against the parent Issue, and downstream consumers (dashboard run
+  // list, claim path) expect to see the parent title there. The task
+  // title flows separately via `extraPromptVars.workItem.taskTitle`.
   opts.state.setRun(runId, {
     runId,
     status: "claimed",
     attempt: 1,
     issue: {
       iid: opts.workItem.sourceIssue.iid,
-      title: opts.task.title,
+      title: opts.workItem.sourceIssue.title,
       url: opts.workItem.sourceIssue.url,
       projectId: opts.workItem.sourceIssue.projectId,
       labels: [],

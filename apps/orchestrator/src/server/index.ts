@@ -179,6 +179,16 @@ export interface ServerDeps {
    * deterministic error instead of a route-level 404.
    */
   workItems?: WorkItemService;
+  /**
+   * V4.2 team-mode: per-project work-items services keyed by project id.
+   * When set, the server reads `x-issuepilot-project` header on every
+   * `/api/work-items/*` and `/api/issues/:iid/plan` request and routes
+   * to the matching service. Missing header → HTTP 400
+   * `project_header_required`; unknown project id → 404
+   * `project_not_found`. Single-mode (V1 daemon) leaves this absent and
+   * falls back to `workItems` regardless of the header.
+   */
+  workItemsByProject?: Map<string, WorkItemService>;
 }
 
 function resolveSnapshotField<T>(
@@ -560,12 +570,70 @@ export async function createServer(
     return 500;
   }
 
+  type WorkItemRouteContext =
+    | { ok: true; service: WorkItemService }
+    | {
+        ok: false;
+        statusCode: number;
+        body: { ok: false; code: string; message?: string };
+      };
+
+  /**
+   * Resolve the WorkItemService for a request:
+   *  - When `workItemsByProject` is wired (team-mode), require the
+   *    `x-issuepilot-project` header and look up by project id.
+   *  - Otherwise fall back to the single `workItems` service.
+   *  - When neither is wired, return HTTP 503 `work_items_unavailable`.
+   */
+  function resolveWorkItemService(
+    headers: Record<string, unknown>,
+  ): WorkItemRouteContext {
+    if (deps.workItemsByProject && deps.workItemsByProject.size > 0) {
+      const raw = headers["x-issuepilot-project"];
+      const project = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof project !== "string" || project.length === 0) {
+        return {
+          ok: false,
+          statusCode: 400,
+          body: {
+            ok: false,
+            code: "project_header_required",
+            message:
+              "x-issuepilot-project header is required when the orchestrator runs in team-mode",
+          },
+        };
+      }
+      const svc = deps.workItemsByProject.get(project);
+      if (!svc) {
+        return {
+          ok: false,
+          statusCode: 404,
+          body: {
+            ok: false,
+            code: "project_not_found",
+            message: `Unknown project: ${project}`,
+          },
+        };
+      }
+      return { ok: true, service: svc };
+    }
+    if (!deps.workItems) {
+      return {
+        ok: false,
+        statusCode: 503,
+        body: workItemsUnavailable(),
+      };
+    }
+    return { ok: true, service: deps.workItems };
+  }
+
   app.post<{ Params: { iid: string }; Body?: { regenerate?: boolean } }>(
     "/api/issues/:iid/plan",
     async (request, reply) => {
-      if (!deps.workItems) {
-        return reply.code(503).send(workItemsUnavailable());
-      }
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const iidNum = Number(request.params.iid);
       if (!Number.isInteger(iidNum) || iidNum <= 0) {
         return reply
@@ -576,7 +644,7 @@ export async function createServer(
         request.headers as Record<string, unknown>,
       );
       const regenerate = request.body?.regenerate === true;
-      const result = await deps.workItems.planFromIssue({
+      const result = await ctx.service.planFromIssue({
         iid: iidNum,
         regenerate,
         operator,
@@ -590,11 +658,12 @@ export async function createServer(
     },
   );
 
-  app.get("/api/work-items", async (_request, reply) => {
-    if (!deps.workItems) {
-      return reply.code(503).send(workItemsUnavailable());
-    }
-    const workItems = await deps.workItems.list();
+  app.get("/api/work-items", async (request, reply) => {
+    const ctx = resolveWorkItemService(
+      request.headers as Record<string, unknown>,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+    const workItems = await ctx.service.list();
     const counters: Record<WorkItemStatus, number> = Object.fromEntries(
       WORK_ITEM_STATUS_VALUES.map((s) => [s, 0]),
     ) as Record<WorkItemStatus, number>;
@@ -607,10 +676,11 @@ export async function createServer(
   app.get<{ Params: { id: string } }>(
     "/api/work-items/:id",
     async (request, reply) => {
-      if (!deps.workItems) {
-        return reply.code(503).send(workItemsUnavailable());
-      }
-      const detail = await deps.workItems.detail(request.params.id);
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const detail = await ctx.service.detail(request.params.id);
       if (!detail) {
         return reply
           .code(404)
@@ -627,9 +697,10 @@ export async function createServer(
       edits?: AcceptWorkItemPlanRequest["edits"];
     };
   }>("/api/work-items/:id/plan/accept", async (request, reply) => {
-    if (!deps.workItems) {
-      return reply.code(503).send(workItemsUnavailable());
-    }
+    const ctx = resolveWorkItemService(
+      request.headers as Record<string, unknown>,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
     const planId = request.body?.planId;
     if (typeof planId !== "string" || planId.length === 0) {
       return reply.code(400).send({
@@ -642,7 +713,7 @@ export async function createServer(
     const operator = extractOperator(
       request.headers as Record<string, unknown>,
     );
-    const result = await deps.workItems.acceptPlan({
+    const result = await ctx.service.acceptPlan({
       planId,
       edits,
       operator,
@@ -659,13 +730,14 @@ export async function createServer(
   app.post<{ Params: { id: string } }>(
     "/api/work-items/:id/plan/regenerate",
     async (request, reply) => {
-      if (!deps.workItems) {
-        return reply.code(503).send(workItemsUnavailable());
-      }
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const operator = extractOperator(
         request.headers as Record<string, unknown>,
       );
-      const result = await deps.workItems.regeneratePlan(
+      const result = await ctx.service.regeneratePlan(
         request.params.id,
         operator,
       );
@@ -681,13 +753,14 @@ export async function createServer(
   app.post<{ Params: { id: string; taskId: string } }>(
     "/api/work-items/:id/tasks/:taskId/skip",
     async (request, reply) => {
-      if (!deps.workItems) {
-        return reply.code(503).send(workItemsUnavailable());
-      }
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const operator = extractOperator(
         request.headers as Record<string, unknown>,
       );
-      const result = await deps.workItems.skipTask(
+      const result = await ctx.service.skipTask(
         request.params.id,
         request.params.taskId,
         operator,
@@ -704,13 +777,14 @@ export async function createServer(
   app.post<{ Params: { id: string; taskId: string } }>(
     "/api/work-items/:id/tasks/:taskId/retry",
     async (request, reply) => {
-      if (!deps.workItems) {
-        return reply.code(503).send(workItemsUnavailable());
-      }
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const operator = extractOperator(
         request.headers as Record<string, unknown>,
       );
-      const result = await deps.workItems.retryTask(
+      const result = await ctx.service.retryTask(
         request.params.id,
         request.params.taskId,
         operator,
@@ -724,13 +798,126 @@ export async function createServer(
     },
   );
 
+  app.post<{
+    Params: { id: string; taskId: string };
+    Body?: { reason?: string; hint?: string };
+  }>("/api/work-items/:id/tasks/:taskId/replan", async (request, reply) => {
+    const ctx = resolveWorkItemService(
+      request.headers as Record<string, unknown>,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+    const reason = (request.body?.reason ?? "").trim();
+    if (reason.length === 0) {
+      return reply.code(422).send({
+        ok: false,
+        code: "validation_failed",
+        message: "reason is required",
+      });
+    }
+    const operator = extractOperator(
+      request.headers as Record<string, unknown>,
+    );
+    const hint =
+      typeof request.body?.hint === "string" && request.body.hint.length > 0
+        ? request.body.hint
+        : undefined;
+    const result = await ctx.service.replanTask({
+      workItemId: request.params.id,
+      taskId: request.params.taskId,
+      reason,
+      ...(hint !== undefined ? { hint } : {}),
+      operator,
+    });
+    if ("error" in result) {
+      return reply
+        .code(statusFromWorkItemCode(result.error.code))
+        .send({ ok: false, ...result.error });
+    }
+    return reply.code(200).send(result);
+  });
+
+  app.post<{
+    Params: { id: string; taskId: string };
+    Body?: { reason?: string };
+  }>("/api/work-items/:id/tasks/:taskId/mark-rework", async (request, reply) => {
+    const ctx = resolveWorkItemService(
+      request.headers as Record<string, unknown>,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+    const reason = (request.body?.reason ?? "").trim();
+    if (reason.length === 0) {
+      return reply.code(422).send({
+        ok: false,
+        code: "validation_failed",
+        message: "reason is required",
+      });
+    }
+    const operator = extractOperator(
+      request.headers as Record<string, unknown>,
+    );
+    const result = await ctx.service.markNeedsRework({
+      workItemId: request.params.id,
+      taskId: request.params.taskId,
+      reason,
+      operator,
+    });
+    if ("error" in result) {
+      return reply
+        .code(statusFromWorkItemCode(result.error.code))
+        .send({ ok: false, ...result.error });
+    }
+    return reply.code(200).send(result);
+  });
+
+  app.post<{ Params: { id: string; taskId: string } }>(
+    "/api/work-items/:id/tasks/:taskId/unskip",
+    async (request, reply) => {
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const operator = extractOperator(
+        request.headers as Record<string, unknown>,
+      );
+      const result = await ctx.service.unskipTask({
+        workItemId: request.params.id,
+        taskId: request.params.taskId,
+        operator,
+      });
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/work-items/:id/graph",
+    async (request, reply) => {
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const result = await ctx.service.graph(request.params.id);
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
   app.get<{ Params: { id: string } }>(
     "/api/work-items/:id/report",
     async (request, reply) => {
-      if (!deps.workItems) {
-        return reply.code(503).send(workItemsUnavailable());
-      }
-      const report = await deps.workItems.report(request.params.id);
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const report = await ctx.service.report(request.params.id);
       return reply.code(200).send({ report });
     },
   );

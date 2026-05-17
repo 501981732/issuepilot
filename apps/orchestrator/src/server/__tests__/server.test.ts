@@ -38,6 +38,7 @@ async function buildTestApp(
     operatorActions?: ServerDeps["operatorActions"];
     reports?: ServerDeps["reports"];
     workItems?: ServerDeps["workItems"];
+    workItemsByProject?: ServerDeps["workItemsByProject"];
   } = {},
 ) {
   const state = createRuntimeState();
@@ -59,6 +60,9 @@ async function buildTestApp(
         : {}),
       ...(overrides.reports ? { reports: overrides.reports } : {}),
       ...(overrides.workItems ? { workItems: overrides.workItems } : {}),
+      ...(overrides.workItemsByProject
+        ? { workItemsByProject: overrides.workItemsByProject }
+        : {}),
     },
     { port: 0 },
   );
@@ -1028,6 +1032,19 @@ describe("V4.1 work item routes", () => {
         })),
       skipTask: over.skipTask ?? (async () => ({ ok: true as const })),
       retryTask: over.retryTask ?? (async () => ({ ok: true as const })),
+      replanTask: over.replanTask ??
+        (async () => ({
+          workItem: workItemFixture({ status: "ready" }),
+          plan: { ...planFixture(), version: 2, status: "draft" as const },
+        })),
+      markNeedsRework: over.markNeedsRework ?? (async () => ({ ok: true as const })),
+      unskipTask: over.unskipTask ?? (async () => ({ ok: true as const })),
+      graph: over.graph ??
+        (async () => ({
+          levels: [["t1"], ["t2"]],
+          edges: [{ from: "t1", to: "t2" }],
+          criticalPathTaskIds: ["t1", "t2"],
+        })),
       report: over.report ?? (async () => undefined),
     };
   }
@@ -1303,6 +1320,253 @@ describe("V4.1 work item routes", () => {
       expect(resp.statusCode).toBe(200);
       const body = JSON.parse(resp.body);
       expect(body.report.workItemId).toBe("wi_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  // V4.2 Task Graph routes
+
+  it("POST /api/work-items/:id/tasks/:taskId/replan returns new draft plan", async () => {
+    const replanTask = vi.fn(async () => ({
+      workItem: workItemFixture({ status: "ready" }),
+      plan: { ...planFixture(), version: 2, status: "draft" as const },
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ replanTask: replanTask as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/replan",
+        headers: { "x-issuepilot-operator": "alice" },
+        payload: { reason: "Sub-task too broad", hint: "split into 2" },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(replanTask).toHaveBeenCalledWith({
+        workItemId: "wi_01",
+        taskId: "t1",
+        reason: "Sub-task too broad",
+        hint: "split into 2",
+        operator: "alice",
+      });
+      const body = JSON.parse(resp.body);
+      expect(body.plan.version).toBe(2);
+      expect(body.plan.status).toBe("draft");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/replan rejects empty reason with 400 validation_failed", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService(),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/replan",
+        payload: { reason: "" },
+      });
+      expect(resp.statusCode).toBe(422);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "validation_failed",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/mark-rework records the reason", async () => {
+    const markNeedsRework = vi.fn(async () => ({ ok: true as const }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        markNeedsRework: markNeedsRework as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/mark-rework",
+        headers: { "x-issuepilot-operator": "bob" },
+        payload: { reason: "Reviewer asked for tests" },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(markNeedsRework).toHaveBeenCalledWith({
+        workItemId: "wi_01",
+        taskId: "t1",
+        reason: "Reviewer asked for tests",
+        operator: "bob",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/mark-rework rejects empty reason", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService(),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/mark-rework",
+        payload: { reason: "  " },
+      });
+      expect(resp.statusCode).toBe(422);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST /api/work-items/:id/tasks/:taskId/unskip succeeds on skipped task", async () => {
+    const unskipTask = vi.fn(async () => ({ ok: true as const }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ unskipTask: unskipTask as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "POST",
+        url: "/api/work-items/wi_01/tasks/t1/unskip",
+        headers: { "x-issuepilot-operator": "carol" },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(unskipTask).toHaveBeenCalledWith({
+        workItemId: "wi_01",
+        taskId: "t1",
+        operator: "carol",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/graph returns levels/edges/criticalPathTaskIds", async () => {
+    const graph = vi.fn(async () => ({
+      levels: [["t1"], ["t2"]],
+      edges: [{ from: "t1", to: "t2" }],
+      criticalPathTaskIds: ["t1", "t2"],
+    }));
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ graph: graph as never }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_01/graph",
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.levels).toEqual([["t1"], ["t2"]]);
+      expect(body.edges).toEqual([{ from: "t1", to: "t2" }]);
+      expect(body.criticalPathTaskIds).toEqual(["t1", "t2"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/work-items/:id/graph returns 404 not_found from service", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({
+        graph: (async () => ({
+          error: { code: "not_found", message: "missing" },
+        })) as never,
+      }),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items/wi_missing/graph",
+      });
+      expect(resp.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("routes to per-project workItems service when x-issuepilot-project header is set", async () => {
+    const listA = vi.fn(async () => [workItemFixture({ status: "ready" })]);
+    const listB = vi.fn(async () => [
+      { ...workItemFixture({ status: "running" }), workItemId: "wi_B1" },
+    ]);
+    const { app } = await buildTestApp(async () => [], {
+      workItemsByProject: new Map([
+        ["proj-a", buildWorkItemsService({ list: listA as never })],
+        ["proj-b", buildWorkItemsService({ list: listB as never })],
+      ]) as never,
+    });
+    try {
+      const respA = await app.inject({
+        method: "GET",
+        url: "/api/work-items",
+        headers: { "x-issuepilot-project": "proj-a" },
+      });
+      expect(respA.statusCode).toBe(200);
+      expect(JSON.parse(respA.body).workItems[0].workItemId).toBe("wi_01");
+      expect(listA).toHaveBeenCalledTimes(1);
+      expect(listB).toHaveBeenCalledTimes(0);
+      const respB = await app.inject({
+        method: "GET",
+        url: "/api/work-items",
+        headers: { "x-issuepilot-project": "proj-b" },
+      });
+      expect(respB.statusCode).toBe(200);
+      expect(JSON.parse(respB.body).workItems[0].workItemId).toBe("wi_B1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 project_header_required when workItemsByProject is wired but header is missing", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItemsByProject: new Map([
+        ["proj-a", buildWorkItemsService()],
+      ]) as never,
+    });
+    try {
+      const resp = await app.inject({ method: "GET", url: "/api/work-items" });
+      expect(resp.statusCode).toBe(400);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "project_header_required",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 when x-issuepilot-project header references an unknown project", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      workItemsByProject: new Map([
+        ["proj-a", buildWorkItemsService()],
+      ]) as never,
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/work-items",
+        headers: { "x-issuepilot-project": "missing" },
+      });
+      expect(resp.statusCode).toBe(404);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        ok: false,
+        code: "project_not_found",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("falls back to the default workItems service when the header is absent (single-mode)", async () => {
+    const list = vi.fn(async () => [workItemFixture({ status: "ready" })]);
+    const { app } = await buildTestApp(async () => [], {
+      workItems: buildWorkItemsService({ list: list as never }),
+    });
+    try {
+      const resp = await app.inject({ method: "GET", url: "/api/work-items" });
+      expect(resp.statusCode).toBe(200);
+      expect(list).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();
     }

@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import type {
   AcceptWorkItemPlanRequest,
+  ConfirmEvidenceResponse,
   RunReportArtifact,
   TaskNode,
   TaskPlan,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemEvidenceResponse,
   WorkItemReport,
   WorkItemStatus,
 } from "@issuepilot/shared-contracts";
@@ -24,6 +26,7 @@ import {
 import { applyTaskRunFinal, tickWorkItem } from "./orchestration.js";
 import { validatePlanDraft } from "./plan-validation.js";
 import type { WorkItemPlanner } from "./planner.js";
+import * as ReportRenderer from "./render-report.js";
 import type { WorkItemStore } from "./store.js";
 
 /**
@@ -67,6 +70,7 @@ export interface WorkItemServiceDeps {
    * label-mode transition rules; this service just asks for it.
    */
   reconcileWorkItem(workItemId: string): Promise<void>;
+  aggregateDeps?: Pick<AggregateDeps, "getRunReport">;
   emit(event: {
     type: string;
     runId?: string;
@@ -77,11 +81,60 @@ export interface WorkItemServiceDeps {
   newId?(): string;
 }
 
+declare module "../server/index.js" {
+  interface WorkItemService {
+    getReportMarkdown(
+      workItemId: string,
+    ): Promise<string | WorkItemServiceError>;
+    getEvidence(
+      workItemId: string,
+    ): Promise<WorkItemEvidenceResponse | WorkItemServiceError>;
+    confirmTaskEvidence(
+      workItemId: string,
+      taskId: string,
+      evidenceId: string,
+      input: { operator?: string },
+    ): Promise<ConfirmEvidenceResponse | WorkItemServiceError>;
+  }
+}
+
 export function createWorkItemService(
   deps: WorkItemServiceDeps,
 ): WorkItemService {
   const now = (): string => deps.now?.() ?? new Date().toISOString();
   const newId = (): string => deps.newId?.() ?? `wi_${randomUUID()}`;
+  const aggregateDeps = (): AggregateDeps => ({
+    getRunReport: deps.aggregateDeps?.getRunReport ?? (async () => undefined),
+    getEvidenceConfirmations: (workItemId) =>
+      deps.store.loadEvidenceConfirmations(workItemId),
+    now,
+  });
+
+  async function aggregateCurrentWorkItem(
+    workItemId: string,
+  ): Promise<
+    | {
+        workItem: WorkItem;
+        plan: TaskPlan;
+        result: Awaited<ReturnType<typeof aggregateWorkItem>>;
+      }
+    | WorkItemServiceError
+  > {
+    const workItem = await deps.store.getWorkItem(workItemId);
+    if (!workItem) return errorResult("not_found", "work item not found");
+    const plan = await deps.store.getCurrentPlan(workItemId);
+    if (!plan || plan.status !== "accepted") {
+      return errorResult("not_found", "accepted plan not found");
+    }
+    const links = await deps.store.listAllTaskRunLinks(workItemId);
+    const result = await aggregateWorkItem(
+      workItem,
+      plan,
+      links,
+      aggregateDeps(),
+    );
+    return { workItem, plan, result };
+  }
 
   async function buildDetail(
     id: string,
@@ -604,6 +657,84 @@ export function createWorkItemService(
 
     async report(id) {
       return deps.store.getReport(id);
+    },
+
+    async getReportMarkdown(id) {
+      const detail = await buildDetail(id);
+      if (!detail?.report) {
+        return errorResult("report_not_ready", "report not ready");
+      }
+      const markdown = ReportRenderer.renderWorkItemReportMarkdown(
+        detail.workItem,
+        detail.plan.current,
+        detail.report,
+        {
+          audience: "markdown",
+          evidenceBaseHref: `/api/work-items/${encodeURIComponent(
+            id,
+          )}/evidence/file`,
+        },
+      );
+      deps.emit({
+        type: "work_item_report_rendered",
+        ts: now(),
+        detail: {
+          workItemId: id,
+          audience: "markdown",
+        },
+      });
+      return markdown;
+    },
+
+    async getEvidence(id) {
+      const aggregate = await aggregateCurrentWorkItem(id);
+      if ("error" in aggregate) return aggregate;
+      const { report, missing } = aggregate.result;
+      return {
+        index: report.evidence.index,
+        byTask: report.evidence.byTask,
+        missing,
+      };
+    },
+
+    async confirmTaskEvidence(workItemId, taskId, evidenceId, { operator }) {
+      const aggregate = await aggregateCurrentWorkItem(workItemId);
+      if ("error" in aggregate) return aggregate;
+      const task = aggregate.plan.tasks.find((t) => t.taskId === taskId);
+      if (!task) return errorResult("not_found", "task not found");
+      const evidence = aggregate.result.report.evidence.index.find(
+        (entry) => entry.evidenceId === evidenceId,
+      );
+      if (!evidence || evidence.taskId !== taskId) {
+        return errorResult("not_found", "evidence not found");
+      }
+
+      const confirmedAt = now();
+      const confirmedBy = operator ?? "operator";
+      await deps.store.saveEvidenceConfirmation(workItemId, evidenceId, {
+        confirmedBy,
+        confirmedAt,
+      });
+      await deps.reconcileWorkItem(workItemId);
+      deps.emit({
+        type: "work_item_evidence_confirmed",
+        ts: confirmedAt,
+        detail: {
+          workItemId,
+          taskId,
+          evidenceId,
+          confirmedBy,
+          confirmedAt,
+        },
+      });
+
+      const refreshed = await aggregateCurrentWorkItem(workItemId);
+      if ("error" in refreshed) return refreshed;
+      return {
+        evidenceId,
+        confirmedAt,
+        report: refreshed.result.report,
+      };
     },
   };
 }

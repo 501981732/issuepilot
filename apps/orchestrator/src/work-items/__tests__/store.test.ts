@@ -240,4 +240,40 @@ describe("WorkItemStore", () => {
     );
     expect(JSON.parse(body).overallStatus).toBe("complete");
   });
+
+  it("persists evidence confirmations under evidence-confirmations/<workItemId>.json", async () => {
+    const store = createWorkItemStore({ rootDir: root });
+    await store.saveEvidenceConfirmation("wi_01", "ev_01", {
+      confirmedBy: "alice",
+      confirmedAt: "2026-05-17T01:00:00.000Z",
+    });
+
+    const body = await readFile(
+      join(root, "evidence-confirmations", "wi_01.json"),
+      "utf8",
+    );
+    expect(JSON.parse(body)).toEqual({
+      ev_01: {
+        confirmedBy: "alice",
+        confirmedAt: "2026-05-17T01:00:00.000Z",
+      },
+    });
+
+    const fresh = createWorkItemStore({ rootDir: root });
+    await fresh.saveEvidenceConfirmation("wi_01", "ev_02", {
+      confirmedBy: "bob",
+      confirmedAt: "2026-05-17T02:00:00.000Z",
+    });
+
+    await expect(fresh.loadEvidenceConfirmations("wi_01")).resolves.toEqual({
+      ev_01: {
+        confirmedBy: "alice",
+        confirmedAt: "2026-05-17T01:00:00.000Z",
+      },
+      ev_02: {
+        confirmedBy: "bob",
+        confirmedAt: "2026-05-17T02:00:00.000Z",
+      },
+    });
+  });
 });

@@ -50,6 +50,20 @@ export interface WorkItemStore {
 
   saveReport(report: WorkItemReport): Promise<void>;
   getReport(workItemId: string): Promise<WorkItemReport | undefined>;
+
+  loadEvidenceConfirmations(
+    workItemId: string,
+  ): Promise<Record<string, EvidenceConfirmation>>;
+  saveEvidenceConfirmation(
+    workItemId: string,
+    evidenceId: string,
+    confirmation: EvidenceConfirmation,
+  ): Promise<void>;
+}
+
+export interface EvidenceConfirmation {
+  confirmedBy: string;
+  confirmedAt: string;
 }
 
 export interface CreateWorkItemStoreOptions {
@@ -61,6 +75,7 @@ const WORK_ITEMS_DIR = "work-items";
 const TASK_PLANS_DIR = "task-plans";
 const TASK_RUN_LINKS_DIR = "task-run-links";
 const WORK_ITEM_REPORTS_DIR = "work-item-reports";
+const EVIDENCE_CONFIRMATIONS_DIR = "evidence-confirmations";
 
 export function createWorkItemStore(
   opts: CreateWorkItemStoreOptions,
@@ -71,6 +86,10 @@ export function createWorkItemStore(
   const plansByWorkItem = new Map<string, Set<string>>();
   const taskRunLinks = new Map<string, Map<string, TaskRunLink>>();
   const reports = new Map<string, WorkItemReport>();
+  const evidenceConfirmations = new Map<
+    string,
+    Record<string, EvidenceConfirmation>
+  >();
 
   function workItemPath(id: string): string {
     return join(opts.rootDir, WORK_ITEMS_DIR, `${id}.json`);
@@ -83,6 +102,13 @@ export function createWorkItemStore(
   }
   function reportPath(workItemId: string): string {
     return join(opts.rootDir, WORK_ITEM_REPORTS_DIR, `${workItemId}.json`);
+  }
+  function evidenceConfirmationsPath(workItemId: string): string {
+    return join(
+      opts.rootDir,
+      EVIDENCE_CONFIRMATIONS_DIR,
+      `${workItemId}.json`,
+    );
   }
 
   async function writeJson(path: string, payload: unknown): Promise<void> {
@@ -251,6 +277,26 @@ export function createWorkItemStore(
       const loaded = await readJson<WorkItemReport>(reportPath(workItemId));
       if (loaded) reports.set(workItemId, loaded);
       return loaded;
+    },
+
+    async loadEvidenceConfirmations(workItemId) {
+      const cached = evidenceConfirmations.get(workItemId);
+      if (cached) return cached;
+      const loaded =
+        (await readJson<Record<string, EvidenceConfirmation>>(
+          evidenceConfirmationsPath(workItemId),
+        )) ?? {};
+      evidenceConfirmations.set(workItemId, loaded);
+      return loaded;
+    },
+
+    async saveEvidenceConfirmation(workItemId, evidenceId, confirmation) {
+      const current = {
+        ...(await this.loadEvidenceConfirmations(workItemId)),
+        [evidenceId]: confirmation,
+      };
+      evidenceConfirmations.set(workItemId, current);
+      await writeJson(evidenceConfirmationsPath(workItemId), current);
     },
   };
 }

@@ -2,11 +2,17 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { TaskNode, TaskPlan } from "@issuepilot/shared-contracts";
+import type {
+  RunReportArtifact,
+  TaskNode,
+  TaskPlan,
+  WorkItemReport,
+} from "@issuepilot/shared-contracts";
 
 import type { WorkItemPlanner } from "../planner.js";
+import * as ReportRenderer from "../render-report.js";
 import { createWorkItemService } from "../service.js";
 import { createWorkItemStore } from "../store.js";
 
@@ -58,6 +64,76 @@ function makePlanner(over?: Partial<WorkItemPlanner>): WorkItemPlanner {
         } as TaskPlan,
       })),
   };
+}
+
+function makeRunReport(
+  runId: string,
+  over: Partial<RunReportArtifact> = {},
+): RunReportArtifact {
+  return {
+    runId,
+    issueIid: 42,
+    status: "completed",
+    run: {
+      runId,
+      status: "completed",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    },
+    diff: {
+      filesChanged: 1,
+      notableFiles: ["src/api.ts"],
+      summary: `diff for ${runId}`,
+    },
+    handoff: {
+      summary: `summary for ${runId}`,
+      validation: [`validated ${runId}`],
+      risks: [],
+      followUps: [],
+    },
+    checks: [],
+    evidence: [
+      {
+        kind: "screenshot",
+        label: `Screenshot ${runId}`,
+        relPath: `screenshots/${runId}.png`,
+      },
+    ],
+    ...over,
+  };
+}
+
+async function makeAcceptedService(input: {
+  reports?: Map<string, RunReportArtifact>;
+  reconcile?: (workItemId: string) => Promise<void>;
+  emit?: Parameters<typeof createWorkItemService>[0]["emit"];
+  now?: () => string;
+} = {}) {
+  const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
+  const store = createWorkItemStore({ rootDir: dir });
+  const svc = createWorkItemService({
+    store,
+    planner: makePlanner(),
+    fetchIssue: async () => issue,
+    tick: async () => {},
+    reconcileWorkItem: input.reconcile ?? (async () => {}),
+    emit: input.emit ?? (() => {}),
+    aggregateDeps: {
+      getRunReport: async (runId) => input.reports?.get(runId),
+    },
+    newId: () => "wi_test",
+    now: input.now ?? (() => "2026-05-17T00:00:00.000Z"),
+  });
+  const planned = await svc.planFromIssue({ iid: 42, operator: "alice" });
+  if ("error" in planned) throw new Error(planned.error.message);
+  const accepted = await svc.acceptPlan({
+    planId: planned.plan.planId,
+    edits: [],
+    operator: "alice",
+    workItemId: planned.workItem.workItemId,
+  });
+  if ("error" in accepted) throw new Error(accepted.error.message);
+  return { dir, store, svc, workItem: accepted.workItem, plan: accepted.plan };
 }
 
 describe("createWorkItemService", () => {
@@ -435,5 +511,220 @@ describe("createWorkItemService", () => {
     if ("error" in second) throw new Error(second.error.message);
     expect(second.plan.version).toBe(2);
     expect(plannerCalls).toBe(2);
+  });
+
+  it("getReportMarkdown delegates to renderWorkItemReportMarkdown", async () => {
+    const { store, svc, workItem, plan } = await makeAcceptedService();
+    const report: WorkItemReport = {
+      workItemId: workItem.workItemId,
+      overallStatus: "complete",
+      taskSummaries: [],
+      validationSummary: "OK",
+      riskSummary: "low",
+      evidence: { index: [], byTask: {} },
+      openQuestions: [],
+      recommendedNextActions: [],
+      humanReviewChecklist: [],
+      generatedAt: "2026-05-17T00:10:00.000Z",
+    };
+    await store.saveReport(report);
+    const spy = vi
+      .spyOn(ReportRenderer, "renderWorkItemReportMarkdown")
+      .mockReturnValue("markdown body");
+
+    const result = await svc.getReportMarkdown(workItem.workItemId);
+
+    expect(result).toBe("markdown body");
+    expect(spy).toHaveBeenCalledWith(workItem, plan, report, {
+      audience: "markdown",
+      evidenceBaseHref: `/api/work-items/${workItem.workItemId}/evidence/file`,
+    });
+    spy.mockRestore();
+  });
+
+  it("getReportMarkdown returns report_not_ready when no plan accepted", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
+    const store = createWorkItemStore({ rootDir: dir });
+    const svc = createWorkItemService({
+      store,
+      planner: makePlanner(),
+      fetchIssue: async () => issue,
+      tick: async () => {},
+      reconcileWorkItem: async () => {},
+      emit: () => {},
+      newId: () => "wi_test",
+      now: () => "2026-05-17T00:00:00.000Z",
+    });
+    const planned = await svc.planFromIssue({ iid: 42, operator: "alice" });
+    if ("error" in planned) throw new Error(planned.error.message);
+
+    const result = await svc.getReportMarkdown(planned.workItem.workItemId);
+
+    expect(result).toEqual({
+      error: { code: "report_not_ready", message: "report not ready" },
+    });
+  });
+
+  it("getEvidence exposes missing tasks", async () => {
+    const { svc, workItem } = await makeAcceptedService();
+
+    const result = await svc.getEvidence(workItem.workItemId);
+
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.index).toEqual([]);
+    expect(result.byTask).toEqual({ t1: [], t2: [] });
+    expect(result.missing).toEqual([
+      { taskId: "t1", reason: "no-link" },
+      { taskId: "t2", reason: "no-link" },
+    ]);
+  });
+
+  it("confirmTaskEvidence rejects unknown evidenceId", async () => {
+    const reports = new Map([["run_t1", makeRunReport("run_t1")]]);
+    const { store, svc, workItem } = await makeAcceptedService({ reports });
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+
+    const result = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      "ev_missing",
+      { operator: "alice" },
+    );
+
+    expect(result).toEqual({
+      error: { code: "not_found", message: "evidence not found" },
+    });
+  });
+
+  it("confirmTaskEvidence rejects an evidenceId that belongs to another task", async () => {
+    const reports = new Map([
+      ["run_t1", makeRunReport("run_t1")],
+      ["run_t2", makeRunReport("run_t2")],
+    ]);
+    const { store, svc, workItem } = await makeAcceptedService({ reports });
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+    await store.saveTaskRunLink({
+      taskId: "t2",
+      runId: "run_t2",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t2",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+    const evidence = await svc.getEvidence(workItem.workItemId);
+    if ("error" in evidence) throw new Error(evidence.error.message);
+    const t2EvidenceId = evidence.byTask.t2[0]!.evidenceId;
+
+    const result = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      t2EvidenceId,
+      { operator: "alice" },
+    );
+
+    expect(result).toEqual({
+      error: { code: "not_found", message: "evidence not found" },
+    });
+  });
+
+  it("confirmTaskEvidence stamps confirmedBy + confirmedAt and emits work_item_evidence_confirmed", async () => {
+    const reports = new Map([["run_t1", makeRunReport("run_t1")]]);
+    const events: Array<{ type: string; detail: Record<string, unknown> }> = [];
+    const { store, svc, workItem } = await makeAcceptedService({
+      reports,
+      emit: (event) => events.push(event),
+      now: () => "2026-05-17T03:00:00.000Z",
+    });
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+    const evidence = await svc.getEvidence(workItem.workItemId);
+    if ("error" in evidence) throw new Error(evidence.error.message);
+    const evidenceId = evidence.byTask.t1[0]!.evidenceId;
+
+    const result = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      evidenceId,
+      { operator: "alice" },
+    );
+
+    expect("error" in result).toBe(false);
+    if ("error" in result) return;
+    expect(result.evidenceId).toBe(evidenceId);
+    expect(result.confirmedAt).toBe("2026-05-17T03:00:00.000Z");
+    expect(result.report.evidence.byTask.t1[0]).toMatchObject({
+      evidenceId,
+      confidence: "human-confirmed",
+      confirmedBy: "alice",
+      confirmedAt: "2026-05-17T03:00:00.000Z",
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "work_item_evidence_confirmed",
+      detail: expect.objectContaining({
+        workItemId: workItem.workItemId,
+        taskId: "t1",
+        evidenceId,
+        confirmedBy: "alice",
+        confirmedAt: "2026-05-17T03:00:00.000Z",
+      }),
+    }));
+  });
+
+  it("confirmTaskEvidence triggers reconcileWorkItem so handoff note re-renders", async () => {
+    const reports = new Map([["run_t1", makeRunReport("run_t1")]]);
+    const reconciled: string[] = [];
+    const { store, svc, workItem } = await makeAcceptedService({
+      reports,
+      reconcile: async (id) => {
+        reconciled.push(id);
+      },
+    });
+    await store.saveTaskRunLink({
+      taskId: "t1",
+      runId: "run_t1",
+      attempt: 1,
+      status: "completed",
+      branch: "ai/t1",
+      startedAt: "2026-05-17T00:01:00.000Z",
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
+    const evidence = await svc.getEvidence(workItem.workItemId);
+    if ("error" in evidence) throw new Error(evidence.error.message);
+    const evidenceId = evidence.byTask.t1[0]!.evidenceId;
+
+    const result = await svc.confirmTaskEvidence(
+      workItem.workItemId,
+      "t1",
+      evidenceId,
+      { operator: "alice" },
+    );
+
+    expect("error" in result).toBe(false);
+    expect(reconciled).toEqual([workItem.workItemId]);
   });
 });

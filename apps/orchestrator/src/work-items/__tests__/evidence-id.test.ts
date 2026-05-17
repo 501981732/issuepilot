@@ -17,6 +17,17 @@ describe("deriveEvidenceId", () => {
     );
   });
 
+  it("matches the sha1 base64url golden digest", () => {
+    expect(
+      deriveEvidenceId({
+        taskId: "task-1",
+        kind: "validation",
+        runId: "run_a",
+        seed: "stable-seed",
+      }),
+    ).toBe("task-1:validation:run_a:7sICaj63IrmqCV-Ai9VLn6wF62E");
+  });
+
   it("changes when task, kind, run, or seed changes", () => {
     const base = {
       taskId: "task-1",

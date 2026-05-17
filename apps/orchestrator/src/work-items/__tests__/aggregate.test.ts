@@ -844,6 +844,44 @@ describe("aggregateWorkItem", () => {
     ]);
   });
 
+  it("reports no-run-report for failed and blocked terminal links with missing reports", async () => {
+    const activePlan = planWith([
+      task({ taskId: "t1", status: "failed" }),
+      task({ taskId: "t2", status: "blocked" }),
+    ]);
+
+    const result = await aggregate(
+      activePlan,
+      [
+        link({ taskId: "t1", runId: "run_failed", status: "failed" }),
+        link({ taskId: "t2", runId: "run_blocked", status: "blocked" }),
+      ],
+      new Map(),
+    );
+
+    expect(result.report.overallStatus).toBe("incomplete");
+    expect(result.missing).toEqual([
+      { taskId: "t1", reason: "no-run-report" },
+      { taskId: "t2", reason: "no-run-report" },
+    ]);
+    expect(result.report.humanReviewChecklist).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          itemId: "missing-evidence:t1",
+          taskId: "t1",
+          reason: "missing-evidence",
+          confirmed: false,
+        }),
+        expect.objectContaining({
+          itemId: "missing-evidence:t2",
+          taskId: "t2",
+          reason: "missing-evidence",
+          confirmed: false,
+        }),
+      ]),
+    );
+  });
+
   it("does not mark a report incomplete only because evidence is undefined", async () => {
     const result = await aggregate(
       plan,

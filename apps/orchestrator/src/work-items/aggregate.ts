@@ -448,7 +448,7 @@ function deriveMissing(entries: AggregateEntry[]): MissingEvidence[] {
       missing.push({ taskId: e.task.taskId, reason: "no-link" });
       continue;
     }
-    if (e.link.status === "completed" && !e.report) {
+    if (linkShouldHaveRunReport(e.link) && !e.report) {
       missing.push({ taskId: e.task.taskId, reason: "no-run-report" });
       continue;
     }
@@ -461,6 +461,14 @@ function deriveMissing(entries: AggregateEntry[]): MissingEvidence[] {
 
 function isOperatorSettled(task: TaskNode): boolean {
   return task.status === "skipped" || task.status === "needs_rework";
+}
+
+function linkShouldHaveRunReport(link: TaskRunLink): boolean {
+  return (
+    link.status === "completed" ||
+    link.status === "failed" ||
+    link.status === "blocked"
+  );
 }
 
 function hasRequiredReportStructures(report: RunReportArtifact): boolean {
@@ -507,7 +515,7 @@ function decideOverallStatus(entries: AggregateEntry[]): WorkItemReportStatus {
   for (const e of entries) {
     if (isOperatorSettled(e.task)) continue;
     if (!e.link) return "incomplete";
-    if (e.link.status === "completed" && !e.report) return "incomplete";
+    if (linkShouldHaveRunReport(e.link) && !e.report) return "incomplete";
     if (e.report && !hasRequiredReportStructures(e.report)) {
       return "incomplete";
     }

@@ -5,6 +5,7 @@
     "primary": "Primary navigation",
     "commandCenter": "Command Center",
     "reports": "Reports",
+    "workItems": "Work Items",
     "modeTag": "v2.5 · local mode",
     "skipToMain": "Skip to main content"
   },
@@ -96,6 +97,101 @@
     "highestRisk": "Highest risk",
     "mr": "MR",
     "ciTag": "CI: {value}"
+  },
+  "workItems": {
+    "overheadLabel": "Workflow spine",
+    "title": "Work Items",
+    "description": "Large GitLab Issues planned into 2–5 synthetic task runs. Accept the plan to dispatch task runs; the parent Issue label only flips to human-review once all required tasks complete.",
+    "errorTitle": "Work Items unavailable",
+    "empty": "No work items yet. Open the Command Center, pick a large Issue, and click \"Plan work item\" to start.",
+    "counter": {
+      "planning": "Planning",
+      "ready": "Ready",
+      "running": "Running",
+      "partial": "Partial",
+      "completed": "Completed",
+      "blocked": "Blocked"
+    },
+    "columns": {
+      "title": "Title",
+      "issue": "Source Issue",
+      "status": "Status",
+      "tasks": "Tasks",
+      "updated": "Updated"
+    },
+    "tableAria": "Work items table",
+    "rowCount": "{count, plural, one {# work item} other {# work items}}"
+  },
+  "workItem": {
+    "backLink": "← Work Items",
+    "headerAria": "Work item {id}",
+    "field": {
+      "issue": "Source Issue",
+      "status": "Status",
+      "goal": "Goal",
+      "acceptance": "Acceptance criteria",
+      "createdAt": "Created",
+      "updatedAt": "Updated"
+    },
+    "plan": {
+      "title": "Plan",
+      "draftBadge": "Draft",
+      "acceptedBadge": "Accepted",
+      "supersededBadge": "Superseded",
+      "rejectedBadge": "Rejected",
+      "version": "Version {version}",
+      "accept": "Accept plan",
+      "regenerate": "Regenerate",
+      "edit": "Edit",
+      "save": "Save edits",
+      "cancel": "Cancel",
+      "fieldTitle": "Title",
+      "fieldGoal": "Goal",
+      "fieldScope": "Scope",
+      "fieldDependsOn": "Depends on",
+      "fieldSuggestedValidation": "Suggested validation",
+      "saving": "Saving…",
+      "regenerating": "Regenerating…"
+    },
+    "tasks": {
+      "title": "Tasks",
+      "groupReady": "Ready",
+      "groupRunning": "Running",
+      "groupCompleted": "Completed",
+      "groupBlocked": "Blocked",
+      "groupFailed": "Failed",
+      "groupNeedsRework": "Needs rework",
+      "groupSkipped": "Skipped",
+      "groupBlockedByDependency": "Blocked by dependency",
+      "groupPlanned": "Planned",
+      "actionSkip": "Skip",
+      "actionRetry": "Retry",
+      "actionUnskip": "Cancel skip"
+    },
+    "parentReviewPacket": {
+      "title": "Parent Review Packet",
+      "empty": "Aggregation pending; waiting for synthetic task runs to finish.",
+      "statusComplete": "All tasks completed",
+      "statusPartial": "Partial — operator action required",
+      "statusIncomplete": "Awaiting more task runs",
+      "validation": "Validation",
+      "risks": "Risks",
+      "openQuestions": "Open questions",
+      "nextActions": "Recommended next actions",
+      "evidence": "Evidence",
+      "evidenceDiff": "Diff",
+      "evidenceValidation": "Validation",
+      "evidenceRisk": "Risk",
+      "evidenceCi": "CI",
+      "evidenceReview": "Reviewer",
+      "noNextActions": "Reviewer to inspect the linked MRs and decide next steps.",
+      "copyMarkdown": "Copy as Markdown",
+      "copied": "Copied"
+    },
+    "action": {
+      "planWorkItem": "Plan work item",
+      "planning": "Planning…"
+    }
   },
   "reportsPage": {
     "overheadLabel": "Run analytics",

@@ -5,6 +5,7 @@
     "primary": "主导航",
     "commandCenter": "指挥中心",
     "reports": "报告",
+    "workItems": "工作单元",
     "modeTag": "v2.5 · 本地模式",
     "skipToMain": "跳到主内容"
   },
@@ -96,6 +97,101 @@
     "highestRisk": "最高风险",
     "mr": "MR",
     "ciTag": "CI: {value}"
+  },
+  "workItems": {
+    "overheadLabel": "工作流主线",
+    "title": "工作单元",
+    "description": "把大型 GitLab Issue 拆成 2–5 个 synthetic 任务运行。接受 plan 后立即派发任务运行；只有当所有必需任务都完成时父 Issue label 才会切到 human-review。",
+    "errorTitle": "工作单元服务不可用",
+    "empty": "暂无工作单元。回到指挥中心选中某个大 Issue 并点击「Plan work item」开始拆解。",
+    "counter": {
+      "planning": "拆解中",
+      "ready": "待派发",
+      "running": "执行中",
+      "partial": "部分完成",
+      "completed": "已完成",
+      "blocked": "阻塞"
+    },
+    "columns": {
+      "title": "标题",
+      "issue": "来源 Issue",
+      "status": "状态",
+      "tasks": "任务数",
+      "updated": "更新时间"
+    },
+    "tableAria": "工作单元列表",
+    "rowCount": "{count} 项工作单元"
+  },
+  "workItem": {
+    "backLink": "← 工作单元列表",
+    "headerAria": "工作单元 {id}",
+    "field": {
+      "issue": "来源 Issue",
+      "status": "状态",
+      "goal": "目标",
+      "acceptance": "验收标准",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间"
+    },
+    "plan": {
+      "title": "拆解 plan",
+      "draftBadge": "草稿",
+      "acceptedBadge": "已接受",
+      "supersededBadge": "已废弃",
+      "rejectedBadge": "已拒绝",
+      "version": "版本 {version}",
+      "accept": "接受 plan",
+      "regenerate": "重新生成",
+      "edit": "编辑",
+      "save": "保存修改",
+      "cancel": "取消",
+      "fieldTitle": "标题",
+      "fieldGoal": "目标",
+      "fieldScope": "范围",
+      "fieldDependsOn": "依赖任务",
+      "fieldSuggestedValidation": "推荐验证",
+      "saving": "保存中…",
+      "regenerating": "重新生成中…"
+    },
+    "tasks": {
+      "title": "任务列表",
+      "groupReady": "待派发",
+      "groupRunning": "执行中",
+      "groupCompleted": "已完成",
+      "groupBlocked": "阻塞",
+      "groupFailed": "失败",
+      "groupNeedsRework": "需要返工",
+      "groupSkipped": "已跳过",
+      "groupBlockedByDependency": "等待依赖",
+      "groupPlanned": "已规划",
+      "actionSkip": "跳过",
+      "actionRetry": "重试",
+      "actionUnskip": "取消跳过"
+    },
+    "parentReviewPacket": {
+      "title": "父 Issue Review Packet",
+      "empty": "尚未生成汇总；等待 synthetic 任务运行完成。",
+      "statusComplete": "所有任务已完成",
+      "statusPartial": "部分完成 — 需要操作员决策",
+      "statusIncomplete": "等待更多任务结果",
+      "validation": "验证情况",
+      "risks": "风险",
+      "openQuestions": "待回答问题",
+      "nextActions": "建议的下一步行动",
+      "evidence": "证据",
+      "evidenceDiff": "Diff",
+      "evidenceValidation": "验证",
+      "evidenceRisk": "风险",
+      "evidenceCi": "CI",
+      "evidenceReview": "Reviewer",
+      "noNextActions": "请审阅相关 MR 并决定下一步。",
+      "copyMarkdown": "复制 Markdown",
+      "copied": "已复制"
+    },
+    "action": {
+      "planWorkItem": "Plan work item",
+      "planning": "拆解中…"
+    }
   },
   "reportsPage": {
     "overheadLabel": "Run 分析",

@@ -13,6 +13,8 @@ import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
+import { HumanReviewChecklist } from "./human-review-checklist";
+
 const STATUS_TONE: Record<WorkItemReportStatus, string> = {
   draft: "bg-fg-subtle/20 text-fg-subtle",
   partial: "bg-warning-soft text-warning-fg",
@@ -121,6 +123,10 @@ export function ParentReviewPacket({ report }: ParentReviewPacketProps) {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
+        {report.humanReviewChecklist.length > 0 ? (
+          <HumanReviewChecklist items={report.humanReviewChecklist} />
+        ) : null}
+
         <Section title={t("validation")}>
           <p className="whitespace-pre-line text-sm text-fg">
             {report.validationSummary || "—"}

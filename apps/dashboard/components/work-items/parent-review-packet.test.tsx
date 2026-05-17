@@ -86,6 +86,33 @@ describe("ParentReviewPacket", () => {
     expect(screen.getByText("Reviewer to inspect MR")).toBeInTheDocument();
   });
 
+  it("renders HumanReviewChecklist when report.humanReviewChecklist is non-empty", () => {
+    render(
+      <ParentReviewPacket
+        report={baseReport({
+          humanReviewChecklist: [
+            {
+              itemId: "ai-risk-medium:T1",
+              taskId: "T1",
+              label: "Review medium AI risk for T1",
+              reason: "ai-risk-medium",
+              confirmed: false,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Confirm evidence item by item in the Evidence tab."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Review medium AI risk for T1")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
   it("renders partial status banner with the partial label", () => {
     render(
       <ParentReviewPacket report={baseReport({ overallStatus: "partial" })} />,

@@ -67,11 +67,12 @@ export function HumanReviewChecklist({ items }: HumanReviewChecklistProps) {
           return (
             <li
               key={item.itemId}
-              className="flex gap-3 rounded-md border border-border-subtle bg-surface-subtle px-3 py-2"
+              className="flex gap-3 rounded-md border border-border/70 bg-surface-2/40 px-3 py-2"
             >
               <span
                 role="checkbox"
                 aria-checked={item.confirmed}
+                aria-disabled="true"
                 aria-label={t(
                   item.confirmed ? "confirmedAria" : "unconfirmedAria",
                   { label: item.label },

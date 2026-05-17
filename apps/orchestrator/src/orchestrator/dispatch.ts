@@ -64,6 +64,13 @@ export interface DispatchDeps {
     runningLabel: string;
     handoffLabel: string;
     reworkLabel: string;
+    /**
+     * V4.1: forwarded from {@link DispatchInput.parentIssueLabelMode}. The
+     * deps slice mirrors the field so the daemon adapter can plumb it into
+     * `reconcile()` without re-reading the input. `undefined` keeps V2.x
+     * behaviour where reconcile owns the parent Issue label transition.
+     */
+    parentIssueLabelMode?: "active" | "suppressed" | undefined;
   }): Promise<void | ReconcileResult>;
 
   onEvent(event: {
@@ -108,6 +115,23 @@ export interface DispatchInput {
         afterRun?: string | undefined;
       }
     | undefined;
+  /**
+   * V4.1 Workflow Spine: synthetic task runs (see
+   * `apps/orchestrator/src/work-items/dispatch-task.ts`) carry
+   * `"suppressed"` so reconcile skips the parent Issue label transition
+   * and the workpad note write — that responsibility belongs to the
+   * WorkItem aggregator. V2.x runs keep the field undefined and fall
+   * back to the default `"active"` behaviour inside reconcile.
+   */
+  parentIssueLabelMode?: "active" | "suppressed" | undefined;
+  /**
+   * V4.1 Workflow Spine: extra root-level keys to merge into the prompt
+   * render context alongside the canonical `issue` / `workspace` / `git`
+   * vars. Used by dispatch-task to surface `workItem.{ workItemId,
+   * taskId, taskTitle, ... }` to templates without having to fork the
+   * dispatch input shape per caller.
+   */
+  extraPromptVars?: Record<string, unknown>;
 }
 
 function now(): string {
@@ -300,6 +324,16 @@ export async function dispatch(
     if (latestReviewFeedback) {
       vars["reviewFeedback"] = latestReviewFeedback;
     }
+    // V4.1: dispatch-task surfaces `workItem` and other synthetic-run
+    // metadata via `extraPromptVars`. Merge after the canonical keys so
+    // the caller cannot accidentally clobber `issue` / `workspace` /
+    // `git` / `attempt` shape.
+    if (input.extraPromptVars) {
+      for (const [key, value] of Object.entries(input.extraPromptVars)) {
+        if (key in vars) continue;
+        vars[key] = value;
+      }
+    }
 
     let prompt = await deps.renderPrompt({
       template: input.promptTemplate,
@@ -363,6 +397,7 @@ export async function dispatch(
       runningLabel: input.runningLabel,
       handoffLabel: input.handoffLabel,
       reworkLabel: input.reworkLabel,
+      parentIssueLabelMode: input.parentIssueLabelMode,
     });
 
     deps.state.setRun(runId, {

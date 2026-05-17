@@ -1,7 +1,9 @@
 import type {
   AcceptWorkItemPlanRequest,
   IssuePilotEvent,
+  MarkTaskReworkRequest,
   OrchestratorStateSnapshot,
+  ReplanTaskRequest,
   ReportsListResponse,
   RunDetailResponse,
   RunRecord,
@@ -10,6 +12,7 @@ import type {
   TaskPlan,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemGraphResponse,
   WorkItemReportResponse,
   WorkItemsListResponse,
 } from "@issuepilot/shared-contracts";
@@ -68,6 +71,46 @@ export class ApiError extends Error {
 
 export interface ApiGetOptions {
   signal?: AbortSignal;
+  /**
+   * V4.2 team-mode: when the orchestrator runs with `workItemsByProject`,
+   * every work-item route requires the `x-issuepilot-project` header so
+   * the server can route to the correct project namespace. Pass this
+   * option to override the module-level active project for a single call,
+   * or rely on {@link setActiveWorkItemsProject} for project-wide defaults.
+   */
+  project?: string;
+}
+
+/**
+ * V4.2 team-mode: module-level "active" project id consumed by every
+ * dashboard API request that talks to work-items routes. ProjectSwitcher
+ * writes here when the operator picks a project so subsequent requests
+ * automatically carry the header — without this the user would have to
+ * thread the project id through every component. `opts.project` on a
+ * given call still wins so callers can target a different project ad
+ * hoc.
+ */
+let activeWorkItemsProject: string | null = null;
+
+export function setActiveWorkItemsProject(project: string | null): void {
+  activeWorkItemsProject = project && project.length > 0 ? project : null;
+}
+
+export function getActiveWorkItemsProject(): string | null {
+  return activeWorkItemsProject;
+}
+
+/**
+ * Pick the project id to attach via `x-issuepilot-project` header. Order:
+ *   1. explicit `opts.project`
+ *   2. {@link activeWorkItemsProject} (set by ProjectSwitcher)
+ *   3. undefined → no header (single-mode daemon behaviour)
+ */
+function resolveProjectHeader(opts: { project?: string }): string | undefined {
+  if (typeof opts.project === "string" && opts.project.length > 0) {
+    return opts.project;
+  }
+  return activeWorkItemsProject ?? undefined;
 }
 
 export async function apiGet<T>(
@@ -75,9 +118,12 @@ export async function apiGet<T>(
   opts: ApiGetOptions = {},
 ): Promise<T> {
   const url = `${resolveApiBase()}${path}`;
+  const headers: Record<string, string> = { accept: "application/json" };
+  const project = resolveProjectHeader(opts);
+  if (project) headers["x-issuepilot-project"] = project;
   const response = await fetch(url, {
     method: "GET",
-    headers: { accept: "application/json" },
+    headers,
     signal: opts.signal,
     cache: "no-store",
   });
@@ -190,6 +236,11 @@ export interface OperatorActionOptions {
    */
   operator?: string;
   signal?: AbortSignal;
+  /**
+   * V4.2 team-mode: route the action at a specific project's
+   * WorkItemService. See {@link ApiGetOptions.project}.
+   */
+  project?: string;
 }
 
 async function postRunAction(
@@ -278,6 +329,8 @@ async function postWorkItemAction<T>(
   if (opts.operator && opts.operator.length > 0) {
     headers["x-issuepilot-operator"] = opts.operator;
   }
+  const project = resolveProjectHeader(opts);
+  if (project) headers["x-issuepilot-project"] = project;
   const init: RequestInit = {
     method: "POST",
     headers,
@@ -387,6 +440,78 @@ export function getWorkItemReport(
 ): Promise<WorkItemReportResponse> {
   return apiGet<WorkItemReportResponse>(
     `/api/work-items/${encodeURIComponent(id)}/report`,
+    opts,
+  );
+}
+
+/**
+ * V4.2 Task Graph: re-draft a single task. Returns the new plan version
+ * (status `draft`) — operator still has to call {@link acceptWorkItemPlan}
+ * afterwards so the replanned task can be dispatched.
+ */
+export function replanWorkItemTask(
+  id: string,
+  taskId: string,
+  body: ReplanTaskRequest,
+  opts: OperatorActionOptions = {},
+): Promise<{ workItem: WorkItem; plan: TaskPlan }> {
+  return postWorkItemAction<{ workItem: WorkItem; plan: TaskPlan }>(
+    `/api/work-items/${encodeURIComponent(id)}/tasks/${encodeURIComponent(
+      taskId,
+    )}/replan`,
+    body,
+    opts,
+  );
+}
+
+/**
+ * V4.2 Task Graph: operator-driven rework. Transitions the task to
+ * `needs_rework` and runs reconcileWorkItem so the parent Issue handoff
+ * label catches up.
+ */
+export function markWorkItemTaskRework(
+  id: string,
+  taskId: string,
+  body: MarkTaskReworkRequest,
+  opts: OperatorActionOptions = {},
+): Promise<{ ok: true }> {
+  return postWorkItemAction<{ ok: true }>(
+    `/api/work-items/${encodeURIComponent(id)}/tasks/${encodeURIComponent(
+      taskId,
+    )}/mark-rework`,
+    body,
+    opts,
+  );
+}
+
+/**
+ * V4.2 Task Graph: roll back a previous skip. The task returns to
+ * `ready` and the next orchestration tick can dispatch it.
+ */
+export function unskipWorkItemTask(
+  id: string,
+  taskId: string,
+  opts: OperatorActionOptions = {},
+): Promise<{ ok: true }> {
+  return postWorkItemAction<{ ok: true }>(
+    `/api/work-items/${encodeURIComponent(id)}/tasks/${encodeURIComponent(
+      taskId,
+    )}/unskip`,
+    {},
+    opts,
+  );
+}
+
+/**
+ * V4.2 Task Graph: layered graph projection (levels + edges + critical
+ * path) for the dashboard graph view.
+ */
+export function getWorkItemGraph(
+  id: string,
+  opts: ApiGetOptions = {},
+): Promise<WorkItemGraphResponse> {
+  return apiGet<WorkItemGraphResponse>(
+    `/api/work-items/${encodeURIComponent(id)}/graph`,
     opts,
   );
 }

@@ -311,6 +311,22 @@ describe("EvidenceTab", () => {
     );
   });
 
+  it("appends the project query to non-media file-backed evidence links", () => {
+    render(
+      <EvidenceTab
+        workItemId="wi_01"
+        evidence={baseEvidence()}
+        project="platform-web"
+        onConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "pnpm lint" })).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:4738/api/work-items/wi_01/evidence/file?runId=run-1&path=commands%2Flint.log&project=platform-web",
+    );
+  });
+
   it("renders missing-evidence card for tasks in evidence.missing", () => {
     render(
       <EvidenceTab

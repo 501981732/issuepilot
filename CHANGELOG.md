@@ -30,6 +30,22 @@
     runLinks + 可选 report）、`PlanWorkItemRequest`、
     `AcceptWorkItemPlanRequest`（带 operator edits 数组）、
     `WorkItemReportResponse`。
+  - 新增 `apps/orchestrator/src/work-items/` 模块（store / planner /
+    validation 三件套）：
+    - `WorkItemStore`：file-backed JSON 持久化，按 spec §10 落到
+      `work-items/`、`task-plans/`、`task-run-links/<taskId>/`、
+      `work-item-reports/` 四个目录；内存缓存只是 fast path，所有写都过
+      `redact()` 落盘；`getCurrentPlan` 返回最高 version 非 `rejected`
+      的 plan；`listAllTaskRunLinks` 按 `WorkItem.taskIds` 反查每个
+      taskId 目录。
+    - `validatePlanDraft`：强制 2–5 任务、依赖图无环（DFS 三色法，含
+      self-loop）、所有 `dependsOn` 目标必须存在、`taskId` 必填且唯一、
+      `title` / `goal` 不能空白、`riskLevel` 必须在 `RISK_LEVEL_VALUES`
+      内；遇到第一条违规即返回稳定 code（i18n / 质量分析友好）。
+    - `WorkItemPlanner`：可注入 `callPlannerLlm` 的拆解器，把大 Issue
+      文本转成 `TaskPlan` draft；JSON 解析失败、LLM 抛错、validation
+      失败统一映射成稳定 code（`planner_call_failed` /
+      `planner_parse_failed` / forwarded validator codes）。
 
 ### Changed
   主设计 spec 同步）。

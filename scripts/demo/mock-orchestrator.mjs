@@ -10,12 +10,13 @@
 // Then start the dashboard in another terminal pointing at this port:
 //   NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm --filter @issuepilot/dashboard dev
 
+/* global URL, clearInterval, console, process, setInterval */
+
 import http from "node:http";
 
 const PORT = Number(process.env.PORT ?? 4738);
 const HOST = "127.0.0.1";
 
-const now = new Date().toISOString();
 const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString();
 const twelveMinutesAgo = new Date(Date.now() - 12 * 60_000).toISOString();
 const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
@@ -334,7 +335,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  // eslint-disable-next-line no-console
   console.log(
     `IssuePilot V2.5 mock orchestrator ready: http://${HOST}:${PORT}`,
   );

@@ -159,4 +159,44 @@ describe("runTaskOnce", () => {
       }),
     ).rejects.toThrow("boom");
   });
+
+  it("uses workflow.git.baseBranch by default", async () => {
+    let captured: DispatchInput | undefined;
+    await runTaskOnce({
+      workItem,
+      task,
+      workflow,
+      promptTemplate: "x",
+      state: createRuntimeState(),
+      dispatch: async (input) => {
+        captured = input;
+      },
+    });
+    expect(captured?.baseBranch).toBe("main");
+    const wi = (captured?.extraPromptVars as
+      | { workItem?: Record<string, unknown> }
+      | undefined)?.workItem;
+    expect(wi?.["chainedFrom"]).toBeUndefined();
+  });
+
+  it("uses baseOverride and propagates chainedFrom to extraPromptVars when provided", async () => {
+    let captured: DispatchInput | undefined;
+    await runTaskOnce({
+      workItem,
+      task: taskWithDeps,
+      workflow,
+      promptTemplate: "{{ workItem.chainedFrom }}",
+      state: createRuntimeState(),
+      dispatch: async (input) => {
+        captured = input;
+      },
+      baseOverride: "origin/ai/42-up",
+      chainedFrom: "t1",
+    });
+    expect(captured?.baseBranch).toBe("origin/ai/42-up");
+    const wi = (captured?.extraPromptVars as
+      | { workItem?: Record<string, unknown> }
+      | undefined)?.workItem;
+    expect(wi).toMatchObject({ chainedFrom: "t1" });
+  });
 });

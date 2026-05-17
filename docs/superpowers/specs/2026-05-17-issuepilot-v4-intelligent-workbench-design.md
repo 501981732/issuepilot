@@ -15,6 +15,8 @@
 
 - V4.1 Workflow Spine：`docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`
   （已落地，覆盖 §17 V4.1 验收标准）。
+- V4.2 Task Graph：`docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`
+  （已落地，覆盖 §7 V4.2 + §12.3 + §12.4 + §14.2 + branch chaining）。
 
 ## 1. Roadmap 决策
 

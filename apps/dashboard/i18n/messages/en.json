@@ -103,6 +103,7 @@
     "title": "Work Items",
     "description": "Large GitLab Issues planned into 2–5 synthetic task runs. Accept the plan to dispatch task runs; the parent Issue label only flips to human-review once all required tasks complete.",
     "errorTitle": "Work Items unavailable",
+    "loading": "Loading work items…",
     "empty": "No work items yet. Open the Command Center, pick a large Issue, and click \"Plan work item\" to start.",
     "counter": {
       "planning": "Planning",
@@ -166,7 +167,40 @@
       "groupPlanned": "Planned",
       "actionSkip": "Skip",
       "actionRetry": "Retry",
-      "actionUnskip": "Cancel skip"
+      "actionUnskip": "Cancel skip",
+      "actionMarkRework": "Mark for rework",
+      "actionReplan": "Replan"
+    },
+    "taskGraph": {
+      "title": "Task graph",
+      "empty": "No tasks to visualize yet.",
+      "ariaLabel": "Task dependency graph",
+      "edgesAriaLabel": "Dependency edges",
+      "nodesAriaLabel": "Tasks"
+    },
+    "viewToggle": {
+      "list": "List",
+      "graph": "Graph"
+    },
+    "replanDialog": {
+      "title": "Replan task",
+      "reasonLabel": "Reason",
+      "reasonPlaceholder": "Why does this task need replanning?",
+      "hintLabel": "Hint to planner (optional)",
+      "hintPlaceholder": "e.g. split into auth + API tasks",
+      "submit": "Replan",
+      "cancel": "Cancel"
+    },
+    "reworkDialog": {
+      "title": "Mark task for rework",
+      "reasonLabel": "Reviewer feedback",
+      "reasonPlaceholder": "What does the operator want changed?",
+      "submit": "Mark",
+      "cancel": "Cancel"
+    },
+    "projectSwitcher": {
+      "label": "Project",
+      "all": "All projects"
     },
     "parentReviewPacket": {
       "title": "Parent Review Packet",

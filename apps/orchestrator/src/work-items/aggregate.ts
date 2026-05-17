@@ -1,13 +1,14 @@
-import type {
-  RunReportArtifact,
-  TaskNode,
-  TaskNodeStatus,
-  TaskPlan,
-  TaskRunLink,
-  WorkItem,
-  WorkItemEvidenceEntry,
-  WorkItemReport,
-  WorkItemReportStatus,
+import {
+  effectiveTaskStatus,
+  type RunReportArtifact,
+  type TaskNode,
+  type TaskNodeStatus,
+  type TaskPlan,
+  type TaskRunLink,
+  type WorkItem,
+  type WorkItemEvidenceEntry,
+  type WorkItemReport,
+  type WorkItemReportStatus,
 } from "@issuepilot/shared-contracts";
 
 /**
@@ -88,7 +89,7 @@ export async function aggregateWorkItem(
 
   const taskSummaries: WorkItemReport["taskSummaries"] = entries.map(
     ({ task, link, report }) => {
-      const status: TaskNodeStatus = link?.status ?? task.status;
+      const status: TaskNodeStatus = effectiveTaskStatus(task, link);
       const taskEvidence: WorkItemEvidenceEntry[] = [];
 
       if (report) {
@@ -202,6 +203,22 @@ function pickLatestLinkByTask(
   return map;
 }
 
+/**
+ * Combine TaskNode + TaskRunLink status into the effective status we
+ * surface to aggregation / dashboard.
+ *
+ * Default: trust the latest `TaskRunLink.status` over the node — runs
+ * are the source of truth when present.
+ *
+ * V4.2 carve-out: when the operator has explicitly set
+ * `task.status` to `needs_rework` or `skipped`, that intent must
+ * override any historical link status. Otherwise `markNeedsRework`
+ * called on a completed task would be a silent no-op (the link still
+ * says `completed`, aggregate still says `complete`, parent label
+ * never moves back). The same applies to operator-driven skip on a
+ * task that already has a TaskRunLink (the link is preserved for
+ * audit, but the task is now off-plan).
+ */
 function decideOverallStatus(
   entries: Array<{
     task: TaskNode;
@@ -212,13 +229,35 @@ function decideOverallStatus(
   // V4.1 §15.2: missing data dominates anything else; we cannot
   // promise the parent reviewer that everything is partial / complete
   // until every task has at least produced a TaskRunLink + report.
+  // V4.2: operator-skipped / needs_rework tasks bypass this check —
+  // a skipped task is intentional and should not gate completion.
+  // V4.1 §15.2 / V4.2 carve-out:
+  //  - Any task that lacks a TaskRunLink and is not operator-driven
+  //    (skipped / needs_rework) blocks a partial / complete verdict
+  //    — the run has not produced evidence yet.
+  //  - Any task whose link is `completed` but has no report yet is
+  //    mid-aggregation; same outcome.
+  //  - Operator-driven skip / needs_rework are themselves settled
+  //    states and do not block a verdict, even with no link present.
   for (const e of entries) {
+    const isOperatorSettled =
+      e.task.status === "skipped" || e.task.status === "needs_rework";
+    if (isOperatorSettled) continue;
     if (!e.link) return "incomplete";
     if (e.link.status === "completed" && !e.report) return "incomplete";
+    // Link still in-flight (running / blocked-by-deps via task.status
+    // resolving to a non-settled value) keeps WorkItem in-flight.
+    const status = effectiveTaskStatus(e.task, e.link);
+    const isInflight =
+      status === "running" ||
+      status === "ready" ||
+      status === "planned" ||
+      status === "blocked_by_dependency";
+    if (isInflight) return "incomplete";
   }
 
   const hasNonCompleted = entries.some((e) => {
-    const status = e.link?.status ?? e.task.status;
+    const status = effectiveTaskStatus(e.task, e.link);
     return (
       status === "failed" ||
       status === "blocked" ||
@@ -229,7 +268,7 @@ function decideOverallStatus(
   if (hasNonCompleted) return "partial";
 
   const allCompleted = entries.every((e) => {
-    const status = e.link?.status ?? e.task.status;
+    const status = effectiveTaskStatus(e.task, e.link);
     return status === "completed";
   });
   if (!allCompleted) return "incomplete";
@@ -279,9 +318,12 @@ function buildOpenQuestions(
 ): string[] {
   const questions: string[] = [];
   for (const e of entries) {
-    const status = e.link?.status ?? e.task.status;
+    const status = effectiveTaskStatus(e.task, e.link);
     if (status === "blocked" || status === "needs_rework") {
-      const reason = e.task.statusReason ?? e.report?.run.lastError?.message;
+      const reason =
+        e.task.needsReworkReason ??
+        e.task.statusReason ??
+        e.report?.run.lastError?.message;
       questions.push(
         `Task ${e.task.taskId} (${e.task.title}) needs operator decision${
           reason ? `: ${reason}` : "."
@@ -302,16 +344,16 @@ function buildRecommendedNextActions(
 ): string[] {
   const actions: string[] = [];
   const failedTasks = entries
-    .filter((e) => (e.link?.status ?? e.task.status) === "failed")
+    .filter((e) => effectiveTaskStatus(e.task, e.link) === "failed")
     .map((e) => e.task.taskId);
   const blockedTasks = entries
     .filter((e) => {
-      const s = e.link?.status ?? e.task.status;
+      const s = effectiveTaskStatus(e.task, e.link);
       return s === "blocked" || s === "needs_rework";
     })
     .map((e) => e.task.taskId);
   const skippedTasks = entries
-    .filter((e) => (e.link?.status ?? e.task.status) === "skipped")
+    .filter((e) => effectiveTaskStatus(e.task, e.link) === "skipped")
     .map((e) => e.task.taskId);
 
   switch (overallStatus) {

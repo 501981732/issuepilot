@@ -14,6 +14,7 @@ import type {
 import type { WorkItemService, WorkItemServiceError } from "../server/index.js";
 
 import { aggregateWorkItem, type AggregateDeps } from "./aggregate.js";
+import { computeTaskGraph } from "./graph.js";
 import {
   decideParentLabelTransition,
   writeParentHandoff,
@@ -365,7 +366,240 @@ export function createWorkItemService(
         detail: { workItemId, taskId, operator, retried: true },
       });
       await deps.tick(wi);
+      // V4.2 review C2: after tick may have flipped the task back to
+      // `running`, the WorkItem-level aggregate / parent label should
+      // catch up (e.g. partial → running on retry-after-rework so the
+      // parent Issue label swaps `ai-rework` → `ai-running`). Without
+      // this reconcile, the label transition only happens when the
+      // next dispatch settles, which is sometimes never.
+      await deps.reconcileWorkItem(workItemId);
       return { ok: true } as const;
+    },
+
+    async replanTask({ workItemId, taskId, reason, hint, operator }) {
+      const wi = await deps.store.getWorkItem(workItemId);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const prev = await deps.store.getCurrentPlan(workItemId);
+      if (!prev) return errorResult("not_found", "plan not found");
+      const targetIndex = prev.tasks.findIndex((t) => t.taskId === taskId);
+      if (targetIndex < 0) return errorResult("not_found", "task not found");
+      if (prev.status !== "accepted") {
+        return errorResult(
+          "invalid_status",
+          "current plan must be accepted before single-task replan; use regeneratePlan for drafts",
+        );
+      }
+
+      let issue;
+      try {
+        issue = await deps.fetchIssue(wi.sourceIssue.iid);
+      } catch (err) {
+        return errorResult(
+          "gitlab_failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
+      const draft = await deps.planner.draft({
+        issue,
+        workItemId,
+        replanScope: {
+          taskId,
+          reason,
+          ...(hint !== undefined ? { hint } : {}),
+        },
+      });
+      const ts = now();
+      if (!draft.ok) {
+        const code =
+          draft.code === "replan_returned_multi" ||
+          draft.code === "replan_task_id_mismatch" ||
+          draft.code === "missing_title" ||
+          draft.code === "missing_goal"
+            ? "validation_failed"
+            : draft.code === "planner_parse_failed" ||
+                draft.code === "planner_call_failed"
+              ? "planner_failed"
+              : "planner_failed";
+        deps.emit({
+          type: "work_item_planning_failed",
+          ts,
+          detail: {
+            workItemId,
+            taskId,
+            replan: true,
+            code: draft.code,
+            message: draft.message,
+            operator,
+          },
+        });
+        return errorResult(code, draft.message);
+      }
+
+      const replanned = draft.plan.tasks[0]!;
+      const previousTask = prev.tasks[targetIndex]!;
+      // V4.2: replaced task keeps its prior runIds (canonical historical
+      // evidence) plus prior `needsReworkReason`. Other fields come from
+      // planner output. Status resets to `planned` so orchestration can
+      // re-dispatch through the standard ready computation.
+      const mergedTask: TaskNode = {
+        ...replanned,
+        runIds: [...previousTask.runIds],
+        status: "planned",
+      };
+      const nextTasks: TaskNode[] = prev.tasks.map((t, i) =>
+        i === targetIndex ? mergedTask : t,
+      );
+
+      // Mark previous accepted plan as superseded.
+      await deps.store.saveTaskPlan({ ...prev, status: "superseded" });
+
+      const replanEdit = {
+        taskId,
+        field: "replan" as const,
+        before: previousTask,
+        after: mergedTask,
+        by: operator,
+        at: ts,
+      };
+
+      const planVersion =
+        (await deps.store.listPlanHistory(workItemId)).reduce(
+          (max, p) => Math.max(max, p.version),
+          0,
+        ) + 1;
+      const newPlan: TaskPlan = {
+        planId: draft.plan.planId,
+        workItemId,
+        version: planVersion,
+        tasks: nextTasks,
+        dependencies: nextTasks.flatMap((t) =>
+          t.dependsOn.map((from) => ({ from, to: t.taskId })),
+        ),
+        operatorEdits: [...prev.operatorEdits, replanEdit],
+        status: "draft",
+        replanOf: { planId: prev.planId, taskId },
+      };
+      await deps.store.saveTaskPlan(newPlan);
+
+      const updatedWi: WorkItem = {
+        ...wi,
+        taskIds: newPlan.tasks.map((t) => t.taskId),
+        updatedAt: ts,
+      };
+      await deps.store.saveWorkItem(updatedWi);
+
+      deps.emit({
+        type: "task_replanned",
+        ts,
+        detail: {
+          workItemId,
+          taskId,
+          previousPlanId: prev.planId,
+          newPlanId: newPlan.planId,
+          version: planVersion,
+          reason,
+          operator,
+        },
+      });
+
+      return { workItem: updatedWi, plan: newPlan };
+    },
+
+    async markNeedsRework({ workItemId, taskId, reason, operator }) {
+      const wi = await deps.store.getWorkItem(workItemId);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const plan = await deps.store.getCurrentPlan(workItemId);
+      if (!plan) return errorResult("not_found", "plan not found");
+      const task = plan.tasks.find((t) => t.taskId === taskId);
+      if (!task) return errorResult("not_found", "task not found");
+
+      // V4.2 §12.3: only completed / failed / blocked tasks can be pushed
+      // back to needs_rework. Running / planned / ready stay where they
+      // are — operator should cancel / wait instead.
+      if (
+        task.status !== "completed" &&
+        task.status !== "failed" &&
+        task.status !== "blocked"
+      ) {
+        return errorResult(
+          "invalid_status",
+          `task ${taskId} status ${task.status} cannot be marked needs_rework`,
+        );
+      }
+
+      const ts = now();
+      const nextTasks: TaskNode[] = plan.tasks.map((t) =>
+        t.taskId === taskId
+          ? { ...t, status: "needs_rework" as const, needsReworkReason: reason }
+          : t,
+      );
+      await deps.store.saveTaskPlan({ ...plan, tasks: nextTasks });
+      deps.emit({
+        type: "task_marked_needs_rework",
+        ts,
+        detail: { workItemId, taskId, reason, operator },
+      });
+      // reconcileWorkItem updates WorkItem.status and parent handoff.
+      await deps.reconcileWorkItem(workItemId);
+      return { ok: true } as const;
+    },
+
+    async unskipTask({ workItemId, taskId, operator }) {
+      const wi = await deps.store.getWorkItem(workItemId);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const plan = await deps.store.getCurrentPlan(workItemId);
+      if (!plan) return errorResult("not_found", "plan not found");
+      const task = plan.tasks.find((t) => t.taskId === taskId);
+      if (!task) return errorResult("not_found", "task not found");
+      if (task.status !== "skipped") {
+        return errorResult(
+          "invalid_status",
+          `task ${taskId} status ${task.status} is not skipped`,
+        );
+      }
+
+      const ts = now();
+      const nextTasks: TaskNode[] = plan.tasks.map((t) => {
+        if (t.taskId !== taskId) return t;
+        const { statusReason: _ignored, ...rest } = t;
+        return { ...rest, status: "ready" as const };
+      });
+      await deps.store.saveTaskPlan({ ...plan, tasks: nextTasks });
+      deps.emit({
+        type: "task_unskipped",
+        ts,
+        detail: { workItemId, taskId, operator },
+      });
+      // Re-evaluate orchestration so the task may dispatch this tick.
+      await deps.tick(wi);
+      // V4.2 review C2 follow-through: unskip can push WorkItem.status
+      // back from `partial` to `running` (the task is in flight again),
+      // which the parent Issue label must reflect. See retryTask above
+      // for the same rationale.
+      await deps.reconcileWorkItem(workItemId);
+      return { ok: true } as const;
+    },
+
+    async graph(id) {
+      const wi = await deps.store.getWorkItem(id);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const plan = await deps.store.getCurrentPlan(id);
+      if (!plan) return errorResult("not_found", "plan not found");
+      const links = await deps.store.listAllTaskRunLinks(id);
+      const graph = computeTaskGraph(plan, links);
+      const ts = now();
+      deps.emit({
+        type: "task_graph_recomputed",
+        ts,
+        detail: {
+          workItemId: id,
+          levelsCount: graph.levels.length,
+          edgesCount: graph.edges.length,
+          criticalPathLength: graph.criticalPathTaskIds.length,
+        },
+      });
+      return graph;
     },
 
     async report(id) {

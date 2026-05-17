@@ -7,6 +7,8 @@ import type {
   WorkItem,
 } from "@issuepilot/shared-contracts";
 
+import type { EffectiveBaseDecision } from "./branch-chain.js";
+
 /**
  * V4.1 Workflow Spine orchestration.
  *
@@ -69,8 +71,34 @@ export interface OrchestrationDeps {
    * deterministic fake. Returning the runId lets tickWorkItem stamp
    * the TaskRunLink immediately so a follow-up tick (before the agent
    * even returns) sees the task as in-flight.
+   *
+   * V4.2 adds the optional `baseOverride` + `chainedFrom` options so
+   * single-upstream chaining can dispatch a downstream task that bases
+   * off the upstream branch instead of `workflow.git.baseBranch`. The
+   * decision lives in {@link decideEffectiveBase}; tickWorkItem just
+   * forwards the answer.
    */
-  dispatchTask(task: TaskNode): Promise<{ runId: string; branch: string }>;
+  dispatchTask(
+    task: TaskNode,
+    options?: { baseOverride?: string; chainedFrom?: string },
+  ): Promise<{ runId: string; branch: string }>;
+
+  /**
+   * V4.2: returns the effective base branch decision for a ready task.
+   * Optional so existing callers (tests pre-dating chaining) keep
+   * working — when absent, tickWorkItem behaves like V4.1 and uses the
+   * caller-supplied `upstreamMerged` semantics (default base only).
+   *
+   * Production daemon wires this to
+   * {@link import("./branch-chain.js").decideEffectiveBase}; tests can
+   * inject a fake to assert the dispatch path without exercising
+   * branch-chain internals.
+   */
+  decideEffectiveBase?(input: {
+    task: TaskNode;
+    plan: TaskPlan;
+    links: TaskRunLink[];
+  }): Promise<EffectiveBaseDecision>;
 
   /** Persist a TaskRunLink update. */
   saveTaskRunLink(link: TaskRunLink): Promise<void>;
@@ -156,15 +184,32 @@ export function computeReadyTasks(
     // TaskNode-level state (running / completed / failed / blocked).
     // The runtime-state RunRecord may pass through "claimed" briefly
     // inside dispatch-task, but at the orchestration layer "running" is
-    // the only in-flight signal we need to gate on.
+    // the only in-flight signal we need to gate on (idempotency guard
+    // for spec §11.4).
+    //
+    // V4.2 review C1: we INTENTIONALLY do NOT skip on `completed` /
+    // `failed` / `blocked` historical links. The task-level `status`
+    // is the operator-driven source of truth — `retryTask` /
+    // `unskipTask` / accepting a replanned plan all set `task.status`
+    // back to `ready` / `planned`, and that explicit intent must win
+    // over the prior link state. Pre-fix `retryTask` after a completed
+    // run was a silent no-op because the old `completed` link blocked
+    // re-dispatch.
     if (taskLinks.some((l) => l.status === "running")) continue;
-    if (taskLinks.some((l) => l.status === "completed")) continue;
     if (!t.dependsOn.every((dep) => upstreamMerged(dep))) continue;
     ready.push(t);
   }
   return ready;
 }
 
+/**
+ * V4.2: `needs_rework` and `skipped` are explicit operator states —
+ * operator must call `retryTask` / `unskipTask` to bring them back to
+ * `ready`. `completed` / `failed` / `blocked` are terminal: re-running
+ * them requires an explicit retry path (which writes a fresh runId).
+ * `running` is in-flight. So the only "eligible" statuses for the
+ * automatic ready computation are the three below.
+ */
 function isStatusEligibleForReady(status: TaskNodeStatus): boolean {
   return (
     status === "planned" ||
@@ -201,9 +246,15 @@ export async function tickWorkItem(
 ): Promise<TickResult> {
   const ts = deps.now?.() ?? new Date().toISOString();
 
-  // Build upstream-merged map. We only consult reports for tasks that
-  // have at least one `completed` TaskRunLink; an in-flight upstream is
-  // by definition not merged so we short-circuit it as `false`.
+  // Build "upstream ready for chaining" map. V4.1 only allowed downstream to
+  // proceed when the upstream MR was actually merged. V4.2 broadens this:
+  // when `decideEffectiveBase` is wired, an `completed` upstream counts as
+  // ready-for-chaining (we then look up the per-task effective base below
+  // to decide whether to use the default base or chain off the upstream
+  // branch). When `decideEffectiveBase` is absent (V4.1 callers / tests
+  // pre-dating chaining), we fall back to the strict "must be merged"
+  // semantics so behaviour is unchanged.
+  const chainingEnabled = typeof deps.decideEffectiveBase === "function";
   const upstreamMergedMap = new Map<string, boolean>();
   const completedLinks = links.filter((l) => l.status === "completed");
   for (const link of completedLinks) {
@@ -215,12 +266,18 @@ export async function tickWorkItem(
       (upstreamMergedMap.get(link.taskId) ?? false) || merged,
     );
   }
-  const upstreamMerged = (taskId: string): boolean =>
-    upstreamMergedMap.get(taskId) === true;
+  const upstreamMergedOrChainable = (taskId: string): boolean => {
+    if (upstreamMergedMap.get(taskId) === true) return true;
+    if (!chainingEnabled) return false;
+    // 上游 task 在 plan 上是 completed 即视为「链可用」；最终是真 chain
+    // 还是 default-base 由 decideEffectiveBase 决定。
+    const upstreamNode = plan.tasks.find((t) => t.taskId === taskId);
+    return upstreamNode?.status === "completed";
+  };
 
-  const ready = computeReadyTasks(plan, links, upstreamMerged);
+  const ready = computeReadyTasks(plan, links, upstreamMergedOrChainable);
 
-  // Identify tasks that stayed blocked because upstream wasn't merged
+  // Identify tasks that stayed blocked because upstream isn't ready
   // — useful for the dashboard, and emits a one-time event per tick.
   const blockedByDependency: string[] = [];
   for (const t of plan.tasks) {
@@ -228,15 +285,8 @@ export async function tickWorkItem(
       continue;
     }
     if (t.dependsOn.length === 0) continue;
-    if (t.dependsOn.every((dep) => upstreamMerged(dep))) continue;
+    if (t.dependsOn.every((dep) => upstreamMergedOrChainable(dep))) continue;
     blockedByDependency.push(t.taskId);
-  }
-  for (const taskId of blockedByDependency) {
-    deps.emit({
-      type: "task_run_blocked_by_dependency",
-      ts,
-      detail: { workItemId: workItem.workItemId, taskId },
-    });
   }
 
   const dispatched: TickResult["dispatched"] = [];
@@ -244,12 +294,35 @@ export async function tickWorkItem(
 
   let slots = deps.availableSlots();
   for (const t of ready) {
+    // V4.2: ask the chaining oracle whether to dispatch with default base
+    // or chain off an upstream branch. When the oracle returns "blocked"
+    // we keep the task in blocked_by_dependency for this tick.
+    let decision: EffectiveBaseDecision = {
+      kind: "default-base",
+      baseBranch: "",
+    };
+    if (deps.decideEffectiveBase) {
+      decision = await deps.decideEffectiveBase({ task: t, plan, links });
+    }
+    if (decision.kind === "blocked") {
+      if (!blockedByDependency.includes(t.taskId)) {
+        blockedByDependency.push(t.taskId);
+      }
+      continue;
+    }
+
     if (slots <= 0) {
       blockedBySlots.push(t.taskId);
       continue;
     }
     slots -= 1;
-    const { runId, branch } = await deps.dispatchTask(t);
+
+    const dispatchOpts: { baseOverride?: string; chainedFrom?: string } = {};
+    if (decision.kind === "chain-from-upstream") {
+      dispatchOpts.baseOverride = decision.baseBranch;
+      dispatchOpts.chainedFrom = decision.upstreamTaskId;
+    }
+    const { runId, branch } = await deps.dispatchTask(t, dispatchOpts);
     dispatched.push({ taskId: t.taskId, runId, branch });
 
     await deps.saveTaskRunLink({
@@ -260,7 +333,13 @@ export async function tickWorkItem(
       branch,
       startedAt: ts,
     });
-    await deps.saveTaskNode(t.taskId, { status: "running" });
+    // Spec §9.3：`task.runIds` 按时间顺序 append。每次 dispatch 都把
+    // 新的 runId 追加进去；replan 时 `previousTask.runIds` 是历史
+    // 证据，replan 后继续保留。
+    await deps.saveTaskNode(t.taskId, {
+      status: "running",
+      runIds: [...t.runIds, runId],
+    });
     deps.emit({
       type: "task_run_dispatched",
       runId,
@@ -269,7 +348,23 @@ export async function tickWorkItem(
         workItemId: workItem.workItemId,
         taskId: t.taskId,
         branch,
+        ...(dispatchOpts.chainedFrom
+          ? { chainedFrom: dispatchOpts.chainedFrom }
+          : {}),
+        ...(dispatchOpts.baseOverride
+          ? { baseOverride: dispatchOpts.baseOverride }
+          : {}),
       },
+    });
+  }
+
+  // Emit blocked_by_dependency events at the end so chaining-induced
+  // blocked tasks (from decideEffectiveBase) are also surfaced.
+  for (const taskId of blockedByDependency) {
+    deps.emit({
+      type: "task_run_blocked_by_dependency",
+      ts,
+      detail: { workItemId: workItem.workItemId, taskId },
     });
   }
 

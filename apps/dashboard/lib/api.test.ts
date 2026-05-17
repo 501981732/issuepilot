@@ -7,18 +7,23 @@ import {
   getRunDetail,
   getState,
   getWorkItem,
+  getWorkItemGraph,
   getWorkItemReport,
   listEvents,
   listReports,
   listRuns,
   listWorkItems,
+  markWorkItemTaskRework,
   planWorkItem,
   regenerateWorkItemPlan,
+  replanWorkItemTask,
   resolveApiBase,
   retryRun,
   retryWorkItemTask,
+  setActiveWorkItemsProject,
   skipWorkItemTask,
   stopRun,
+  unskipWorkItemTask,
 } from "./api";
 
 const FAKE_BASE = "http://api.test";
@@ -398,5 +403,137 @@ describe("V4.1 work item client", () => {
       `${FAKE_BASE}/api/work-items/wi_01/report`,
       expect.objectContaining({ method: "GET" }),
     );
+  });
+});
+
+describe("V4.2 work item client", () => {
+  // Reset the module-level activeWorkItemsProject before every test so a
+  // leftover from one test cannot leak the project header into another.
+  beforeEach(() => {
+    setActiveWorkItemsProject(null);
+  });
+  afterEach(() => {
+    setActiveWorkItemsProject(null);
+  });
+
+  it("replanWorkItemTask POSTs /api/work-items/:id/tasks/:taskId/replan", async () => {
+    const fetchMock = mockFetch({
+      workItem: { workItemId: "wi_01" },
+      plan: { planId: "tp_02" },
+    });
+    const result = await replanWorkItemTask(
+      "wi_01",
+      "t1",
+      { reason: "API surface changed", hint: "expose v2" },
+      { operator: "alice" },
+    );
+    expect(result.plan.planId).toBe("tp_02");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/tasks/t1/replan`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      reason: "API surface changed",
+      hint: "expose v2",
+    });
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-operator")).toBe("alice");
+  });
+
+  it("markWorkItemTaskRework POSTs /tasks/:taskId/mark-rework with reason", async () => {
+    const fetchMock = mockFetch({ ok: true });
+    await markWorkItemTaskRework("wi_01", "t1", {
+      reason: "Reviewer wants caching",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/tasks/t1/mark-rework`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      reason: "Reviewer wants caching",
+    });
+  });
+
+  it("unskipWorkItemTask POSTs /tasks/:taskId/unskip with empty body", async () => {
+    const fetchMock = mockFetch({ ok: true });
+    await unskipWorkItemTask("wi_01", "t1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/tasks/t1/unskip`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("getWorkItemGraph GETs /api/work-items/:id/graph", async () => {
+    const fetchMock = mockFetch({
+      edges: [],
+      levels: [],
+      criticalPathTaskIds: [],
+    });
+    const result = await getWorkItemGraph("wi_01");
+    expect(result.criticalPathTaskIds).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi_01/graph`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("propagates x-issuepilot-project header from activeProject", async () => {
+    setActiveWorkItemsProject("platform-web");
+    const fetchMock = mockFetch({ ok: true });
+    await unskipWorkItemTask("wi_01", "t1");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-project")).toBe("platform-web");
+  });
+
+  it("opts.project overrides activeProject", async () => {
+    setActiveWorkItemsProject("platform-web");
+    const fetchMock = mockFetch({ ok: true });
+    await unskipWorkItemTask("wi_01", "t1", { project: "infra-tools" });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-project")).toBe("infra-tools");
+  });
+
+  it("omits x-issuepilot-project header when neither active nor opts is set", async () => {
+    const fetchMock = mockFetch({ ok: true });
+    await unskipWorkItemTask("wi_01", "t1");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-project")).toBeNull();
+  });
+
+  it("propagates project header on GET work-item graph too", async () => {
+    setActiveWorkItemsProject("platform-web");
+    const fetchMock = mockFetch({
+      edges: [],
+      levels: [],
+      criticalPathTaskIds: [],
+    });
+    await getWorkItemGraph("wi_01");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-project")).toBe("platform-web");
+  });
+
+  it("propagates project header on list work items GET request", async () => {
+    setActiveWorkItemsProject("infra-tools");
+    const fetchMock = mockFetch({
+      workItems: [],
+      counters: {
+        planning: 0,
+        ready: 0,
+        running: 0,
+        partial: 0,
+        completed: 0,
+        blocked: 0,
+      },
+    });
+    await listWorkItems();
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers ?? undefined);
+    expect(headers.get("x-issuepilot-project")).toBe("infra-tools");
   });
 });

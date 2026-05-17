@@ -113,3 +113,39 @@ export interface AcceptWorkItemPlanRequest {
 export interface WorkItemReportResponse {
   report?: WorkItemReport;
 }
+
+/**
+ * V4.2 Task Graph HTTP 契约。dashboard 通过四条新路由触发 operator
+ * actions (replan / mark-rework / unskip) 与 graph 投影，落点是
+ * `apps/orchestrator/src/server/index.ts` 中的 V4.2 路由扩展。
+ */
+
+/** `POST /api/work-items/:id/tasks/:taskId/replan` 请求体。 */
+export interface ReplanTaskRequest {
+  /** 人类可读的重规划原因，operator 必填。 */
+  reason: string;
+  /** 给 planner 的额外提示（拆分粒度、补 AC 等）。 */
+  hint?: string;
+}
+
+/** `POST /api/work-items/:id/tasks/:taskId/mark-rework` 请求体。 */
+export interface MarkTaskReworkRequest {
+  /** Reviewer 反馈的返工原因；落到 `TaskNode.needsReworkReason`。 */
+  reason: string;
+}
+
+/** `POST /api/work-items/:id/tasks/:taskId/unskip` 请求体。 */
+export interface UnskipTaskRequest {
+  /** 触发 unskip 的 operator；省略时 server 用 `x-issuepilot-operator` header 兜底。 */
+  operator?: string;
+}
+
+/** `GET /api/work-items/:id/graph` 响应。 */
+export interface WorkItemGraphResponse {
+  /** 拓扑分层：`levels[i]` 是同一深度（最长祖先距离）的 taskId 列表。 */
+  levels: string[][];
+  /** `dependsOn` 派生的有向边。 */
+  edges: Array<{ from: string; to: string }>;
+  /** 当前 plan 的最长（节点数最多）路径上的 taskId；多条等长时取字典序首条。 */
+  criticalPathTaskIds: string[];
+}

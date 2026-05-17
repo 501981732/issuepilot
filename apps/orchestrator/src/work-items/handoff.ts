@@ -112,9 +112,51 @@ export function decideParentLabelTransition(
     };
   }
 
+  // V4.2 review C2 — close the §12.3 rework loop:
+  //
+  //   - completed → partial: operator clicked Mark rework on a task
+  //     that had already settled. WorkItem regresses to `partial`, so
+  //     the parent label must swap `human-review` → `ai-rework` to make
+  //     the rework intent visible in GitLab.
+  //   - partial → running: operator clicked Retry on the rework'd task
+  //     (or any other partial→running operator path); the work is
+  //     in-flight again, so swap `ai-rework` → `ai-running`.
+  //   - partial → completed: the retry round-trip closed and every
+  //     task finished again; reopen the handoff by swapping
+  //     `ai-rework` → `human-review`.
+  //   - completed → running: operator retried a previously-completed
+  //     task without first marking it rework (rare but supported now
+  //     that C1 unblocks retry on completed). Swap `human-review` →
+  //     `ai-running` so reviewers see the regression on the parent
+  //     Issue.
+  if (previousStatus === "completed" && currentStatus === "partial") {
+    return {
+      add: [workflow.reworkLabel],
+      remove: [workflow.handoffLabel],
+    };
+  }
+  if (previousStatus === "partial" && currentStatus === "running") {
+    return {
+      add: [workflow.runningLabel],
+      remove: [workflow.reworkLabel],
+    };
+  }
+  if (previousStatus === "partial" && currentStatus === "completed") {
+    return {
+      add: [workflow.handoffLabel],
+      remove: [workflow.reworkLabel],
+    };
+  }
+  if (previousStatus === "completed" && currentStatus === "running") {
+    return {
+      add: [workflow.runningLabel],
+      remove: [workflow.handoffLabel],
+    };
+  }
+
   // Every other transition is intentionally a no-op so operators stay
   // in control of the parent Issue label during ambiguous outcomes
-  // (partial / blocked / re-plan).
+  // (running → partial / blocked / re-plan, ready → blocked, etc).
   return { add: [], remove: [] };
 }
 

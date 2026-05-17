@@ -7,7 +7,9 @@ import {
   WORK_ITEM_STATUS_VALUES,
   isTaskNodeStatus,
   isWorkItemStatus,
+  type TaskNode,
   type TaskPlan,
+  type TaskPlanEdit,
   type TaskRunLink,
   type WorkItem,
   type WorkItemReport,
@@ -116,6 +118,50 @@ describe("work-item contracts", () => {
       completedAt: "2026-05-17T00:01:00.000Z",
     };
     expect(JSON.parse(JSON.stringify(link))).toEqual(link);
+  });
+
+  it("TaskNode carries optional needsReworkReason", () => {
+    const t: TaskNode = {
+      taskId: "t1",
+      title: "T1",
+      goal: "g",
+      scope: "s",
+      dependsOn: [],
+      suggestedValidation: [],
+      status: "needs_rework",
+      runIds: ["run_a"],
+      riskLevel: "low",
+      needsReworkReason: "Reviewer flagged missing tests",
+    };
+    expect(JSON.parse(JSON.stringify(t)).needsReworkReason).toBe(
+      "Reviewer flagged missing tests",
+    );
+  });
+
+  it("TaskPlan exposes replanOf provenance", () => {
+    const plan: TaskPlan = {
+      planId: "tp_02",
+      workItemId: "wi_01",
+      version: 2,
+      tasks: [],
+      dependencies: [],
+      operatorEdits: [],
+      status: "draft",
+      replanOf: { planId: "tp_01", taskId: "t2" },
+    };
+    expect(JSON.parse(JSON.stringify(plan)).replanOf?.taskId).toBe("t2");
+  });
+
+  it("TaskPlanEdit.field accepts 'replan'", () => {
+    const edit: TaskPlanEdit = {
+      taskId: "t2",
+      field: "replan",
+      before: { title: "Old" },
+      after: { title: "New", goal: "Re-do" },
+      by: "alice",
+      at: "2026-05-17T00:00:00.000Z",
+    };
+    expect(edit.field).toBe("replan");
   });
 
   it("requires WorkItemReport summaries plus evidence index", () => {

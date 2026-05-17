@@ -1,9 +1,12 @@
 "use client";
 
-import type {
-  TaskNode,
-  TaskNodeStatus,
-  TaskRunLink,
+import {
+  effectiveTaskStatus,
+  type MarkTaskReworkRequest,
+  type ReplanTaskRequest,
+  type TaskNode,
+  type TaskNodeStatus,
+  type TaskRunLink,
 } from "@issuepilot/shared-contracts";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
@@ -11,6 +14,9 @@ import { useState } from "react";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+
+import { MarkReworkDialog } from "./mark-rework-dialog";
+import { ReplanTaskDialog } from "./replan-task-dialog";
 
 const STATUS_GROUPS: TaskNodeStatus[] = [
   "ready",
@@ -53,6 +59,23 @@ export interface TaskListProps {
   runLinks?: TaskRunLink[];
   onSkip?: (taskId: string) => Promise<void> | void;
   onRetry?: (taskId: string) => Promise<void> | void;
+  /**
+   * V4.2: re-draft a single task via the planner. The callback should
+   * call `replanWorkItemTask`; on success the caller is expected to
+   * refresh the WorkItem so the new draft plan shows up.
+   */
+  onReplan?: (taskId: string, body: ReplanTaskRequest) => Promise<void> | void;
+  /**
+   * V4.2: operator-driven rework. The task transitions to
+   * `needs_rework` and reconcileWorkItem catches up the parent Issue
+   * label.
+   */
+  onMarkRework?: (
+    taskId: string,
+    body: MarkTaskReworkRequest,
+  ) => Promise<void> | void;
+  /** V4.2: roll back a previous skip; only visible on skipped tasks. */
+  onUnskip?: (taskId: string) => Promise<void> | void;
   /** When false, skip / retry buttons are disabled (e.g. plan still in draft). */
   actionsEnabled?: boolean;
 }
@@ -62,12 +85,18 @@ export function TaskList({
   runLinks = [],
   onSkip,
   onRetry,
+  onReplan,
+  onMarkRework,
+  onUnskip,
   actionsEnabled = true,
 }: TaskListProps) {
   const t = useTranslations("workItem.tasks");
-  const [busy, setBusy] = useState<{ taskId: string; action: "skip" | "retry" } | null>(
-    null,
-  );
+  const [busy, setBusy] = useState<{
+    taskId: string;
+    action: "skip" | "retry" | "unskip";
+  } | null>(null);
+  const [replanFor, setReplanFor] = useState<TaskNode | null>(null);
+  const [reworkFor, setReworkFor] = useState<TaskNode | null>(null);
 
   const linkByTask = new Map<string, TaskRunLink>();
   for (const link of runLinks) {
@@ -82,10 +111,16 @@ export function TaskList({
   const groups = new Map<TaskNodeStatus, TaskNode[]>();
   for (const task of tasks) {
     const link = linkByTask.get(task.taskId);
-    const effectiveStatus = link?.status ?? task.status;
-    const list = groups.get(effectiveStatus) ?? [];
+    // V4.2 review I1: operator-driven `needs_rework` / `skipped` on the
+    // TaskNode must win over a historical TaskRunLink so the dashboard
+    // groups / renders / picks buttons consistently with the
+    // orchestrator's `aggregate.effectiveTaskStatus`. Otherwise an
+    // operator who marked a `completed` task for rework would still
+    // see it grouped under "Completed" with a Mark-rework button.
+    const status = effectiveTaskStatus(task, link);
+    const list = groups.get(status) ?? [];
     list.push(task);
-    groups.set(effectiveStatus, list);
+    groups.set(status, list);
   }
 
   return (
@@ -103,15 +138,30 @@ export function TaskList({
               <ul className="flex flex-col gap-2">
                 {(groups.get(status) ?? []).map((task) => {
                   const link = linkByTask.get(task.taskId);
-                  const effectiveStatus = link?.status ?? task.status;
+                  const effectiveStatus = effectiveTaskStatus(task, link);
+                  // V4.2 button-visibility table (see design plan §17):
+                  //
+                  // status                 | Skip | Retry | Mark rework | Replan | Unskip
+                  // planned/ready/blocked_by_dependency | ✓ | — | — | ✓ | —
+                  // running                            | — | — | — | ✓ | —
+                  // completed                           | — | — | ✓ | ✓ | —
+                  // failed/blocked                      | — | ✓ | ✓ | ✓ | —
+                  // needs_rework                        | — | ✓ | — | ✓ | —
+                  // skipped                             | — | — | — | ✓ | ✓
+                  const showSkip =
+                    effectiveStatus === "planned" ||
+                    effectiveStatus === "ready" ||
+                    effectiveStatus === "blocked_by_dependency";
                   const showRetry =
                     effectiveStatus === "failed" ||
                     effectiveStatus === "needs_rework" ||
                     effectiveStatus === "blocked";
-                  const showSkip =
-                    effectiveStatus !== "completed" &&
-                    effectiveStatus !== "skipped" &&
-                    effectiveStatus !== "running";
+                  const showMarkRework =
+                    effectiveStatus === "completed" ||
+                    effectiveStatus === "failed" ||
+                    effectiveStatus === "blocked";
+                  const showUnskip = effectiveStatus === "skipped";
+                  const showReplan = Boolean(onReplan);
 
                   return (
                     <li
@@ -154,8 +204,17 @@ export function TaskList({
                           MR !{link.mergeRequest.iid}
                         </a>
                       ) : null}
-                      {(showRetry || showSkip) && (onSkip || onRetry) ? (
-                        <div className="flex gap-2 pt-1">
+                      {(showRetry ||
+                        showSkip ||
+                        (showMarkRework && onMarkRework) ||
+                        (showUnskip && onUnskip) ||
+                        showReplan) &&
+                      (onSkip ||
+                        onRetry ||
+                        onReplan ||
+                        onMarkRework ||
+                        onUnskip) ? (
+                        <div className="flex flex-wrap gap-2 pt-1">
                           {showRetry && onRetry ? (
                             <Button
                               type="button"
@@ -196,6 +255,51 @@ export function TaskList({
                               {t("actionSkip")}
                             </Button>
                           ) : null}
+                          {showMarkRework && onMarkRework ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={!actionsEnabled}
+                              onClick={() => setReworkFor(task)}
+                            >
+                              {t("actionMarkRework")}
+                            </Button>
+                          ) : null}
+                          {showReplan && onReplan ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={!actionsEnabled}
+                              onClick={() => setReplanFor(task)}
+                            >
+                              {t("actionReplan")}
+                            </Button>
+                          ) : null}
+                          {showUnskip && onUnskip ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                !actionsEnabled || busy?.taskId === task.taskId
+                              }
+                              onClick={async () => {
+                                setBusy({
+                                  taskId: task.taskId,
+                                  action: "unskip",
+                                });
+                                try {
+                                  await onUnskip(task.taskId);
+                                } finally {
+                                  setBusy(null);
+                                }
+                              }}
+                            >
+                              {t("actionUnskip")}
+                            </Button>
+                          ) : null}
                         </div>
                       ) : null}
                     </li>
@@ -206,6 +310,28 @@ export function TaskList({
           ))}
         </ul>
       </CardContent>
+      {replanFor && onReplan ? (
+        <ReplanTaskDialog
+          open
+          taskId={replanFor.taskId}
+          taskTitle={replanFor.title}
+          onClose={() => setReplanFor(null)}
+          onSubmit={async (body) => {
+            await onReplan(replanFor.taskId, body);
+          }}
+        />
+      ) : null}
+      {reworkFor && onMarkRework ? (
+        <MarkReworkDialog
+          open
+          taskId={reworkFor.taskId}
+          taskTitle={reworkFor.title}
+          onClose={() => setReworkFor(null)}
+          onSubmit={async (body) => {
+            await onMarkRework(reworkFor.taskId, body);
+          }}
+        />
+      ) : null}
     </Card>
   );
 }

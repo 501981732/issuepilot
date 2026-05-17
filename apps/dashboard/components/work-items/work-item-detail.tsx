@@ -1,27 +1,36 @@
 "use client";
 
 import type {
+  MarkTaskReworkRequest,
+  ReplanTaskRequest,
   TaskPlanEdit,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemGraphResponse,
 } from "@issuepilot/shared-contracts";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 
 import {
   acceptWorkItemPlan,
   getWorkItem,
+  getWorkItemGraph,
+  markWorkItemTaskRework,
   regenerateWorkItemPlan,
+  replanWorkItemTask,
   retryWorkItemTask,
   skipWorkItemTask,
+  unskipWorkItemTask,
 } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
 import { ParentReviewPacket } from "./parent-review-packet";
 import { PlanEditor } from "./plan-editor";
+import { TaskGraph } from "./task-graph";
 import { TaskList } from "./task-list";
+import { ViewToggle, type WorkItemView } from "./view-toggle";
 
 const STATUS_TONE: Record<WorkItem["status"], string> = {
   planning: "bg-info-soft text-info-fg",
@@ -36,17 +45,27 @@ export interface WorkItemDetailProps {
   initial: WorkItemDetailResponse;
   /** Operator name written into edit/skip/retry headers; defaults to "operator". */
   operator?: string;
+  /**
+   * V4.2: initial view (list/graph). Persisted by the page in the URL
+   * `?view=` so refresh + share-link round-trips work. Defaults to
+   * `list` when not provided.
+   */
+  initialView?: WorkItemView;
 }
 
 export function WorkItemDetail({
   initial,
   operator = "operator",
+  initialView = "list",
 }: WorkItemDetailProps) {
   const t = useTranslations("workItem");
   const [data, setData] = useState<WorkItemDetailResponse>(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+  const [view, setView] = useState<WorkItemView>(initialView);
+  const [graph, setGraph] = useState<WorkItemGraphResponse | null>(null);
+  const [graphError, setGraphError] = useState<string | null>(null);
 
   const refresh = useCallback((next: WorkItemDetailResponse) => {
     setData(next);
@@ -133,6 +152,78 @@ export function WorkItemDetail({
     [data.workItem.workItemId, operator, reload],
   );
 
+  const handleReplan = useCallback(
+    async (taskId: string, body: ReplanTaskRequest) => {
+      setError(null);
+      try {
+        await replanWorkItemTask(
+          data.workItem.workItemId,
+          taskId,
+          body,
+          { operator },
+        );
+        await reload();
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [data.workItem.workItemId, operator, reload],
+  );
+
+  const handleMarkRework = useCallback(
+    async (taskId: string, body: MarkTaskReworkRequest) => {
+      setError(null);
+      try {
+        await markWorkItemTaskRework(
+          data.workItem.workItemId,
+          taskId,
+          body,
+          { operator },
+        );
+        await reload();
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [data.workItem.workItemId, operator, reload],
+  );
+
+  const handleUnskip = useCallback(
+    async (taskId: string) => {
+      setError(null);
+      try {
+        await unskipWorkItemTask(data.workItem.workItemId, taskId, {
+          operator,
+        });
+        await reload();
+      } catch (err) {
+        setError((err as Error).message);
+      }
+    },
+    [data.workItem.workItemId, operator, reload],
+  );
+
+  // Fetch the graph projection lazily — only when the operator switches
+  // to the Graph view. Switching back to List does not invalidate the
+  // cached projection so toggling is snappy.
+  useEffect(() => {
+    if (view !== "graph") return;
+    let cancelled = false;
+    setGraphError(null);
+    getWorkItemGraph(data.workItem.workItemId)
+      .then((next) => {
+        if (!cancelled) setGraph(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setGraphError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, data.workItem.workItemId]);
+
   const wi = data.workItem;
   const planAccepted = data.plan.current.status === "accepted";
 
@@ -217,13 +308,36 @@ export function WorkItemDetail({
       />
 
       {planAccepted ? (
-        <TaskList
-          tasks={data.tasks}
-          runLinks={data.runLinks}
-          onSkip={handleSkip}
-          onRetry={handleRetry}
-          actionsEnabled
-        />
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-end">
+            <ViewToggle view={view} onChange={setView} />
+          </div>
+          {view === "list" ? (
+            <TaskList
+              tasks={data.tasks}
+              runLinks={data.runLinks}
+              onSkip={handleSkip}
+              onRetry={handleRetry}
+              onReplan={handleReplan}
+              onMarkRework={handleMarkRework}
+              onUnskip={handleUnskip}
+              actionsEnabled
+            />
+          ) : graph ? (
+            <TaskGraph graph={graph} tasks={data.tasks} />
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("taskGraph.title")}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-xs text-fg-subtle">
+                  {graphError ?? t("taskGraph.empty")}
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       ) : null}
 
       {planAccepted ? <ParentReviewPacket report={data.report} /> : null}

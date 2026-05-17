@@ -807,7 +807,83 @@ V4.1 的几个不变量（operator 视角）：
   V4.1 给出的最强推荐就是「请进入人工 review」。auto-merge 留给后续
   阶段。
 
-### 5.8 V2 当前的边界与未覆盖
+### 5.8 V4.2 Task Graph — graph 视图、replan、mark-rework、branch chaining、team-mode project switcher
+
+V4.2 在 V4.1 的 WorkItem 基础上为 operator 引入了 4 类新能力，
+父 Issue label 仍由 aggregator 路径写、synthetic task run 仍不会
+直接动父 Issue label：
+
+1. **Task Graph 视图**。打开 `/work-items/<id>?view=graph` 或在 work-item
+   header 点击 **Graph**，Tasks 区域从分组列表切换到 SVG 依赖图：
+   节点是 `taskId` + title + status badge，边表达 `dependsOn` 方向，
+   关键路径节点高亮。点 **List** 回到列表视图。`?view=...` 写在 URL
+   里，链接可直接分享。
+2. **单 task replan**。任一 task 行点击 **Replan** 打开对话框，输入
+   `reason`（必填）和可选的 `hint`，提交后 POST
+   `/api/work-items/<id>/tasks/<taskId>/replan`。IssuePilot 生成一个新
+   的 plan version，**只**替换目标 task；其他 task 的 `status` /
+   `runIds` 继承自旧 plan，避免 in-flight workflow 被重置。旧 plan
+   被标 `superseded`，新 plan 以 `draft` 状态出现，operator 仍走
+   accept 流程。
+3. **Mark rework + retry**。`completed` / `failed` / `blocked` 的 task
+   行可以点 **Mark for rework** 并填 `reason`：task status 变 `needs_rework`、
+   `needsReworkReason` 持久化，WorkItem 经 `reconcileWorkItem` 回到
+   `partial`，父 Issue label 重新进入 `ai-rework`；之后点 **Retry**
+   重新 dispatch 这条 task（新分支、新 runId）。
+4. **Unskip**。被 skip 的 task（operator 决策或 `failed → skip`）现在多
+   出 **Cancel skip** 按钮，调
+   `/api/work-items/<id>/tasks/<taskId>/unskip` 把状态恢复到 `ready`，
+   下一次 tick 重新 dispatch。
+5. **Branch chaining**。下游 task 仅有 1 个上游 `dependsOn`，且上游
+   `completed` 但其 MR 仍 `opened` 时，daemon 把下游 dispatch 的
+   `DispatchInput.baseBranch` 设成 `origin/<上游分支>`，让线性重构链
+   可以连续推进，不必等上游 MR merge。**多上游** 依赖仍按
+   「等所有上游 merged」处理，不做隐式 merge-commit 合成。
+6. **Team-mode project switcher**。orchestrator 以 team-mode 启动
+   （`issuepilot start --config issuepilot.team.yaml`）后，dashboard 顶栏
+   会渲染 **Project** 下拉框。选中 project 后选择持久化在
+   `localStorage`，所有后续 work-item API 调用自动带
+   `x-issuepilot-project: <id>` header。每个 project 独占一个
+   `.issuepilot/` workspace 命名空间，project A 看不到 project B 的
+   WorkItem，反之亦然。缺 header → 400 `project_header_required`，
+   未知 project id → 404 `project_not_found`。
+
+CLI / 直接 HTTP 等价命令：
+
+```bash
+# 对单 task replan
+curl -X POST -H 'content-type: application/json' \
+  -d '{"reason": "missing audit log", "hint": "use writeAudit()"}' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/replan
+
+# 把已完成 task 反弹回 needs_rework
+curl -X POST -H 'content-type: application/json' \
+  -d '{"reason": "reviewer wants extra tests"}' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/mark-rework
+
+# 取消 skip
+curl -X POST http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/unskip
+
+# 拉取 task graph 投影
+curl http://127.0.0.1:4738/api/work-items/<wi>/graph
+
+# Team-mode：把请求路由到指定 project
+curl -H 'x-issuepilot-project: platform-web' \
+  http://127.0.0.1:4738/api/work-items
+```
+
+V4.2 operator 视角的不变量：
+
+- 父 Issue label / handoff note 仍只由 aggregator 路径写。
+  `markNeedsRework` / `unskipTask` / `replanTask` 全部经过
+  `reconcileWorkItem`，与 `settleTaskRunFinal` 共享同一条状态机。
+- replan **不复用** runId，旧 `TaskRunLink` 保留为历史证据；新
+  plan version 一旦 accept，下次 dispatch 拿到的是全新的 runId。
+- branch chaining 安全 fallback：上游 task 失败或被 mark rework，
+  下游链回到 `blocked_by_dependency`，等 operator 决策；已 dispatch
+  的下游 in-flight run 仍跑完，其结果由 aggregator 反映。
+
+### 5.9 V2 当前的边界与未覆盖
 
 V2 主体已完成，**显式不在 V2 范围**的能力（会在 V3 / V4 处理）：
 

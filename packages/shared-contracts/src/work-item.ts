@@ -146,6 +146,13 @@ export interface TaskNode {
   riskLevel: RiskLevel;
   /** Operator-visible reason when status leaves `ready`（blocked / failed 解释）。 */
   statusReason?: string;
+  /**
+   * V4.2: human-driven reason when operator pushes a task back to
+   * `needs_rework`. Separate from `statusReason` (which records
+   * runtime-side failure reasons) so quality analytics in V4.4 can
+   * count true review-driven rework without false positives.
+   */
+  needsReworkReason?: string;
 }
 
 /**
@@ -154,7 +161,19 @@ export interface TaskNode {
  */
 export interface TaskPlanEdit {
   taskId: string;
-  field: "title" | "goal" | "scope" | "dependsOn" | "suggestedValidation";
+  /**
+   * V4.2: `"replan"` records a single-task replan where the planner re-drafted
+   * exactly one task and produced a new TaskPlan version. The before/after
+   * payloads capture the task snapshot pre/post-replan rather than a single
+   * field; older field values keep the V4.1 semantics.
+   */
+  field:
+    | "title"
+    | "goal"
+    | "scope"
+    | "dependsOn"
+    | "suggestedValidation"
+    | "replan";
   before: unknown;
   after: unknown;
   by: string;
@@ -176,6 +195,13 @@ export interface TaskPlan {
   status: TaskPlanStatus;
   acceptedAt?: string;
   rejectedReason?: string;
+  /**
+   * V4.2: when a plan is the result of a *single-task replan* (not a
+   * full plan regeneration), records which previous plan + task this
+   * plan derives from. The non-replanned tasks inherit status / runIds
+   * from the previous plan so an in-flight workflow does not reset.
+   */
+  replanOf?: { planId: string; taskId: string };
 }
 
 /**
@@ -197,6 +223,31 @@ export interface TaskRunLink {
   };
   startedAt: string;
   completedAt?: string;
+}
+
+/**
+ * V4.2 review I1：操作员驱动状态优先于历史 TaskRunLink。
+ *
+ * - `needs_rework` / `skipped` 是操作员对 task 的显式状态，应该胜过
+ *   旧 TaskRunLink 的 `completed` / `failed` / `blocked` —— 否则
+ *   dashboard 仍然把 task 渲染为 `completed`，按钮可见性、Mark
+ *   rework / Retry 都会错位。
+ * - 其他情况下沿用历史规则：TaskRunLink.status 是 task 的 canonical
+ *   状态（completed / failed / blocked / running），仅当没有 link 时
+ *   才回落到 task.status（planned / ready / blocked_by_dependency）。
+ *
+ * orchestrator 端的 aggregate.effectiveTaskStatus 与 dashboard 端的
+ * task-list rendering 共用这个函数，保证 spec §9.x 状态枚举对调度
+ * （orchestration）、聚合（aggregate）和 UI 渲染三处统一。
+ */
+export function effectiveTaskStatus(
+  task: Pick<TaskNode, "status">,
+  link: Pick<TaskRunLink, "status"> | undefined,
+): TaskNodeStatus {
+  if (task.status === "needs_rework" || task.status === "skipped") {
+    return task.status;
+  }
+  return link?.status ?? task.status;
 }
 
 /**

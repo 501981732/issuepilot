@@ -1,9 +1,9 @@
-import { NextIntlClientProvider } from "next-intl";
 import { render as rtlRender, type RenderOptions } from "@testing-library/react";
+import { NextIntlClientProvider } from "next-intl";
 import type { ReactElement, ReactNode } from "react";
 
-import messages from "../i18n/messages/en.json";
 import { DEFAULT_LOCALE, type Locale } from "../i18n/locales";
+import messages from "../i18n/messages/en.json";
 
 interface IntlWrapperOptions {
   locale?: Locale;

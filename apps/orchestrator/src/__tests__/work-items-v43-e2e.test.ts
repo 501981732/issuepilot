@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type {
   ReportEvidence,
@@ -27,11 +27,14 @@ import {
   workItemHandoffMarker,
   type ParentHandoffWorkflow,
 } from "../work-items/handoff.js";
+import type { OrchestrationDeps } from "../work-items/orchestration.js";
 import { createWorkItemPlanner } from "../work-items/planner.js";
-import { renderWorkItemReportMarkdown } from "../work-items/render-report.js";
+import * as ReportRenderer from "../work-items/render-report.js";
 import {
   createWorkItemService,
   decideWorkItemStatus,
+  settleTaskRunFinal,
+  tickWorkItem,
 } from "../work-items/service.js";
 import { createWorkItemStore, type WorkItemStore } from "../work-items/store.js";
 
@@ -213,6 +216,8 @@ async function buildHarness(rootDir: string) {
   const events: EventRecord[] = [];
   const gitlab = makeFakeGitlab();
   let currentNow = "2026-05-17T00:00:00.000Z";
+  let dispatchCounter = 0;
+  const taskRunIndex = new Map<string, { workItemId: string; taskId: string }>();
 
   const emit = (event: {
     type: string;
@@ -265,13 +270,59 @@ async function buildHarness(rootDir: string) {
     });
   }
 
+  const saveTaskNode: OrchestrationDeps["saveTaskNode"] = async (
+    taskId,
+    patch,
+  ) => {
+    for (const workItem of await store.listWorkItems()) {
+      const plan = await store.getCurrentPlan(workItem.workItemId);
+      if (!plan?.tasks.some((task) => task.taskId === taskId)) continue;
+      await store.saveTaskPlan({
+        ...plan,
+        tasks: plan.tasks.map((task) =>
+          task.taskId === taskId ? { ...task, ...patch } : task,
+        ),
+      });
+    }
+  };
+
+  const orchestrationDeps: OrchestrationDeps = {
+    availableSlots: () => 16,
+    getRunReport: async (runId) => reports.get(runId),
+    dispatchTask: async (task) => {
+      dispatchCounter += 1;
+      const runId = `run_${task.taskId}`;
+      taskRunIndex.set(runId, { workItemId: "", taskId: task.taskId });
+      return { runId, branch: `ai/${runId}/${dispatchCounter}` };
+    },
+    saveTaskRunLink: (link) => store.saveTaskRunLink(link),
+    saveTaskNode,
+    emit,
+    now: () => currentNow,
+  };
+
+  async function tick(workItem: WorkItem): Promise<void> {
+    const plan = await store.getCurrentPlan(workItem.workItemId);
+    if (!plan || plan.status !== "accepted") return;
+    const links = await store.listAllTaskRunLinks(workItem.workItemId);
+    await tickWorkItem(workItem, plan, links, orchestrationDeps);
+    for (const [runId, meta] of taskRunIndex) {
+      if (!meta.workItemId) {
+        taskRunIndex.set(runId, {
+          workItemId: workItem.workItemId,
+          taskId: meta.taskId,
+        });
+      }
+    }
+  }
+
   const service = createWorkItemService({
     store,
     planner: createWorkItemPlanner({
       callPlannerLlm: async () => ({ tasks: draftTasks() }),
     }),
     fetchIssue: async () => ISSUE,
-    tick: async () => {},
+    tick,
     reconcileWorkItem,
     aggregateDeps: { getRunReport: async (runId) => reports.get(runId) },
     emit,
@@ -292,33 +343,33 @@ async function buildHarness(rootDir: string) {
     return accepted;
   }
 
-  async function saveLinks(
-    workItemId: string,
-    links: Array<{ taskId: "T1" | "T2"; runId: string }>,
-  ): Promise<TaskRunLink[]> {
-    const saved: TaskRunLink[] = [];
-    for (const link of links) {
-      const next: TaskRunLink = {
-        taskId: link.taskId,
-        runId: link.runId,
-        attempt: 1,
-        status: "completed",
-        reportId: link.runId,
-        branch: `ai/${link.runId}/v1`,
-        mergeRequest: {
-          iid: link.taskId === "T1" ? 7101 : 7102,
-          url: `https://gitlab.example.com/group/project/-/merge_requests/${
-            link.taskId === "T1" ? 7101 : 7102
-          }`,
-          state: "merged",
+  async function settle(runId: string): Promise<void> {
+    const meta = taskRunIndex.get(runId);
+    if (!meta?.workItemId) throw new Error(`unknown runId ${runId}`);
+    const runReport = reports.get(runId);
+    if (!runReport) throw new Error(`missing report for ${runId}`);
+    await settleTaskRunFinal(
+      {
+        workItemId: meta.workItemId,
+        taskId: meta.taskId,
+        runId,
+        runReport,
+      },
+      {
+        store,
+        aggregateDeps: aggregateDeps(),
+        parentHandoff: {
+          gitlab: gitlab.adapter,
+          emit,
+          now: () => currentNow,
         },
-        startedAt: "2026-05-17T00:00:00.000Z",
-        completedAt: "2026-05-17T00:01:00.000Z",
-      };
-      await store.saveTaskRunLink(next);
-      saved.push(next);
-    }
-    return saved;
+        workflow: HANDOFF_WORKFLOW,
+        emit,
+        now: () => currentNow,
+        saveTaskRunLink: orchestrationDeps.saveTaskRunLink,
+        saveTaskNode,
+      },
+    );
   }
 
   return {
@@ -329,7 +380,8 @@ async function buildHarness(rootDir: string) {
     service,
     aggregateDeps,
     planAndAccept,
-    saveLinks,
+    settle,
+    taskRunIndex,
     reconcileWorkItem,
     setNow: (next: string) => {
       currentNow = next;
@@ -341,38 +393,38 @@ async function completeTwoTaskWorkItem(rootDir: string) {
   const harness = await buildHarness(rootDir);
   const accepted = await harness.planAndAccept();
   const workItemId = accepted.workItem.workItemId;
-  await harness.saveLinks(workItemId, [
-    { taskId: "T1", runId: "run_T1" },
-    { taskId: "T2", runId: "run_T2" },
+  const dispatched = await harness.store.listAllTaskRunLinks(workItemId);
+  expect(dispatched.map((link) => [link.taskId, link.runId, link.status])).toEqual([
+    ["T1", "run_T1", "running"],
+    ["T2", "run_T2", "running"],
   ]);
-
   await harness.reconcileWorkItem(workItemId);
   expect(harness.gitlab.state.labelLog.at(-1)?.add).toContain("ai-running");
+
+  const t1Worktree = join(rootDir, "task-worktree-t1");
+  await writeEvidenceFile(
+    t1Worktree,
+    "run_T1",
+    "screenshots/login.png",
+    "png",
+  );
+  await writeEvidenceFile(
+    t1Worktree,
+    "run_T1",
+    "playwright/checkout-trace.zip",
+    "trace",
+  );
+  await writeEvidenceFile(t1Worktree, "run_T1", "commands/lint.log", "lint ok\n");
+  const t2Worktree = join(rootDir, "task-worktree-t2");
+  await writeEvidenceFile(t2Worktree, "run_T2", "tests/api.json", "{}\n");
 
   harness.reports.set(
     "run_T1",
     fakeRunReport({
       runId: "run_T1",
       taskId: "T1",
-      evidence: [
-        {
-          kind: "screenshot",
-          label: "Login screenshot",
-          relPath: "screenshots/login.png",
-          mediaType: "image/png",
-        },
-        {
-          kind: "playwright",
-          label: "Checkout trace",
-          relPath: "playwright/checkout-trace.zip",
-        },
-        {
-          kind: "command_output",
-          label: "pnpm lint",
-          relPath: "commands/lint.log",
-          confidence: "system-derived",
-        },
-      ],
+      workspacePath: t1Worktree,
+      evidence: await scanWorktreeEvidence(t1Worktree, "run_T1"),
       ci: {
         status: "success",
         pipelineUrl: "https://gitlab.example.com/pipelines/1",
@@ -385,18 +437,13 @@ async function completeTwoTaskWorkItem(rootDir: string) {
     fakeRunReport({
       runId: "run_T2",
       taskId: "T2",
-      evidence: [
-        {
-          kind: "test_result",
-          label: "API tests",
-          relPath: "tests/api.json",
-          confidence: "system-derived",
-        },
-      ],
+      workspacePath: t2Worktree,
+      evidence: await scanWorktreeEvidence(t2Worktree, "run_T2"),
     }),
   );
 
-  await harness.reconcileWorkItem(workItemId);
+  await harness.settle("run_T1");
+  await harness.settle("run_T2");
   const report = await harness.store.getReport(workItemId);
   if (!report) throw new Error("expected report");
   return { harness, accepted, report };
@@ -408,14 +455,72 @@ function noteBodyWithoutMarker(body: string, workItemId: string): string {
   return body.slice(marker.length + 1);
 }
 
+async function expectTaskRunBinding(
+  store: WorkItemStore,
+  workItemId: string,
+  expected: Array<[string, string]>,
+): Promise<void> {
+  const links = await store.listAllTaskRunLinks(workItemId);
+  expect(links.map((link) => [link.taskId, link.runId])).toEqual(expected);
+}
+
+async function expectOneMarkdownRender(input: {
+  service: ReturnType<typeof createWorkItemService>;
+  events: EventRecord[];
+  renderSpy: { mock: { calls: unknown[] } };
+  workItemId: string;
+}): Promise<string> {
+  const renderCallsBefore = input.renderSpy.mock.calls.length;
+  const eventsBefore = input.events.filter(
+    (event) => event.type === "work_item_report_rendered",
+  ).length;
+  const markdown = await input.service.getReportMarkdown(input.workItemId);
+  if (typeof markdown !== "string") throw new Error(markdown.error.message);
+  expect(input.renderSpy.mock.calls.length - renderCallsBefore).toBe(1);
+  expect(
+    input.events.filter((event) => event.type === "work_item_report_rendered")
+      .length - eventsBefore,
+  ).toBe(1);
+  return markdown;
+}
+
+async function writeEvidenceFile(
+  taskWorktreePath: string,
+  runId: string,
+  relPath: string,
+  body: string,
+): Promise<void> {
+  const absPath = join(
+    taskWorktreePath,
+    ".issuepilot",
+    "evidence",
+    runId,
+    ...relPath.split("/"),
+  );
+  await mkdir(dirname(absPath), { recursive: true });
+  await writeFile(absPath, body);
+}
+
+async function scanWorktreeEvidence(
+  taskWorktreePath: string,
+  runId: string,
+  existing: ReportEvidence[] = [],
+): Promise<ReportEvidence[]> {
+  const scan = await scanRunEvidence({ taskWorktreePath, runId });
+  return mergeReportEvidence(existing, scan);
+}
+
 describe("V4.3 Review Packet + Evidence end-to-end", () => {
   let rootDir: string;
+  let renderSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     rootDir = await mkdtemp(join(tmpdir(), "issuepilot-v43-e2e-"));
+    renderSpy = vi.spyOn(ReportRenderer, "renderWorkItemReportMarkdown");
   });
 
   afterEach(async () => {
+    renderSpy.mockRestore();
     await rm(rootDir, { recursive: true, force: true });
   });
 
@@ -424,9 +529,7 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     const workItemId = accepted.workItem.workItemId;
     const workItem = (await harness.store.getWorkItem(workItemId)) as WorkItem;
     const plan = (await harness.store.getCurrentPlan(workItemId)) as TaskPlan;
-    const links = await harness.store.listAllTaskRunLinks(workItemId);
-
-    expect(links.map((link) => [link.taskId, link.runId])).toEqual([
+    await expectTaskRunBinding(harness.store, workItemId, [
       ["T1", "run_T1"],
       ["T2", "run_T2"],
     ]);
@@ -454,26 +557,27 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     const note = harness.gitlab.state.notes.at(-1);
     expect(note).toBeDefined();
     expect(noteBodyWithoutMarker(note!.body, workItemId)).toBe(
-      renderWorkItemReportMarkdown(workItem, plan, report, {
+      ReportRenderer.renderWorkItemReportMarkdown(workItem, plan, report, {
         audience: "gitlab",
       }),
     );
 
-    const markdown = await harness.service.getReportMarkdown(workItemId);
-    expect(typeof markdown).toBe("string");
+    const markdown = await expectOneMarkdownRender({
+      service: harness.service,
+      events: harness.events,
+      renderSpy,
+      workItemId,
+    });
     expect(markdown).toBe(
-      renderWorkItemReportMarkdown(workItem, plan, report, {
+      ReportRenderer.renderWorkItemReportMarkdown(workItem, plan, report, {
         audience: "markdown",
         evidenceBaseHref: `/api/work-items/${workItemId}/evidence/file`,
       }),
     );
-    expect(harness.events).toContainEqual(
+    expect(harness.events.at(-1)).toEqual(
       expect.objectContaining({
         type: "work_item_report_rendered",
-        detail: expect.objectContaining({
-          workItemId,
-          audience: "markdown",
-        }),
+        detail: expect.objectContaining({ workItemId, audience: "markdown" }),
       }),
     );
     expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
@@ -482,6 +586,10 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
   it("confirm flow stamps evidence, rewrites the handoff note, and emits review events", async () => {
     const { harness, accepted } = await completeTwoTaskWorkItem(rootDir);
     const workItemId = accepted.workItem.workItemId;
+    await expectTaskRunBinding(harness.store, workItemId, [
+      ["T1", "run_T1"],
+      ["T2", "run_T2"],
+    ]);
     const before = await harness.service.getEvidence(workItemId);
     if ("error" in before) throw new Error(before.error.message);
     const screenshot = before.byTask.T1.find(
@@ -515,9 +623,14 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
       }),
     );
 
-    await harness.service.getReportMarkdown(workItemId);
+    await expectOneMarkdownRender({
+      service: harness.service,
+      events: harness.events,
+      renderSpy,
+      workItemId,
+    });
     const note = harness.gitlab.state.notes.at(-1);
-    expect(note?.body).toContain("Login screenshot (human-confirmed)");
+    expect(note?.body).toContain("login.png (human-confirmed)");
     expect(note?.body).toContain("(human-confirmed)");
     expect(harness.events.map((event) => event.type)).toEqual(
       expect.arrayContaining([
@@ -525,6 +638,7 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
         "work_item_report_rendered",
       ]),
     );
+    expect(harness.gitlab.state.labelLog.at(-1)?.add).toContain("human-review");
     expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
   });
 
@@ -532,14 +646,19 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     const harness = await buildHarness(rootDir);
     const accepted = await harness.planAndAccept();
     const workItemId = accepted.workItem.workItemId;
-    await harness.saveLinks(workItemId, [{ taskId: "T1", runId: "run_big" }]);
+    await expectTaskRunBinding(harness.store, workItemId, [
+      ["T1", "run_T1"],
+      ["T2", "run_T2"],
+    ]);
+    await harness.reconcileWorkItem(workItemId);
+    expect(harness.gitlab.state.labelLog.at(-1)?.add).toContain("ai-running");
 
     const taskWorktreePath = join(rootDir, "task-worktree");
     const evidenceRoot = join(
       taskWorktreePath,
       ".issuepilot",
       "evidence",
-      "run_big",
+      "run_T1",
     );
     await mkdir(join(evidenceRoot, "recordings"), { recursive: true });
     await mkdir(join(evidenceRoot, "commands"), { recursive: true });
@@ -565,13 +684,13 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
       }),
     );
 
-    const scan = await scanRunEvidence({ taskWorktreePath, runId: "run_big" });
+    const scan = await scanRunEvidence({ taskWorktreePath, runId: "run_T1" });
     const evidence = mergeReportEvidence([], scan);
     const followUps = appendOversizedFollowUps([], scan.oversized, scan.rejected);
     harness.reports.set(
-      "run_big",
+      "run_T1",
       fakeRunReport({
-        runId: "run_big",
+        runId: "run_T1",
         taskId: "T1",
         workspacePath: taskWorktreePath,
         evidence,
@@ -580,7 +699,7 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
       }),
     );
 
-    await harness.reconcileWorkItem(workItemId);
+    await harness.settle("run_T1");
     const report = await harness.store.getReport(workItemId);
     expect(scan.oversized).toEqual([
       { relPath: "recordings/too-large.webm", sizeBytes: 51 * 1024 * 1024 },
@@ -609,17 +728,30 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     await expect(
       serveEvidenceFile({
         taskWorktreePath,
-        runId: "run_big",
+        runId: "run_T1",
         relPath: "../../etc/passwd",
       }),
     ).resolves.toEqual({ ok: false, error: "forbidden" });
     await expect(
       serveEvidenceFile({
         taskWorktreePath,
-        runId: "run_big",
+        runId: "run_T1",
         relPath: "recordings/too-large.webm",
       }),
     ).resolves.toEqual({ ok: false, error: "oversized" });
+    await expectOneMarkdownRender({
+      service: harness.service,
+      events: harness.events,
+      renderSpy,
+      workItemId,
+    });
+    await expectTaskRunBinding(harness.store, workItemId, [
+      ["T1", "run_T1"],
+      ["T2", "run_T2"],
+    ]);
+    expect(harness.gitlab.state.labelLog.flatMap((entry) => entry.add)).not.toContain(
+      "human-review",
+    );
     expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
   });
 
@@ -627,9 +759,9 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     const harness = await buildHarness(rootDir);
     const accepted = await harness.planAndAccept();
     const workItemId = accepted.workItem.workItemId;
-    await harness.saveLinks(workItemId, [
-      { taskId: "T1", runId: "run_T1" },
-      { taskId: "T2", runId: "run_T2_missing" },
+    await expectTaskRunBinding(harness.store, workItemId, [
+      ["T1", "run_T1"],
+      ["T2", "run_T2"],
     ]);
     await harness.reconcileWorkItem(workItemId);
 
@@ -647,6 +779,16 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
         ],
       }),
     );
+    await harness.settle("run_T1");
+    const linksAfterT1 = await harness.store.listAllTaskRunLinks(workItemId);
+    const t2Link = linksAfterT1.find((link) => link.taskId === "T2");
+    if (!t2Link) throw new Error("missing T2 link");
+    await harness.store.saveTaskRunLink({
+      ...t2Link,
+      status: "completed",
+      reportId: t2Link.runId,
+      completedAt: "2026-05-17T00:02:00.000Z",
+    });
     await harness.reconcileWorkItem(workItemId);
 
     const report = await harness.store.getReport(workItemId);
@@ -665,11 +807,16 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
       }),
     );
     expect(report?.evidence.byTask.T1.length).toBeGreaterThan(0);
-    const links = await harness.store.listAllTaskRunLinks(workItemId);
-    expect(links.map((link) => [link.taskId, link.runId])).toEqual([
+    await expectTaskRunBinding(harness.store, workItemId, [
       ["T1", "run_T1"],
-      ["T2", "run_T2_missing"],
+      ["T2", "run_T2"],
     ]);
+    await expectOneMarkdownRender({
+      service: harness.service,
+      events: harness.events,
+      renderSpy,
+      workItemId,
+    });
     const note = harness.gitlab.state.notes.at(-1);
     expect(note?.body).not.toContain("human-review");
     expect(harness.gitlab.state.labelLog.flatMap((entry) => entry.add)).not.toContain(

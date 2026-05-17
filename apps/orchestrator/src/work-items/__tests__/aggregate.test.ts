@@ -271,6 +271,15 @@ describe("aggregateWorkItem", () => {
     );
 
     expect(result.evidence.index.length).toBeGreaterThan(0);
+    for (const entry of result.evidence.index) {
+      expect(entry.evidenceId).toMatch(
+        new RegExp(`^${entry.taskId}:${entry.kind}:run_[ab]:`),
+      );
+      expect(entry.confidence).toMatch(
+        /^(ai-claim|system-derived|human-confirmed)$/,
+      );
+    }
+    expect(result.humanReviewChecklist).toEqual([]);
   });
 
   it("populates recommendedNextActions for the partial case with the failed task ids", async () => {

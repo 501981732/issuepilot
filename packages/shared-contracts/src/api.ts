@@ -10,6 +10,7 @@ import type {
   TaskPlanEdit,
   TaskRunLink,
   WorkItem,
+  WorkItemEvidenceEntry,
   WorkItemReport,
   WorkItemStatus,
 } from "./work-item.js";
@@ -148,4 +149,27 @@ export interface WorkItemGraphResponse {
   edges: Array<{ from: string; to: string }>;
   /** 当前 plan 的最长（节点数最多）路径上的 taskId；多条等长时取字典序首条。 */
   criticalPathTaskIds: string[];
+}
+
+/** `GET /api/work-items/:id/evidence` 响应。 */
+export interface WorkItemEvidenceResponse {
+  index: WorkItemEvidenceEntry[];
+  byTask: Record<string, WorkItemEvidenceEntry[]>;
+  missing: Array<{
+    taskId: string;
+    reason: "no-run-report" | "no-link" | "incomplete-report";
+  }>;
+}
+
+/** `POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm` 请求体。 */
+export interface ConfirmEvidenceRequest {
+  /** 省略时 server 使用 `x-issuepilot-operator` header。 */
+  operator?: string;
+}
+
+/** `POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm` 响应。 */
+export interface ConfirmEvidenceResponse {
+  evidenceId: string;
+  confirmedAt: string;
+  report: WorkItemReport;
 }

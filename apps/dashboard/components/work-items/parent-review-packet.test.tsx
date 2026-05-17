@@ -31,19 +31,31 @@ const baseReport = (over: Partial<WorkItemReport> = {}): WorkItemReport => ({
       {
         taskId: "T1",
         kind: "diff",
+        evidenceId: "T1:diff:run_a:diff",
         label: "diff link",
+        confidence: "ai-claim",
         href: "https://gl/-/mr/7/diffs",
       },
       {
         taskId: "T1",
         kind: "validation",
+        evidenceId: "T1:validation:run_a:test",
         label: "pnpm test passed",
+        confidence: "ai-claim",
+      },
+      {
+        taskId: "T1",
+        kind: "screenshot",
+        evidenceId: "T1:screenshot:run_a:login",
+        label: "login screenshot",
+        confidence: "ai-claim",
       },
     ],
     byTask: {},
   },
   openQuestions: ["Q1"],
   recommendedNextActions: ["Reviewer to inspect MR"],
+  humanReviewChecklist: [],
   generatedAt: "2026-05-17T01:00:00.000Z",
   ...over,
 });
@@ -70,6 +82,7 @@ describe("ParentReviewPacket", () => {
     expect(
       screen.getByRole("link", { name: "diff link" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("login screenshot")).toBeInTheDocument();
     expect(screen.getByText("Reviewer to inspect MR")).toBeInTheDocument();
   });
 

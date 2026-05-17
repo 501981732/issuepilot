@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   effectiveTaskStatus,
   type RunReportArtifact,
@@ -94,46 +96,59 @@ export async function aggregateWorkItem(
 
       if (report) {
         if (report.diff?.summary) {
-          taskEvidence.push({
+          taskEvidence.push(buildEvidenceEntry({
             taskId: task.taskId,
+            runId: report.runId,
             kind: "diff",
             label: `Diff: ${report.diff.filesChanged} file(s) changed`,
             text: report.diff.summary,
-          });
+            confidence: "ai-claim",
+          }));
         }
-        for (const v of report.handoff.validation) {
-          taskEvidence.push({
+        for (const [index, v] of report.handoff.validation.entries()) {
+          taskEvidence.push(buildEvidenceEntry({
             taskId: task.taskId,
+            runId: report.runId,
             kind: "validation",
             label: "Validation",
             text: v,
-          });
+            confidence: "ai-claim",
+            seed: `validation:${index}:${v}`,
+          }));
         }
-        for (const r of report.handoff.risks) {
-          taskEvidence.push({
+        for (const [index, r] of report.handoff.risks.entries()) {
+          taskEvidence.push(buildEvidenceEntry({
             taskId: task.taskId,
+            runId: report.runId,
             kind: "risk",
             label: `Risk (${r.level})`,
             text: r.text,
-          });
+            confidence: "ai-claim",
+            seed: `risk:${index}:${r.level}:${r.text}`,
+          }));
         }
         if (report.ci) {
-          taskEvidence.push({
+          taskEvidence.push(buildEvidenceEntry({
             taskId: task.taskId,
+            runId: report.runId,
             kind: "ci",
             label: `CI: ${report.ci.status}`,
+            confidence: "system-derived",
             ...(report.ci.pipelineUrl ? { href: report.ci.pipelineUrl } : {}),
-          });
+          }));
         }
         if (report.reviewFeedback) {
-          for (const c of report.reviewFeedback.comments) {
-            taskEvidence.push({
+          for (const [index, c] of report.reviewFeedback.comments.entries()) {
+            taskEvidence.push(buildEvidenceEntry({
               taskId: task.taskId,
+              runId: report.runId,
               kind: "review_feedback",
               label: `Reviewer: ${c.author}${c.resolved ? " (resolved)" : ""}`,
               href: c.url,
               text: c.body,
-            });
+              confidence: "system-derived",
+              seed: `review_feedback:${index}:${c.url}:${c.createdAt}:${c.body}`,
+            }));
           }
         }
       }
@@ -177,8 +192,37 @@ export async function aggregateWorkItem(
       entries,
       overallStatus,
     ),
+    humanReviewChecklist: [],
     generatedAt,
   };
+}
+
+function buildEvidenceEntry(
+  entry: Omit<WorkItemEvidenceEntry, "evidenceId"> & {
+    runId: string;
+    seed?: string;
+  },
+): WorkItemEvidenceEntry {
+  const { runId, seed, ...rest } = entry;
+  return {
+    ...rest,
+    evidenceId: deriveLegacyEvidenceId({
+      taskId: rest.taskId,
+      kind: rest.kind,
+      runId,
+      seed: seed ?? rest.href ?? rest.text ?? rest.label,
+    }),
+  };
+}
+
+function deriveLegacyEvidenceId(input: {
+  taskId: string;
+  kind: WorkItemEvidenceEntry["kind"];
+  runId: string;
+  seed: string;
+}): string {
+  const digest = createHash("sha1").update(input.seed).digest("base64url");
+  return `${input.taskId}:${input.kind}:${input.runId}:${digest.slice(0, 16)}`;
 }
 
 function pickLatestLinkByTask(

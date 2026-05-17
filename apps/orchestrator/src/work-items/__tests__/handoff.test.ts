@@ -113,6 +113,7 @@ const completeReport: WorkItemReport = {
   recommendedNextActions: [
     "All synthetic task runs completed. Move the parent Issue to human-review and ask the reviewer to inspect each MR.",
   ],
+  humanReviewChecklist: [],
   generatedAt: "2026-05-17T00:10:00.000Z",
 };
 

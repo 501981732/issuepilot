@@ -26,6 +26,11 @@ const EVIDENCE_KIND_KEY: Record<WorkItemEvidenceEntry["kind"], string> = {
   risk: "evidenceRisk",
   ci: "evidenceCi",
   review_feedback: "evidenceReview",
+  screenshot: "evidence",
+  recording: "evidence",
+  playwright: "evidence",
+  command_output: "evidence",
+  test_result: "evidence",
 };
 
 export interface ParentReviewPacketProps {

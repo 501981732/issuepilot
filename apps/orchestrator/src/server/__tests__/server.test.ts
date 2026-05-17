@@ -1307,6 +1307,7 @@ describe("V4.1 work item routes", () => {
       evidence: { index: [], byTask: {} },
       openQuestions: [],
       recommendedNextActions: [],
+      humanReviewChecklist: [],
       generatedAt: "2026-05-17T00:10:00.000Z",
     }));
     const { app } = await buildTestApp(async () => [], {

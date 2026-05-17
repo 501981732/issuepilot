@@ -227,6 +227,7 @@ describe("WorkItemStore", () => {
       evidence: { index: [], byTask: {} },
       openQuestions: [],
       recommendedNextActions: ["enter human review"],
+      humanReviewChecklist: [],
       generatedAt: "2026-05-17T00:10:00.000Z",
     };
     await store.saveReport(report);

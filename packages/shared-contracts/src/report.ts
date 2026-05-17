@@ -33,6 +33,21 @@ export interface MergeReadinessResult {
   evaluatedAt: string;
 }
 
+export interface ReportEvidence {
+  kind:
+    | "screenshot"
+    | "recording"
+    | "playwright"
+    | "command_output"
+    | "test_result";
+  label: string;
+  relPath?: string;
+  href?: string;
+  mediaType?: string;
+  capturedAt?: string;
+  confidence?: "ai-claim" | "system-derived";
+}
+
 export interface RunReportArtifact {
   version: typeof RUN_REPORT_VERSION;
   runId: string;
@@ -95,6 +110,7 @@ export interface RunReportArtifact {
     durationMs?: number;
     details?: string;
   }>;
+  evidence?: ReportEvidence[];
   ci?: {
     status: PipelineStatus;
     pipelineUrl?: string;

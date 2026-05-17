@@ -11,6 +11,7 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DispatchDeps, DispatchInput } from "../orchestrator/dispatch.js";
+import type * as ReconcileModule from "../orchestrator/reconcile.js";
 import {
   hostnameFromBaseUrl,
   splitCommand,
@@ -18,8 +19,10 @@ import {
 } from "../daemon.js";
 import { startDaemon } from "../daemon.js";
 import type { LoopDeps } from "../orchestrator/loop.js";
+import type * as ReportsStoreModule from "../reports/store.js";
 import type { ServerDeps } from "../server/index.js";
 import { createRuntimeState } from "../runtime/state.js";
+import type * as EvidenceScannerModule from "../work-items/evidence-scanner.js";
 
 const dispatchMockState = vi.hoisted(() => ({
   workspacePath: "",
@@ -72,8 +75,7 @@ vi.mock("../orchestrator/dispatch.js", () => ({
 }));
 
 vi.mock("../orchestrator/reconcile.js", async (importActual) => {
-  const actual =
-    await importActual<typeof import("../orchestrator/reconcile.js")>();
+  const actual = await importActual<typeof ReconcileModule>();
   return {
     ...actual,
     reconcile: vi.fn(async () => ({
@@ -87,7 +89,7 @@ vi.mock("../orchestrator/reconcile.js", async (importActual) => {
 });
 
 vi.mock("../reports/store.js", async (importActual) => {
-  const actual = await importActual<typeof import("../reports/store.js")>();
+  const actual = await importActual<typeof ReportsStoreModule>();
   return {
     ...actual,
     createReportStore: vi.fn(
@@ -116,8 +118,7 @@ vi.mock("../reports/store.js", async (importActual) => {
 });
 
 vi.mock("../work-items/evidence-scanner.js", async (importActual) => {
-  const actual =
-    await importActual<typeof import("../work-items/evidence-scanner.js")>();
+  const actual = await importActual<typeof EvidenceScannerModule>();
   return {
     ...actual,
     scanRunEvidence: vi.fn(

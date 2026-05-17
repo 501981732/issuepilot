@@ -7,7 +7,6 @@ import type {
   RunReportArtifact,
   TaskNode,
   TaskPlan,
-  TaskRunLink,
   WorkItem,
 } from "@issuepilot/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

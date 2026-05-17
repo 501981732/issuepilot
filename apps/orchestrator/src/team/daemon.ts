@@ -5,6 +5,10 @@ import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
 import {
+  createReportStore,
+  type ReportStore,
+} from "../reports/store.js";
+import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
 } from "../runtime/leases.js";
@@ -12,10 +16,6 @@ import {
   createRuntimeState,
   type RuntimeState,
 } from "../runtime/state.js";
-import {
-  createReportStore,
-  type ReportStore,
-} from "../reports/store.js";
 import { createServer, type WorkItemService } from "../server/index.js";
 import {
   createWorkItemPlanner,

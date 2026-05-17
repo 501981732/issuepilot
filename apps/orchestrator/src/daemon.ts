@@ -75,11 +75,11 @@ import { createServer, type WorkItemService } from "./server/index.js";
 import { aggregateWorkItem } from "./work-items/aggregate.js";
 import { decideEffectiveBase } from "./work-items/branch-chain.js";
 import { runTaskOnce } from "./work-items/dispatch-task.js";
-import { scanRunEvidence } from "./work-items/evidence-scanner.js";
 import {
   appendOversizedFollowUps,
   mergeReportEvidence,
 } from "./work-items/evidence-merge.js";
+import { scanRunEvidence } from "./work-items/evidence-scanner.js";
 import { writeParentHandoff } from "./work-items/handoff.js";
 import {
   createWorkItemPlanner,

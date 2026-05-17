@@ -84,7 +84,7 @@ export function EvidenceTab({
     setPendingIds((current) => new Set(current).add(entry.evidenceId));
     try {
       await onConfirm(entry.taskId, entry.evidenceId);
-    } catch (error) {
+    } catch {
       setOptimisticConfirmedIds((current) => {
         const next = new Set(current);
         next.delete(entry.evidenceId);

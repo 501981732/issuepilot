@@ -184,9 +184,18 @@ export function computeReadyTasks(
     // TaskNode-level state (running / completed / failed / blocked).
     // The runtime-state RunRecord may pass through "claimed" briefly
     // inside dispatch-task, but at the orchestration layer "running" is
-    // the only in-flight signal we need to gate on.
+    // the only in-flight signal we need to gate on (idempotency guard
+    // for spec §11.4).
+    //
+    // V4.2 review C1: we INTENTIONALLY do NOT skip on `completed` /
+    // `failed` / `blocked` historical links. The task-level `status`
+    // is the operator-driven source of truth — `retryTask` /
+    // `unskipTask` / accepting a replanned plan all set `task.status`
+    // back to `ready` / `planned`, and that explicit intent must win
+    // over the prior link state. Pre-fix `retryTask` after a completed
+    // run was a silent no-op because the old `completed` link blocked
+    // re-dispatch.
     if (taskLinks.some((l) => l.status === "running")) continue;
-    if (taskLinks.some((l) => l.status === "completed")) continue;
     if (!t.dependsOn.every((dep) => upstreamMerged(dep))) continue;
     ready.push(t);
   }

@@ -677,6 +677,95 @@ describe("V4.2 Task Graph end-to-end", () => {
     );
   });
 
+  // Review C1: after a task settles `completed`, operator marks it back
+  // to `needs_rework`, then clicks Retry. The retry must actually push
+  // the task back through dispatch — pre-fix the old completed
+  // TaskRunLink kept blocking `computeReadyTasks`, so retry was a silent
+  // no-op and the §12.3 rework loop never closed.
+  it("retry after markNeedsRework: redispatches the task even when an old completed TaskRunLink exists", async () => {
+    const store = createWorkItemStore({ rootDir });
+    const reportByRunId = new Map<string, RunReportArtifact>();
+    const gitlabFake = makeFakeGitlab();
+    const events: Array<{
+      type: string;
+      runId?: string;
+      detail: Record<string, unknown>;
+    }> = [];
+    const dispatches: DispatchCall[] = [];
+    const harness = buildHarness({
+      store,
+      reportByRunId,
+      gitlab: gitlabFake.adapter,
+      events,
+      dispatches,
+      plannerState: {
+        initial: twoTaskPlan(),
+        replanResponses: new Map(),
+      },
+    });
+
+    const planRes = await harness.service.planFromIssue({
+      iid: 42,
+      operator: "alice",
+    });
+    if ("error" in planRes) throw new Error("plan failed");
+    const wiId = planRes.workItem.workItemId;
+    await harness.service.acceptPlan({
+      workItemId: wiId,
+      planId: planRes.plan.planId,
+      operator: "alice",
+      edits: [],
+    });
+
+    // Both tasks settle complete with merged MRs.
+    for (const link of await store.listAllTaskRunLinks(wiId)) {
+      reportByRunId.set(
+        link.runId,
+        fakeRunReport({
+          runId: link.runId,
+          mrIid: 9100 + link.taskId.length,
+          mrState: "merged",
+        }),
+      );
+      await harness.settle(link.runId);
+    }
+    const dispatchesAfterFirstRound = dispatches.length;
+    expect(dispatchesAfterFirstRound).toBeGreaterThanOrEqual(2);
+
+    // Operator marks T2 for rework, then retries it.
+    await harness.service.markNeedsRework({
+      workItemId: wiId,
+      taskId: "T2",
+      reason: "Reviewer wants extra tests",
+      operator: "alice",
+    });
+    const retryRes = await harness.service.retryTask(wiId, "T2", "alice");
+    expect(retryRes).toEqual({ ok: true });
+
+    // The fix: the orchestrator dispatched T2 again, on a fresh runId,
+    // even though there is still a `completed` TaskRunLink from the
+    // first attempt.
+    expect(dispatches.length).toBeGreaterThan(dispatchesAfterFirstRound);
+    const dispatchedTaskIds = dispatches.map((d) => d.taskId);
+    expect(dispatchedTaskIds.filter((id) => id === "T2").length).toBeGreaterThanOrEqual(2);
+
+    // The new dispatch records its runId on the task's append-only
+    // history; the old runId is still present (canonical evidence).
+    const planAfterRetry = await store.getCurrentPlan(wiId);
+    const t2 = planAfterRetry?.tasks.find((t) => t.taskId === "T2");
+    expect(t2?.runIds.length).toBeGreaterThanOrEqual(2);
+    expect(t2?.status).toBe("running");
+
+    // The latest TaskRunLink is the new running one; the old completed
+    // link is retained as historical evidence so aggregate / dashboard
+    // can still link to the merged MR.
+    const links = await store.listAllTaskRunLinks(wiId);
+    const t2Links = links.filter((l) => l.taskId === "T2");
+    expect(t2Links.length).toBeGreaterThanOrEqual(2);
+    expect(t2Links.some((l) => l.status === "completed")).toBe(true);
+    expect(t2Links.some((l) => l.status === "running")).toBe(true);
+  });
+
   it("unskip: skipped → ready and tick re-dispatches", async () => {
     const store = createWorkItemStore({ rootDir });
     const reportByRunId = new Map<string, RunReportArtifact>();

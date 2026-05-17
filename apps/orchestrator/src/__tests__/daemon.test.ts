@@ -1093,6 +1093,73 @@ describe("startDaemon human-review event publishing", () => {
     }
   });
 
+  it("overlays evidence confirmations through the daemon reconcile path", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      beforeReconcile: async (input) => {
+        const screenshotPath = path.join(
+          workspacePath,
+          ".issuepilot",
+          "evidence",
+          input.runId,
+          "screenshots",
+          "login.png",
+        );
+        await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+        await fs.writeFile(screenshotPath, "png");
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_indexed",
+        );
+      });
+      const [workItem] = await ctx.serverDeps.workItems!.list();
+      expect(workItem).toBeDefined();
+      const evidence = await ctx.serverDeps.workItems!.getEvidence(
+        workItem!.workItemId,
+      );
+      if ("error" in evidence) {
+        throw new Error(evidence.error.message);
+      }
+      const screenshot = evidence.index.find(
+        (entry) => entry.kind === "screenshot",
+      );
+      expect(screenshot).toBeDefined();
+
+      const confirmed = await ctx.serverDeps.workItems!.confirmTaskEvidence(
+        workItem!.workItemId,
+        screenshot!.taskId,
+        screenshot!.evidenceId,
+        { operator: "alice" },
+      );
+      if ("error" in confirmed) {
+        throw new Error(confirmed.error.message);
+      }
+
+      const storedReport = await ctx.serverDeps.workItems!.report(
+        workItem!.workItemId,
+      );
+      expect(storedReport?.evidence.index).toContainEqual(
+        expect.objectContaining({
+          evidenceId: screenshot!.evidenceId,
+          confidence: "human-confirmed",
+          confirmedBy: "alice",
+          confirmedAt: confirmed.confirmedAt,
+        }),
+      );
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
   it("does not patch the task report when the task worktree has no evidence dir", async () => {
     const workspacePath = await fs.mkdtemp(
       path.join(os.tmpdir(), "issuepilot-task-worktree-"),

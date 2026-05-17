@@ -187,6 +187,44 @@
       "system-derived": "System derived",
       "human-confirmed": "Human confirmed"
     },
+    "checklist": {
+      "confirmHint": "Confirm evidence item by item in the Evidence tab.",
+      "confirmedSuffix": "(confirmed by {confirmedBy} at {confirmedAt})",
+      "confirmedAria": "{label} is confirmed",
+      "unconfirmedAria": "{label} is not confirmed",
+      "unknownOperator": "unknown operator",
+      "unknownTime": "unknown time",
+      "reasons": {
+        "ai-risk-medium": {
+          "label": "Medium AI risk",
+          "description": "Review AI-identified medium risk before handoff."
+        },
+        "ai-risk-high": {
+          "label": "High AI risk",
+          "description": "Resolve or explicitly accept high AI risk before handoff."
+        },
+        "needs-rework": {
+          "label": "Needs rework",
+          "description": "A task is marked for rework and needs operator review."
+        },
+        "partial-overall": {
+          "label": "Partial outcome",
+          "description": "The work item completed only partially and needs a decision."
+        },
+        "missing-evidence": {
+          "label": "Missing evidence",
+          "description": "Required evidence is absent or incomplete for this task."
+        },
+        "skipped-task": {
+          "label": "Skipped task",
+          "description": "Confirm that the skipped task is intentional."
+        },
+        "ci-failed": {
+          "label": "CI failed",
+          "description": "Failed CI must be reviewed before human handoff."
+        }
+      }
+    },
     "replanDialog": {
       "title": "Replan task",
       "reasonLabel": "Reason",

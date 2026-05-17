@@ -187,6 +187,44 @@
       "system-derived": "系统生成",
       "human-confirmed": "人工确认"
     },
+    "checklist": {
+      "confirmHint": "逐条 evidence 确认请到 Evidence 标签页。",
+      "confirmedSuffix": "（由 {confirmedBy} 于 {confirmedAt} 确认）",
+      "confirmedAria": "{label} 已确认",
+      "unconfirmedAria": "{label} 未确认",
+      "unknownOperator": "未知操作员",
+      "unknownTime": "未知时间",
+      "reasons": {
+        "ai-risk-medium": {
+          "label": "中等 AI 风险",
+          "description": "交接前请复核 AI 标记的中等风险。"
+        },
+        "ai-risk-high": {
+          "label": "高 AI 风险",
+          "description": "交接前请解决或明确接受高 AI 风险。"
+        },
+        "needs-rework": {
+          "label": "需要返工",
+          "description": "任务已被标记为返工，需要操作员复核。"
+        },
+        "partial-overall": {
+          "label": "部分完成",
+          "description": "工作单元仅部分完成，需要操作员决策。"
+        },
+        "missing-evidence": {
+          "label": "缺少 Evidence",
+          "description": "该任务缺少必要 evidence 或 evidence 不完整。"
+        },
+        "skipped-task": {
+          "label": "已跳过任务",
+          "description": "请确认该任务跳过是有意为之。"
+        },
+        "ci-failed": {
+          "label": "CI 失败",
+          "description": "人工交接前必须复核失败的 CI。"
+        }
+      }
+    },
     "replanDialog": {
       "title": "重新规划任务",
       "reasonLabel": "重规划原因",

@@ -53,6 +53,77 @@
     写父 Issue note 也**不**切父 Issue label —— parent handoff 完全由
     WorkItem aggregator（V4.1 任务 11）统一执行。已有 V2.x 调用方
     无需改动（参数省略时退回 `"active"`）。
+- 2026-05-17 — **V4.1 任务 8–10：synthetic task run 编排与 WorkItemReport
+  聚合**。建立"plan → ready tasks → synthetic runs → 汇总报告"链路的
+  中间三层。
+  - 任务 8 — `apps/orchestrator/src/work-items/dispatch-task.ts`：synthetic
+    task run 的 dispatch 薄壳。生成新 `runId`、写 `RunRecord(status="claimed")`
+    并附带 `workItem: { workItemId, taskId }` 反向指针，构造任务级
+    branch（`<branch_prefix>/<iid>-<task-slug>`）以及任务级 prompt
+    vars（`workItem.taskId/.taskTitle/.taskGoal/.taskScope/.suggestedValidation/`
+    `.dependsOn/.dependenciesSummary/.riskLevel`），并把
+    `parentIssueLabelMode: "suppressed"` 透传给底层 `dispatch()`。事件
+    发射保留给 orchestration 层，避免 retry / replay 重复 emit。
+  - `apps/orchestrator/src/orchestrator/dispatch.ts` 配套扩展：
+    `DispatchInput` 新增 `parentIssueLabelMode?` 与 `extraPromptVars?`；
+    `DispatchDeps.reconcile` 同步暴露 `parentIssueLabelMode?`，dispatch
+    在调用 `deps.reconcile` 时把字段透传过去。`extraPromptVars` 在合并
+    时不会覆盖 `issue` / `workspace` / `git` / `attempt` 等 canonical key。
+    V2.x 既有调用方无须改动（默认值保持 V2 行为）。
+  - 任务 9 — `apps/orchestrator/src/work-items/orchestration.ts`：
+    plan → ready tasks → runs → status update 三段式纯函数 + I/O 边界。
+    - `computeReadyTasks(plan, links, upstreamMerged)`：纯函数，按
+      `planned/ready/blocked_by_dependency` 状态、活跃 TaskRunLink、
+      已完成 TaskRunLink 与 upstream MR 是否 merged 共同决定哪些任务
+      可以下发。`needs_rework` 不被自动重派，留给 operator 显式 retry。
+    - `tickWorkItem(workItem, plan, links, deps)`：单次 tick。先 await
+      每个 completed link 的 RunReport 拿 `mergeRequest.state`（spec
+      §12.4 的"upstream MR 未合并 → 下游保持 blocked"），再调
+      `computeReadyTasks`，按 `availableSlots()` 节流（V4.1 不引入
+      per-WorkItem 配额，先到先得）。每次成功 dispatch 都写
+      `running` TaskRunLink + `running` TaskNode + emit
+      `task_run_dispatched`；upstream 未 merge 的下游 emit
+      `task_run_blocked_by_dependency`；slot 不够的留到下次 tick，
+      返回值 `{ dispatched, blockedByDependency, blockedBySlots }`
+      让 dashboard 也能看出原因。
+    - `applyTaskRunFinal(input, deps)`：daemon 监听
+      `dispatch_completed` / `dispatch_failed` 后调用，把 RunReport
+      映射成 TaskNodeStatus（completed/failed/blocked，retrying/running
+      回退成 running），写 TaskRunLink（含 `mergeRequest.iid/.url`），
+      在 failed/blocked 时把 `lastError.message` 落进
+      TaskNode.statusReason，并 emit `task_run_completed` / `task_run_failed`
+      （V4.1 事件词表暂没有 `task_run_blocked`，run.blocked 走
+      `task_run_failed` 并在 detail 里保留 `status: "blocked"`，
+      与 `task_run_blocked_by_dependency` 区分语义）。
+  - 任务 10 — `apps/orchestrator/src/work-items/aggregate.ts`：
+    `aggregateWorkItem(workItem, plan, links, deps)` 把每个 task 的
+    `RunReportArtifact` 聚合成单一 `WorkItemReport`：
+    - `overallStatus` 矩阵：每个 task 都有 completed link + 报告 →
+      `complete`；任一 task 缺 link 或缺报告 → `incomplete`；其余存在
+      `failed`/`blocked`/`needs_rework`/`skipped` → `partial`。**任何**
+      情况下都不会输出 `ready_to_merge` 或自动 merge 建议（spec §17 硬
+      约束，单测断言整段 JSON 不含该字符串）。
+    - 每 task 一条 summary：标题、status（取最新 link 状态、回退到
+      TaskNode）、可选 `runId` / `diffSummary` / `mergeRequestUrl` /
+      `ciStatus` / `nextAction`。`nextAction` 仅在能给出有意义指引时
+      才写入（兼容 `exactOptionalPropertyTypes`）。
+    - Evidence 索引同时输出 `index`（扁平时间线）和 `byTask`（按 task
+      折叠卡片），覆盖 `diff` / `validation` / `risk` / `ci` /
+      `review_feedback` 五种 kind。
+    - `recommendedNextActions`：complete 推 reviewer 介入并切
+      human-review；partial 列出具体 failed / blocked / skipped 任务
+      建议 retry / 决策；incomplete 提示等待飞行任务结算后重新聚合。
+    - `validationSummary` / `riskSummary` 按 task 拼接成可读 markdown
+      行，给父 Issue handoff note 与 dashboard Parent Review Packet
+      共用同一份事实源。
+    - 取最新 TaskRunLink（按 `attempt`，平手按 `startedAt`）使重试结果
+      自然覆盖前次。
+  - 测试覆盖：dispatch-task 4 cases、orchestration 13 cases（ready 计算
+    / blocked / 并发限速 / 下游门控 / final 状态映射）、aggregate 7
+    cases（complete / partial / incomplete / 缺 link / never
+    ready_to_merge / evidence kind 索引 / 失败任务 next actions）。
+    全仓 `pnpm -r build` / `pnpm -r test` 通过（orchestrator 343、
+    e2e 51）。`git diff --check` 干净。
 
 ### Fixed
 

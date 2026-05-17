@@ -127,6 +127,31 @@ describe("@issuepilot/shared-contracts/events", () => {
     expect(isEventType("workspace_cleanup_failed")).toBe(true);
   });
 
+  it("isEventType narrows new V4.1 work item lifecycle types", () => {
+    const v41Types = [
+      "work_item_created",
+      "work_item_plan_drafted",
+      "work_item_plan_accepted",
+      "work_item_plan_rejected",
+      "work_item_plan_regenerated",
+      "work_item_planning_failed",
+      "task_run_dispatched",
+      "task_run_completed",
+      "task_run_failed",
+      "task_run_skipped",
+      "task_run_blocked_by_dependency",
+      "work_item_aggregated",
+      "work_item_handoff_written",
+    ];
+    for (const t of v41Types) {
+      expect(isEventType(t), `missing V4.1 event: ${t}`).toBe(true);
+      expect(
+        (EVENT_TYPE_VALUES as readonly string[]).includes(t),
+        `V4.1 event not in EVENT_TYPE_VALUES: ${t}`,
+      ).toBe(true);
+    }
+  });
+
   it("IssuePilotEvent requires id / runId / issue / type / message / createdAt", () => {
     expectTypeOf<IssuePilotEvent>()
       .toHaveProperty("id")

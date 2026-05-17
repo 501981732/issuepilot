@@ -182,6 +182,11 @@
       "list": "列表",
       "graph": "图谱"
     },
+    "confidence": {
+      "ai-claim": "AI 推断",
+      "system-derived": "系统生成",
+      "human-confirmed": "人工确认"
+    },
     "replanDialog": {
       "title": "重新规划任务",
       "reasonLabel": "重规划原因",

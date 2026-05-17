@@ -1319,7 +1319,7 @@ git commit -m "feat(dashboard): add V4.3 evidence + report.md client + URL helpe
   - `ai-claim` → warning tone（黄）。
   - `system-derived` → info tone（蓝）。
   - `human-confirmed` → success tone（绿）。
-- a11y：使用 `<span role="status">` + `aria-label="<localized label>"`。
+- a11y：复用现有 `Badge` 的 `<span>`，设置 `aria-label="<localized label>"`；不要把静态 confidence badge 标成 live-region `role="status"`。
 - 不引入新 tone token；复用现有 Tailwind tokens（`bg-warning-soft text-warning-fg`等）。
 
 - [ ] **步骤 1：组件测试**

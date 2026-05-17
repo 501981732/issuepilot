@@ -182,6 +182,11 @@
       "list": "List",
       "graph": "Graph"
     },
+    "confidence": {
+      "ai-claim": "AI inferred",
+      "system-derived": "System derived",
+      "human-confirmed": "Human confirmed"
+    },
     "replanDialog": {
       "title": "Replan task",
       "reasonLabel": "Reason",

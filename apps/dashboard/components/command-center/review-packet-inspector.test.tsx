@@ -6,9 +6,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunWithReport } from "../../lib/api";
 import { renderWithIntl as render } from "../../test/intl";
 
+import type * as apiModuleType from "../../lib/api";
+
 vi.mock("../../lib/api", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  const actual = await vi.importActual<typeof apiModuleType>("../../lib/api");
   return {
     ...actual,
     planWorkItem: vi.fn(),

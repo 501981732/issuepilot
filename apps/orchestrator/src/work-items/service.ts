@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   AcceptWorkItemPlanRequest,
+  RunReportArtifact,
   TaskNode,
   TaskPlan,
   WorkItem,
@@ -11,6 +12,7 @@ import type {
 } from "@issuepilot/shared-contracts";
 
 import type { WorkItemService, WorkItemServiceError } from "../server/index.js";
+
 import { aggregateWorkItem, type AggregateDeps } from "./aggregate.js";
 import {
   decideParentLabelTransition,
@@ -461,7 +463,7 @@ export async function settleTaskRunFinal(
     workItemId: string;
     taskId: string;
     runId: string;
-    runReport: import("@issuepilot/shared-contracts").RunReportArtifact;
+    runReport: RunReportArtifact;
   },
   deps: SettleTaskRunDeps,
 ): Promise<{

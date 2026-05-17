@@ -4,11 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type {
-  TaskNode,
-  TaskPlan,
-  WorkItem,
-} from "@issuepilot/shared-contracts";
+import type { TaskNode, TaskPlan } from "@issuepilot/shared-contracts";
 
 import type { WorkItemPlanner } from "../planner.js";
 import { createWorkItemService } from "../service.js";

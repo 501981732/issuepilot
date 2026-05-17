@@ -23,7 +23,11 @@ import {
   type OrchestrationDeps,
 } from "../work-items/orchestration.js";
 import { createWorkItemPlanner } from "../work-items/planner.js";
-import { createWorkItemService, settleTaskRunFinal } from "../work-items/service.js";
+import {
+  createWorkItemService,
+  decideWorkItemStatus,
+  settleTaskRunFinal,
+} from "../work-items/service.js";
 import { createWorkItemStore, type WorkItemStore } from "../work-items/store.js";
 
 /**
@@ -208,15 +212,29 @@ function buildHarness(opts: {
   };
 
   async function reconcileWorkItem(workItemId: string): Promise<void> {
+    // V4.1 review C2 fix: mirror the daemon's reconcileWorkItem
+    // sequence — decide nextStatus + persist updated WorkItem BEFORE
+    // calling writeParentHandoff. Without the saveWorkItem step
+    // `previousStatus === currentStatus` and the parent label
+    // transition silently no-ops.
     const wi = await store.getWorkItem(workItemId);
     const plan = await store.getCurrentPlan(workItemId);
     if (!wi || !plan) return;
     const links = await store.listAllTaskRunLinks(workItemId);
-    const previousStatus = wi.status;
+    const ts = "2026-05-17T00:00:00.000Z";
     const report = await aggregateWorkItem(wi, plan, links, aggregateDeps);
     await store.saveReport(report);
+    const previousStatus = wi.status;
+    const nextStatus = decideWorkItemStatus(report.overallStatus, plan, links);
+    const updated: WorkItem = {
+      ...wi,
+      status: nextStatus,
+      summaryReportId: report.workItemId,
+      updatedAt: ts,
+    };
+    await store.saveWorkItem(updated);
     await writeParentHandoff({
-      workItem: wi,
+      workItem: updated,
       plan,
       report,
       previousStatus,
@@ -566,5 +584,81 @@ describe("V4.1 Workflow Spine end-to-end", () => {
     );
     expect(blockedEvents.length).toBeGreaterThanOrEqual(1);
     expect(blockedEvents.some((e) => e.detail.taskId === "T2")).toBe(true);
+  });
+
+  // V4.1 review C2: skipping a task drives `reconcileWorkItem`, which
+  // must call `decideWorkItemStatus` + `saveWorkItem` BEFORE invoking
+  // `writeParentHandoff`. Pre-fix this path passed the unmutated
+  // WorkItem so `previousStatus === currentStatus` and the parent
+  // label transition was a silent no-op. We assert the corrected
+  // behaviour by:
+  //
+  //   - WorkItem.status changes after reconcile (was `ready`, becomes
+  //     `running` because the aggregate is `incomplete`),
+  //   - WorkItem.summaryReportId is set (proves saveWorkItem ran), and
+  //   - the parent Issue label log records the `ready → running`
+  //     transition (`add: ["ai-running"]`, `remove: ["ai-ready"]`)
+  //     emitted by `decideParentLabelTransition`.
+  //
+  // Pre-C2-fix, all three assertions fail because saveWorkItem was
+  // never called and the previousStatus/currentStatus pair was the
+  // identity, returning `{ add: [], remove: [] }` from
+  // decideParentLabelTransition.
+  it("operator skip path: reconcileWorkItem advances WorkItem.status and emits the parent label transition (C2)", async () => {
+    const store = createWorkItemStore({ rootDir });
+    const reportByRunId = new Map<string, RunReportArtifact>();
+    const gitlabFake = makeFakeGitlab();
+    const events: Array<{
+      type: string;
+      runId?: string;
+      detail: Record<string, unknown>;
+    }> = [];
+    const harness = buildHarness({
+      store,
+      reportByRunId,
+      gitlab: gitlabFake.adapter,
+      events,
+      draftTasks: draftTwoTasks(),
+    });
+
+    const planRes = await harness.service.planFromIssue({
+      iid: 42,
+      operator: "alice",
+    });
+    if ("error" in planRes) throw new Error("plan failed");
+    const workItemId = planRes.workItem.workItemId;
+
+    await harness.service.acceptPlan({
+      workItemId,
+      planId: planRes.plan.planId,
+      operator: "alice",
+      edits: [],
+    });
+
+    // Pre-skip: WorkItem.status === "ready", no summaryReportId, no
+    // label transitions logged yet.
+    {
+      const before = (await store.getWorkItem(workItemId)) as WorkItem;
+      expect(before.status).toBe("ready");
+      expect(before.summaryReportId).toBeUndefined();
+      expect(gitlabFake.state.labelLog).toHaveLength(0);
+    }
+
+    // Skip T1 immediately (no dispatch, no settle). T2 still has no
+    // TaskRunLink, so aggregateWorkItem returns "incomplete" →
+    // decideWorkItemStatus → "running".
+    const skipRes = await harness.service.skipTask(workItemId, "T1", "alice");
+    expect(skipRes).toEqual({ ok: true });
+
+    // Post-skip: status was updated, summaryReportId is set, and the
+    // parent label log shows ai-ready → ai-running.
+    const after = (await store.getWorkItem(workItemId)) as WorkItem;
+    expect(after.status).toBe("running");
+    expect(after.summaryReportId).toBe(workItemId);
+    expect(gitlabFake.state.labelLog.length).toBeGreaterThanOrEqual(1);
+    const transition = gitlabFake.state.labelLog.find(
+      (l) => l.add.includes("ai-running") && l.remove.includes("ai-ready"),
+    );
+    expect(transition).toBeDefined();
   });
 });

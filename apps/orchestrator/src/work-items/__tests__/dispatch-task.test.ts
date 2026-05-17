@@ -5,7 +5,7 @@ import type {
   WorkItem,
 } from "@issuepilot/shared-contracts";
 
-import type { DispatchDeps, DispatchInput } from "../../orchestrator/dispatch.js";
+import type { DispatchInput } from "../../orchestrator/dispatch.js";
 import { createRuntimeState } from "../../runtime/state.js";
 import { runTaskOnce, type DispatchTaskWorkflow } from "../dispatch-task.js";
 
@@ -62,22 +62,6 @@ const workflow: DispatchTaskWorkflow = {
   },
 };
 
-function createFakeDeps(): DispatchDeps {
-  return {
-    state: createRuntimeState(),
-    maxAttempts: 1,
-    retryBackoffMs: 0,
-    ensureMirror: async () => ({ mirrorPath: "/tmp/mirror" }),
-    ensureWorktree: async () => ({ worktreePath: "/tmp/wt", created: true }),
-    runHook: async () => ({ stdout: "", stderr: "" }),
-    renderPrompt: () => "prompt",
-    runAgent: async () => ({ status: "completed", summary: "" }),
-    reconcile: async () => {},
-    onEvent: () => {},
-    onFailure: async () => {},
-  };
-}
-
 describe("runTaskOnce", () => {
   it("creates a synthetic RunRecord with status=claimed and workItem metadata", async () => {
     const state = createRuntimeState();
@@ -91,7 +75,6 @@ describe("runTaskOnce", () => {
       dispatch: async (input) => {
         captured = input;
       },
-      deps: createFakeDeps(),
       newRunId: () => "run_synthetic_1",
       now: () => "2026-05-17T00:10:00.000Z",
     });
@@ -127,7 +110,6 @@ describe("runTaskOnce", () => {
       dispatch: async (input) => {
         captured = input;
       },
-      deps: createFakeDeps(),
       newRunId: () => "run_x",
       now: () => "2026-05-17T00:10:00.000Z",
     });
@@ -158,7 +140,6 @@ describe("runTaskOnce", () => {
       dispatch: async () => {
         calls += 1;
       },
-      deps: createFakeDeps(),
     });
     expect(calls).toBe(1);
     expect(result.runId).toMatch(/.+/);
@@ -175,7 +156,6 @@ describe("runTaskOnce", () => {
         dispatch: async () => {
           throw new Error("boom");
         },
-        deps: createFakeDeps(),
       }),
     ).rejects.toThrow("boom");
   });

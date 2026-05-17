@@ -189,6 +189,82 @@ describe("createWorkItemService", () => {
     expect(accepted.plan.operatorEdits).toHaveLength(1);
   });
 
+  // V4.1 review I1: operator edits run through validatePlanDraft.
+  // Without this guard a UI bug or hostile request could persist a
+  // structurally broken plan (cycles freeze computeReadyTasks, empty
+  // titles confuse the dashboard, etc).
+  it("acceptPlan rejects operator edits that introduce a dependency cycle", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
+    const store = createWorkItemStore({ rootDir: dir });
+
+    const svc = createWorkItemService({
+      store,
+      planner: makePlanner(),
+      fetchIssue: async () => issue,
+      tick: async () => {},
+      reconcileWorkItem: async () => {},
+      emit: () => {},
+      newId: () => "wi_test",
+      now: () => "2026-05-17T00:00:00.000Z",
+    });
+
+    const planned = await svc.planFromIssue({ iid: 42, operator: "alice" });
+    if ("error" in planned) throw new Error(planned.error.message);
+
+    // The default planner draft has t1 with no deps and t2 dependsOn
+    // t1. Adding t1.dependsOn = ["t2"] introduces a cycle.
+    const result = await svc.acceptPlan({
+      planId: planned.plan.planId,
+      edits: [
+        { taskId: "t1", field: "dependsOn", after: ["t2"] },
+      ],
+      operator: "alice",
+      workItemId: planned.workItem.workItemId,
+    });
+
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error.code).toBe("validation_failed");
+      expect(result.error.message).toMatch(/dependency_cycle/);
+    }
+
+    // The plan should NOT be marked accepted on failure.
+    const detail = await svc.detail(planned.workItem.workItemId);
+    expect(detail?.plan.current.status).toBe("draft");
+  });
+
+  it("acceptPlan rejects operator edits that empty out a required field", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
+    const store = createWorkItemStore({ rootDir: dir });
+
+    const svc = createWorkItemService({
+      store,
+      planner: makePlanner(),
+      fetchIssue: async () => issue,
+      tick: async () => {},
+      reconcileWorkItem: async () => {},
+      emit: () => {},
+      newId: () => "wi_test",
+      now: () => "2026-05-17T00:00:00.000Z",
+    });
+
+    const planned = await svc.planFromIssue({ iid: 42, operator: "alice" });
+    if ("error" in planned) throw new Error(planned.error.message);
+
+    const result = await svc.acceptPlan({
+      planId: planned.plan.planId,
+      edits: [{ taskId: "t1", field: "title", after: "   " }],
+      operator: "alice",
+      workItemId: planned.workItem.workItemId,
+    });
+
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.error.code).toBe("validation_failed");
+      expect(result.error.message).toMatch(/missing_title/);
+    }
+  });
+
   it("detail returns plan + tasks + run links + report when present", async () => {
     const dir = await mkdtemp(join(tmpdir(), "wi-svc-"));
     const store = createWorkItemStore({ rootDir: dir });

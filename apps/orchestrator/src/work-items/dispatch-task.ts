@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { TaskNode, WorkItem } from "@issuepilot/shared-contracts";
 import { branchName, slugify } from "@issuepilot/workspace";
 
-import type { DispatchDeps, DispatchInput } from "../orchestrator/dispatch.js";
+import type { DispatchInput } from "../orchestrator/dispatch.js";
 import type { RuntimeState } from "../runtime/state.js";
 
 /**
@@ -70,17 +70,21 @@ export interface RunTaskOnceOptions {
   /** Runtime state where the synthetic RunRecord is stamped. */
   state: RuntimeState;
   /**
-   * Underlying dispatcher. Production wires `dispatch` from
-   * `orchestrator/dispatch.ts`. Tests inject a fake to assert inputs.
-   * Keeping this as a function (not the deps slice) keeps the shim
-   * unaware of mirror / worktree / runner construction.
+   * Underlying dispatcher. Production wires this to a closure that
+   * builds the V4.1-shaped {@link DispatchDeps} (synthetic-run-aware
+   * `onFailure` that does NOT touch the parent Issue label / note —
+   * see daemon.ts `buildSyntheticDispatchDeps`) at call time, after
+   * the shim has minted `runId` and `branch`. Tests inject a fake.
+   *
+   * The deps slice is intentionally NOT a separate parameter on the
+   * shim: doing so would force the daemon to construct deps before
+   * `runTaskOnce` returns the `runId`, but several deps fields
+   * (`runAgent`, `reconcile`, `onFailure`) close over `runId` and
+   * `branch`. Keeping deps construction inside the dispatch closure
+   * lets the daemon mint runId/branch first and then build the deps
+   * around them.
    */
-  dispatch: (input: DispatchInput, deps: DispatchDeps) => Promise<void>;
-  /**
-   * Deps slice passed straight through to the underlying dispatcher.
-   * The shim does not synthesise these; they belong to the daemon.
-   */
-  deps: DispatchDeps;
+  dispatch: (input: DispatchInput) => Promise<void>;
   /** Test seam for deterministic ids. */
   newRunId?: () => string;
   /** Test seam for deterministic clocks. */
@@ -174,7 +178,7 @@ export async function runTaskOnce(
     ...(opts.workflow.hooks ? { hooks: opts.workflow.hooks } : {}),
   };
 
-  await opts.dispatch(input, opts.deps);
+  await opts.dispatch(input);
 
   return { runId, branch };
 }

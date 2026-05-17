@@ -21,6 +21,7 @@ import {
   type ParentHandoffWorkflow,
 } from "./handoff.js";
 import { applyTaskRunFinal, tickWorkItem } from "./orchestration.js";
+import { validatePlanDraft } from "./plan-validation.js";
 import type { WorkItemPlanner } from "./planner.js";
 import type { WorkItemStore } from "./store.js";
 
@@ -235,6 +236,24 @@ export function createWorkItemService(
 
       const ts = now();
       const editedTasks = applyEdits(plan.tasks, edits);
+
+      // V4.1 review I1: re-validate the post-edit plan. operator edits
+      // can introduce dependency cycles, unknown deps, empty titles or
+      // duplicate taskIds — all of which would slip past the planner's
+      // validatePlanDraft otherwise (which only ran on the LLM draft).
+      // Without this guard `acceptPlan` would persist a structurally
+      // broken plan and then orchestration / aggregate would behave
+      // unpredictably (computeReadyTasks loops forever on cycles, etc).
+      if (edits.length > 0) {
+        const v = validatePlanDraft(editedTasks);
+        if (!v.ok) {
+          return errorResult(
+            "validation_failed",
+            `Operator edit ${v.code}: ${v.message}`,
+          );
+        }
+      }
+
       const operatorEdits = edits.map((e) => ({
         taskId: e.taskId,
         field: e.field,
@@ -525,20 +544,46 @@ export async function settleTaskRunFinal(
   return { workItem: updated, report };
 }
 
-function decideWorkItemStatus(
+/**
+ * V4.1 §9.0 status state machine. Translates an aggregate `overallStatus`
+ * (which is a property of the *report*) into a `WorkItemStatus` (which
+ * is a property of the *work item* and drives the parent Issue label
+ * transition via `decideParentLabelTransition`).
+ *
+ * Exported for the daemon's `reconcileWorkItem` (operator skip / retry
+ * paths) so it can run the same status update + handoff sequence
+ * `settleTaskRunFinal` runs on dispatch_completed events. Without this
+ * shared helper the two paths would drift; concrete bug observed in
+ * V4.1 review: `reconcileWorkItem` never advanced WorkItem.status
+ * before calling writeParentHandoff, so `previousStatus === currentStatus`
+ * and the parent label never transitioned to `human-review` after a
+ * skip.
+ *
+ * Mapping (review I2 fix replaces the dead-code `running ? "running" :
+ * "running"` ternary with an explicit comment that documents intent):
+ *   - complete   → "completed"
+ *   - incomplete → "running"
+ *     (incomplete = at least one task's RunReportArtifact is missing
+ *     because the task either hasn't dispatched yet, is still running,
+ *     or its report failed to persist. We always return "running" so
+ *     the parent label flips to `ai-running` as soon as orchestration
+ *     starts producing reports — operators want to see "in flight" on
+ *     the parent Issue rather than waiting for every task to settle.
+ *     A truly stuck WorkItem will eventually land on `partial` /
+ *     `blocked` once enough tasks fail, at which point the operator
+ *     gets a different label.)
+ *   - partial    → "blocked" if every task ended blocked/failed,
+ *     otherwise "partial".
+ */
+export function decideWorkItemStatus(
   overall: WorkItemReport["overallStatus"],
   plan: TaskPlan,
-  links: Parameters<WorkItemStore["saveTaskRunLink"]>[0][] | Awaited<
+  _links: Parameters<WorkItemStore["saveTaskRunLink"]>[0][] | Awaited<
     ReturnType<WorkItemStore["listAllTaskRunLinks"]>
   >,
 ): WorkItemStatus {
   if (overall === "complete") return "completed";
-  if (overall === "incomplete") {
-    const someRunning = (links as Array<{ status: string }>).some(
-      (l) => l.status === "running",
-    );
-    return someRunning ? "running" : "running";
-  }
+  if (overall === "incomplete") return "running";
   // partial
   const allBlocked = plan.tasks.every(
     (t) => t.status === "blocked" || t.status === "failed",

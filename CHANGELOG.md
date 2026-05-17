@@ -4,6 +4,57 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 2026-05-17 — **V4.1 Workflow Spine code review fix**：补齐之前 review 发现的
+  4 个缺陷（2 个 Critical + 2 个 Important），使 V4.1 闭环在生产环境真正生效。
+  - **C1**（Critical）—— `apps/orchestrator/src/daemon.ts` 中的 V4.1
+    `dispatchTask` 之前是 no-op stub（注释里写着「lands in V4.2」），synthetic
+    task run 在生产里根本不跑。修复后通过 `runTaskOnce` shim 把
+    `parentIssueLabelMode: "suppressed"` 的 `DispatchInput` 接到真正的
+    `orchestrator/dispatch.ts`，按 V2.x 路径完成 mirror / worktree /
+    Codex agent / commits / MR / `RunReportArtifact`，但 `onFailure`
+    单独实现成「只 mark report failed，不动父 Issue label / note」以
+    维持 spec §11.2 的「合成 task 不允许越过 aggregator 触父 Issue」契约。
+    重 dispatch 异步 fire-and-forget，不阻塞 operator 的 HTTP 调用。
+    `runTaskOnce` 的接口同步收紧成 `dispatch: (input) => Promise<void>`（去掉
+    `deps` 参数），让 daemon 可以在 runId / branch 已知后再构造
+    DispatchDeps，避免把 `{} as never` 喂给 V2.x dispatch。
+  - **C2**（Critical）—— `daemon.ts` 的 `reconcileWorkItem`（service 调用
+    `skipTask` / `retryTask` 时走的路径）之前直接拿未变 `WorkItem` 调
+    `writeParentHandoff`，导致 `previousStatus === currentStatus`、
+    `decideParentLabelTransition` 永返回 `{ add: [], remove: [] }`，父
+    Issue label 永远卡在 `ai-running`。修复后改成
+    「aggregate → `decideWorkItemStatus(...)` → `saveWorkItem(updated)`
+    → `writeParentHandoff({ workItem: updated, previousStatus, ... })`」
+    与 `service.settleTaskRunFinal` 完全同构。`decideWorkItemStatus`
+    从 service.ts 导出供 daemon 复用，避免两条路径 drift。
+  - **I1**（Important）—— `service.acceptPlan` 之前对 operator `edits`
+    跳过 `validatePlanDraft`，cycles / unknown deps / 空 title 会被持久化成
+    `accepted`。修复后在 `applyEdits` 之后重跑校验，失败时返回
+    `validation_failed`。
+  - **I2**（Important）—— `decideWorkItemStatus` 把 `incomplete` 分支的
+    `someRunning ? "running" : "running"` 死代码三元清掉，改成显式
+    `return "running"` 并加注释解释「incomplete 总是当 in-flight 处理，
+    让父 Issue 抢到 `ai-running` label」。
+  - 测试新增：
+    - `service.test.ts` 加 `"acceptPlan rejects operator edits that
+      introduce a dependency cycle"` 与 `"... empty out a required
+      field"`，断言 `validation_failed.code` 与 plan 仍处于 `draft`。
+    - `work-items-e2e.test.ts` 加
+      `"operator skip path: reconcileWorkItem advances WorkItem.status
+      and emits the parent label transition (C2)"`，证明
+      reconcile 把 `WorkItem.status` 从 `ready` 推到 `running`、
+      `summaryReportId` 被写入、并在 `gitlab.transitionLabels` 里看到
+      `add: ["ai-running"], remove: ["ai-ready"]`（pre-fix 三个断言全部
+      会失败）。
+    - 同文件的 harness `reconcileWorkItem` 也按 C2 修正，跟 daemon 保持
+      同构。
+  - 验证：`pnpm -r build` / `pnpm -r typecheck` /
+    `pnpm -r lint --max-warnings 0` /
+    `pnpm -r test -- --maxWorkers=1 --minWorkers=1`（orchestrator 384 +
+    e2e 51 + dashboard 等）全部绿；`git diff --check` 干净。
+
 ### Added
 
 - 2026-05-17 — **V4.1 Workflow Spine 闭环落地（任务 11–22）**。在已有的契约 +

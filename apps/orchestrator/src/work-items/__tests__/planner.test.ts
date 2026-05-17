@@ -150,6 +150,99 @@ describe("createWorkItemPlanner", () => {
     }
   });
 
+  it("replanScope: returns a single-task draft when LLM returns exactly one task with matching id", async () => {
+    let capturedInput: unknown;
+    const planner = createWorkItemPlanner({
+      callPlannerLlm: async (input) => {
+        capturedInput = input;
+        return {
+          tasks: [
+            {
+              taskId: "t2",
+              title: "Replanned T2",
+              goal: "Re-do T2",
+              scope: "src/x.ts",
+              dependsOn: [],
+              suggestedValidation: ["pnpm test"],
+              riskLevel: "low",
+            },
+          ],
+        };
+      },
+    });
+    const result = await planner.draft({
+      issue: baseIssue,
+      workItemId: "wi_01",
+      replanScope: { taskId: "t2", reason: "too broad" },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.plan.tasks).toHaveLength(1);
+      expect(result.plan.tasks[0]?.taskId).toBe("t2");
+    }
+    expect((capturedInput as { replanScope?: unknown }).replanScope).toEqual({
+      taskId: "t2",
+      reason: "too broad",
+    });
+  });
+
+  it("replanScope: emits replan_returned_multi when LLM returns multiple tasks", async () => {
+    const planner = createWorkItemPlanner({
+      callPlannerLlm: async () => ({
+        tasks: [
+          {
+            taskId: "t2",
+            title: "A",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            riskLevel: "low",
+          },
+          {
+            taskId: "t3",
+            title: "B",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            riskLevel: "low",
+          },
+        ],
+      }),
+    });
+    const result = await planner.draft({
+      issue: baseIssue,
+      replanScope: { taskId: "t2", reason: "x" },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("replan_returned_multi");
+  });
+
+  it("replanScope: emits replan_task_id_mismatch when the returned taskId differs", async () => {
+    const planner = createWorkItemPlanner({
+      callPlannerLlm: async () => ({
+        tasks: [
+          {
+            taskId: "tX",
+            title: "Wrong",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            riskLevel: "low",
+          },
+        ],
+      }),
+    });
+    const result = await planner.draft({
+      issue: baseIssue,
+      replanScope: { taskId: "t2", reason: "x" },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("replan_task_id_mismatch");
+  });
+
   it("passes title / description / labels into the LLM call", async () => {
     let captured: unknown;
     const planner = createWorkItemPlanner({

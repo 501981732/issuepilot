@@ -368,6 +368,151 @@ export function createWorkItemService(
       return { ok: true } as const;
     },
 
+    async replanTask({ workItemId, taskId, reason, hint, operator }) {
+      const wi = await deps.store.getWorkItem(workItemId);
+      if (!wi) return errorResult("not_found", "work item not found");
+      const prev = await deps.store.getCurrentPlan(workItemId);
+      if (!prev) return errorResult("not_found", "plan not found");
+      const targetIndex = prev.tasks.findIndex((t) => t.taskId === taskId);
+      if (targetIndex < 0) return errorResult("not_found", "task not found");
+      if (prev.status !== "accepted") {
+        return errorResult(
+          "invalid_status",
+          "current plan must be accepted before single-task replan; use regeneratePlan for drafts",
+        );
+      }
+
+      let issue;
+      try {
+        issue = await deps.fetchIssue(wi.sourceIssue.iid);
+      } catch (err) {
+        return errorResult(
+          "gitlab_failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
+      const draft = await deps.planner.draft({
+        issue,
+        workItemId,
+        replanScope: {
+          taskId,
+          reason,
+          ...(hint !== undefined ? { hint } : {}),
+        },
+      });
+      const ts = now();
+      if (!draft.ok) {
+        const code =
+          draft.code === "replan_returned_multi" ||
+          draft.code === "replan_task_id_mismatch" ||
+          draft.code === "missing_title" ||
+          draft.code === "missing_goal"
+            ? "validation_failed"
+            : draft.code === "planner_parse_failed" ||
+                draft.code === "planner_call_failed"
+              ? "planner_failed"
+              : "planner_failed";
+        deps.emit({
+          type: "work_item_planning_failed",
+          ts,
+          detail: {
+            workItemId,
+            taskId,
+            replan: true,
+            code: draft.code,
+            message: draft.message,
+            operator,
+          },
+        });
+        return errorResult(code, draft.message);
+      }
+
+      const replanned = draft.plan.tasks[0]!;
+      const previousTask = prev.tasks[targetIndex]!;
+      // V4.2: replaced task keeps its prior runIds (canonical historical
+      // evidence) plus prior `needsReworkReason`. Other fields come from
+      // planner output. Status resets to `planned` so orchestration can
+      // re-dispatch through the standard ready computation.
+      const mergedTask: TaskNode = {
+        ...replanned,
+        runIds: [...previousTask.runIds],
+        status: "planned",
+      };
+      const nextTasks: TaskNode[] = prev.tasks.map((t, i) =>
+        i === targetIndex ? mergedTask : t,
+      );
+
+      // Mark previous accepted plan as superseded.
+      await deps.store.saveTaskPlan({ ...prev, status: "superseded" });
+
+      const replanEdit = {
+        taskId,
+        field: "replan" as const,
+        before: previousTask,
+        after: mergedTask,
+        by: operator,
+        at: ts,
+      };
+
+      const planVersion =
+        (await deps.store.listPlanHistory(workItemId)).reduce(
+          (max, p) => Math.max(max, p.version),
+          0,
+        ) + 1;
+      const newPlan: TaskPlan = {
+        planId: draft.plan.planId,
+        workItemId,
+        version: planVersion,
+        tasks: nextTasks,
+        dependencies: nextTasks.flatMap((t) =>
+          t.dependsOn.map((from) => ({ from, to: t.taskId })),
+        ),
+        operatorEdits: [...prev.operatorEdits, replanEdit],
+        status: "draft",
+        replanOf: { planId: prev.planId, taskId },
+      };
+      await deps.store.saveTaskPlan(newPlan);
+
+      const updatedWi: WorkItem = {
+        ...wi,
+        taskIds: newPlan.tasks.map((t) => t.taskId),
+        updatedAt: ts,
+      };
+      await deps.store.saveWorkItem(updatedWi);
+
+      deps.emit({
+        type: "task_replanned",
+        ts,
+        detail: {
+          workItemId,
+          taskId,
+          previousPlanId: prev.planId,
+          newPlanId: newPlan.planId,
+          version: planVersion,
+          reason,
+          operator,
+        },
+      });
+
+      return { workItem: updatedWi, plan: newPlan };
+    },
+
+    async markNeedsRework() {
+      // Implemented in task 9.
+      return errorResult("not_implemented", "markNeedsRework not implemented");
+    },
+
+    async unskipTask() {
+      // Implemented in task 10.
+      return errorResult("not_implemented", "unskipTask not implemented");
+    },
+
+    async graph() {
+      // Implemented in task 11.
+      return errorResult("not_implemented", "graph not implemented");
+    },
+
     async report(id) {
       return deps.store.getReport(id);
     },

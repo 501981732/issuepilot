@@ -59,6 +59,52 @@ export interface WorkItemService {
     taskId: string,
     operator: string,
   ): Promise<{ ok: true } | WorkItemServiceError>;
+  /**
+   * V4.2: re-draft a single task. Produces a new `TaskPlan` version
+   * with status `draft`; non-replanned tasks inherit prior status /
+   * runIds so an in-flight workflow does not reset.
+   */
+  replanTask(input: {
+    workItemId: string;
+    taskId: string;
+    reason: string;
+    hint?: string;
+    operator: string;
+  }): Promise<{ workItem: WorkItem; plan: TaskPlan } | WorkItemServiceError>;
+  /**
+   * V4.2: operator-driven rework. Transitions a completed / failed /
+   * blocked task to `needs_rework` with a reviewer-provided reason and
+   * triggers `reconcileWorkItem` so the parent handoff state catches up.
+   */
+  markNeedsRework(input: {
+    workItemId: string;
+    taskId: string;
+    reason: string;
+    operator: string;
+  }): Promise<{ ok: true } | WorkItemServiceError>;
+  /**
+   * V4.2: operator can roll back a skip. The skipped task returns to
+   * `ready` so the next orchestration tick can dispatch it.
+   */
+  unskipTask(input: {
+    workItemId: string;
+    taskId: string;
+    operator: string;
+  }): Promise<{ ok: true } | WorkItemServiceError>;
+  /**
+   * V4.2: layered task graph projection (levels + edges + critical path)
+   * for the dashboard graph view.
+   */
+  graph(
+    id: string,
+  ): Promise<
+    | {
+        levels: string[][];
+        edges: Array<{ from: string; to: string }>;
+        criticalPathTaskIds: string[];
+      }
+    | WorkItemServiceError
+  >;
   report(id: string): Promise<WorkItemReport | undefined>;
 }
 

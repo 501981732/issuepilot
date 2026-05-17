@@ -46,11 +46,25 @@ export interface PlannerIssueInput {
   labels: string[];
 }
 
+/**
+ * V4.2: when set, the planner is asked to redraft EXACTLY ONE task by
+ * `taskId`. The non-scoped tasks of the current plan stay untouched and
+ * are merged back by the service layer. The planner enforces the
+ * single-task invariant; service.replanTask owns the merge.
+ */
+export interface ReplanScope {
+  taskId: string;
+  reason: string;
+  hint?: string;
+}
+
 export interface WorkItemPlanner {
   draft(input: {
     issue: PlannerIssueInput;
     /** 已经为 work item 分配好的 id；新建场景由 daemon 生成后再调。 */
     workItemId?: string;
+    /** V4.2 single-task replan scope。 */
+    replanScope?: ReplanScope;
   }): Promise<DraftResult>;
 }
 
@@ -66,12 +80,14 @@ export interface PlannerDeps {
       description: string;
       labels: string[];
     };
+    /** V4.2: when set, the prompt asks for a single replacement task. */
+    replanScope?: ReplanScope;
   }): Promise<RawPlanResponse | string>;
 }
 
 export function createWorkItemPlanner(deps: PlannerDeps): WorkItemPlanner {
   return {
-    async draft({ issue, workItemId }) {
+    async draft({ issue, workItemId, replanScope }) {
       let raw: unknown;
       try {
         raw = await deps.callPlannerLlm({
@@ -80,6 +96,7 @@ export function createWorkItemPlanner(deps: PlannerDeps): WorkItemPlanner {
             description: issue.description,
             labels: issue.labels,
           },
+          ...(replanScope ? { replanScope } : {}),
         });
       } catch (err) {
         return {
@@ -113,6 +130,54 @@ export function createWorkItemPlanner(deps: PlannerDeps): WorkItemPlanner {
         runIds: [],
         riskLevel: (t.riskLevel ?? "low") as TaskNode["riskLevel"],
       }));
+
+      // V4.2 replan path: enforce single-task invariant and matching id;
+      // skip validatePlanDraft (which requires 2-5 tasks). The service
+      // layer merges this one task back into the previous plan.
+      if (replanScope) {
+        if (tasks.length !== 1) {
+          return {
+            ok: false,
+            code: "replan_returned_multi",
+            message: `Replan must return exactly 1 task (got ${tasks.length}).`,
+          };
+        }
+        const only = tasks[0]!;
+        if (only.taskId !== replanScope.taskId) {
+          return {
+            ok: false,
+            code: "replan_task_id_mismatch",
+            message: `Replan returned taskId ${only.taskId}; expected ${replanScope.taskId}.`,
+          };
+        }
+        if (!only.title || only.title.trim().length === 0) {
+          return {
+            ok: false,
+            code: "missing_title",
+            message: `Replanned task ${only.taskId} has no title.`,
+          };
+        }
+        if (!only.goal || only.goal.trim().length === 0) {
+          return {
+            ok: false,
+            code: "missing_goal",
+            message: `Replanned task ${only.taskId} has no goal.`,
+          };
+        }
+        const replanPlan: TaskPlan = {
+          planId: randomUUID(),
+          workItemId: workItemId ?? "",
+          version: 1,
+          tasks: [only],
+          dependencies: only.dependsOn.map((from) => ({
+            from,
+            to: only.taskId,
+          })),
+          operatorEdits: [],
+          status: "draft",
+        };
+        return { ok: true, plan: replanPlan };
+      }
 
       const validation = validatePlanDraft(tasks);
       if (!validation.ok) {

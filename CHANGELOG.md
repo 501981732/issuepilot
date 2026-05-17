@@ -2,6 +2,58 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.3 Review Packet + Evidence
+
+### Added
+
+- 2026-05-17 — **V4.3 Review Packet + Evidence**：在 V4.1/V4.2
+  WorkItem 聚合基础上，把 Parent Review Packet 升级为 reviewer 可据此
+  判断大 Issue 是否可交付的核心产物。设计源头是
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  §7 V4.3、§14.3、§14.4、§15，实施计划是
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`。
+  - **数据模型**（`@issuepilot/shared-contracts`）：
+    `WorkItemEvidenceEntry.kind` 增加 `screenshot` / `recording` /
+    `playwright` / `command_output` / `test_result`，新增
+    `confidence` 三态、`evidenceId`、`source`、`confirmedBy` /
+    `confirmedAt` 字段；`RunReportArtifact.evidence` 新增可选数组；
+    `WorkItemReport` 增加 `humanReviewChecklist`、`ciSummary`、
+    `testSummary`。
+  - **事件**：新增 `work_item_evidence_indexed` /
+    `work_item_evidence_confirmed` / `work_item_report_rendered`，envelope
+    与既有 `IssuePilotInternalEvent` 保持一致。
+  - **orchestrator**：task worktree
+    `.issuepilot/evidence/<runId>/` 目录约定 + `manifest.json` 优先 +
+    50MB 安全上限；evidence scanner 接入 daemon-level dispatch
+    closure；aggregate 派生 checklist + CI/test summary；新增统一
+    Markdown renderer，GitLab handoff note 与 dashboard Markdown export
+    共用同一渲染源；新增
+    `GET /api/work-items/:id/report.md`、
+    `GET /api/work-items/:id/evidence`、受限静态
+    `GET /api/work-items/:id/evidence/file`、
+    `POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm`
+    路由；team-mode evidence file route 同时支持 `project` query。
+  - **dashboard**：新增 `Evidence` 视图（`list` / `graph` / `evidence`
+    三态切换），按 task / kind 分组渲染图片缩略图、录屏、
+    Playwright zip、命令输出、测试结果；新增 `ConfidencePill` 与
+    `HumanReviewChecklist`；`Copy as Markdown` 改为请求 orchestrator
+    同源 `report.md`。
+  - **测试**：`apps/orchestrator/src/__tests__/work-items-v43-e2e.test.ts`
+    覆盖 evidence happy path、confirm flow、oversized/rejected evidence
+    follow-up、missing report/evidence；dashboard 增加 EvidenceTab /
+    checklist / project-scoped evidence file URL 覆盖。本轮本地验证使用
+    Codex bundled Node runtime（显式把
+    `/Users/wangmeng5/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin`
+    放到 `PATH` 最前）跑过包级 Vitest；默认 Codex app Node 在当前机器会被
+    Rollup native optional dependency code-signature 问题挡住，根 smoke 又被
+    `pnpm` / `corepack` 缺失挡住，具体 gate 记录见
+    `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence-acceptance.md`。
+  - **不变量保持**：父 Issue label / handoff note 仍只由 aggregator 经
+    `decideWorkItemStatus` + `writeParentHandoff` 写入；`TaskRunLink` 仍是
+    canonical task-to-run binding；synthetic task run 的
+    `parentIssueLabelMode === "suppressed"`；不创建 child GitLab Issue；
+    evidence 文件不离开 task worktree。
+
 ## [Unreleased] V4.2 Task Graph
 
 ### Added

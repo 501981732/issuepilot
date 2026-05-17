@@ -638,6 +638,17 @@ productionizes the capabilities that prove valuable here.
   `x-issuepilot-project` so two projects never see each other's WorkItems.
   Implementation plan:
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`.
+- **Review Packet + Evidence** — *landed in V4.3*. WorkItem reports now
+  index reviewer evidence from task worktrees (`screenshot`, `recording`,
+  `playwright`, `command_output`, `test_result`) and keep AI/system claims
+  separate from human-confirmed evidence. The parent Review Packet derives
+  checklist items, CI/test summaries, risks, and evidence links from one
+  renderer shared by GitLab handoff notes and dashboard Markdown export.
+  `/work-items/<id>?view=evidence` adds a kind-filtered Evidence view with
+  per-entry confirmation, while `Copy as Markdown` reads
+  `/api/work-items/<id>/report.md` from the orchestrator. Implementation
+  plan:
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.

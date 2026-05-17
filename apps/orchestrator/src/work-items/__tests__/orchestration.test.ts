@@ -181,6 +181,24 @@ describe("computeReadyTasks", () => {
     const ready = computeReadyTasks(p, [], () => true);
     expect(ready.map((t) => t.taskId)).toEqual(["t1"]);
   });
+
+  it("does not return a task in needs_rework even when dependencies are clear", () => {
+    const p = plan([
+      task({ taskId: "t1", status: "needs_rework" }),
+      task({ taskId: "t2", status: "ready" }),
+    ]);
+    const ready = computeReadyTasks(p, [], () => true);
+    expect(ready.map((t) => t.taskId)).toEqual(["t2"]);
+  });
+
+  it("does not return a task in skipped state", () => {
+    const p = plan([
+      task({ taskId: "t1", status: "skipped" }),
+      task({ taskId: "t2", status: "ready" }),
+    ]);
+    const ready = computeReadyTasks(p, [], () => true);
+    expect(ready.map((t) => t.taskId)).toEqual(["t2"]);
+  });
 });
 
 describe("tickWorkItem", () => {
@@ -341,6 +359,149 @@ describe("tickWorkItem", () => {
     const p = plan([task({ taskId: "t1", status: "ready" })]);
     await tickWorkItem(workItem, p, links, deps);
     expect(dispatched).toEqual([]);
+  });
+
+  it("dispatches a chained task with baseOverride when upstream MR is opened", async () => {
+    const dispatched: Array<{ taskId: string; baseOverride?: string; chainedFrom?: string }> = [];
+    const events: Array<{ type: string; detail: Record<string, unknown> }> = [];
+    const deps: OrchestrationDeps = {
+      availableSlots: () => 5,
+      getRunReport: async (runId) =>
+        runId === "run_t1"
+          ? reportFixture({
+              runId,
+              status: "completed",
+              mrState: "opened",
+              branch: "ai/42-t1",
+            })
+          : undefined,
+      dispatchTask: async (t, opts) => {
+        dispatched.push({
+          taskId: t.taskId,
+          ...(opts?.baseOverride !== undefined ? { baseOverride: opts.baseOverride } : {}),
+          ...(opts?.chainedFrom !== undefined ? { chainedFrom: opts.chainedFrom } : {}),
+        });
+        return { runId: `run_${t.taskId}`, branch: `ai/42-${t.taskId}` };
+      },
+      decideEffectiveBase: async ({ task }) => {
+        if (task.taskId === "t2") {
+          return {
+            kind: "chain-from-upstream",
+            baseBranch: "origin/ai/42-t1",
+            upstreamTaskId: "t1",
+          };
+        }
+        return { kind: "default-base", baseBranch: "main" };
+      },
+      saveTaskRunLink: async () => {},
+      saveTaskNode: async () => {},
+      emit: (e) => events.push({ type: e.type, detail: e.detail }),
+      now: () => "2026-05-17T00:10:00.000Z",
+    };
+    const links: TaskRunLink[] = [
+      {
+        taskId: "t1",
+        runId: "run_t1",
+        attempt: 1,
+        status: "completed",
+        branch: "ai/42-t1",
+        startedAt: "2026-05-17T00:00:00.000Z",
+        completedAt: "2026-05-17T00:00:30.000Z",
+      },
+    ];
+    const p = plan([
+      task({ taskId: "t1", status: "completed" }),
+      task({
+        taskId: "t2",
+        status: "blocked_by_dependency",
+        dependsOn: ["t1"],
+      }),
+    ]);
+    await tickWorkItem(workItem, p, links, deps);
+    expect(dispatched).toEqual([
+      { taskId: "t2", baseOverride: "origin/ai/42-t1", chainedFrom: "t1" },
+    ]);
+    const dispatchedEvent = events.find((e) => e.type === "task_run_dispatched");
+    expect(dispatchedEvent?.detail.chainedFrom).toBe("t1");
+  });
+
+  it("keeps a downstream task blocked when decideEffectiveBase returns blocked", async () => {
+    const dispatched: string[] = [];
+    const events: Array<{ type: string; detail: Record<string, unknown> }> = [];
+    const deps: OrchestrationDeps = {
+      availableSlots: () => 5,
+      getRunReport: async () => undefined,
+      dispatchTask: async (t) => {
+        dispatched.push(t.taskId);
+        return { runId: `run_${t.taskId}`, branch: `ai/42-${t.taskId}` };
+      },
+      decideEffectiveBase: async ({ task }) =>
+        task.taskId === "t3"
+          ? { kind: "blocked", reason: "non-linear" }
+          : { kind: "default-base", baseBranch: "main" },
+      saveTaskRunLink: async () => {},
+      saveTaskNode: async () => {},
+      emit: (e) => events.push({ type: e.type, detail: e.detail }),
+    };
+    const links: TaskRunLink[] = [
+      {
+        taskId: "t1",
+        runId: "run_t1",
+        attempt: 1,
+        status: "completed",
+        branch: "ai/42-t1",
+        startedAt: "2026-05-17T00:00:00.000Z",
+      },
+      {
+        taskId: "t2",
+        runId: "run_t2",
+        attempt: 1,
+        status: "completed",
+        branch: "ai/42-t2",
+        startedAt: "2026-05-17T00:00:00.000Z",
+      },
+    ];
+    const p = plan([
+      task({ taskId: "t1", status: "completed" }),
+      task({ taskId: "t2", status: "completed" }),
+      task({
+        taskId: "t3",
+        status: "blocked_by_dependency",
+        dependsOn: ["t1", "t2"],
+      }),
+    ]);
+    const result = await tickWorkItem(workItem, p, links, deps);
+    expect(dispatched).toEqual([]);
+    expect(result.blockedByDependency).toContain("t3");
+  });
+
+  it("dispatches default-base task without baseOverride in detail", async () => {
+    const captured: Array<{ taskId: string; baseOverride?: string; chainedFrom?: string }> = [];
+    const events: Array<{ type: string; detail: Record<string, unknown> }> = [];
+    const deps: OrchestrationDeps = {
+      availableSlots: () => 5,
+      getRunReport: async () => undefined,
+      dispatchTask: async (t, opts) => {
+        captured.push({
+          taskId: t.taskId,
+          ...(opts?.baseOverride !== undefined ? { baseOverride: opts.baseOverride } : {}),
+          ...(opts?.chainedFrom !== undefined ? { chainedFrom: opts.chainedFrom } : {}),
+        });
+        return { runId: `run_${t.taskId}`, branch: `ai/42-${t.taskId}` };
+      },
+      decideEffectiveBase: async () => ({
+        kind: "default-base",
+        baseBranch: "main",
+      }),
+      saveTaskRunLink: async () => {},
+      saveTaskNode: async () => {},
+      emit: (e) => events.push({ type: e.type, detail: e.detail }),
+    };
+    const p = plan([task({ taskId: "t1", status: "ready" })]);
+    await tickWorkItem(workItem, p, [], deps);
+    expect(captured).toEqual([{ taskId: "t1" }]);
+    const dispatchedEvent = events.find((e) => e.type === "task_run_dispatched");
+    expect(dispatchedEvent?.detail.chainedFrom).toBeUndefined();
   });
 });
 

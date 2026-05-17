@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   effectiveTaskStatus,
   type RunReportArtifact,
@@ -12,6 +10,8 @@ import {
   type WorkItemReport,
   type WorkItemReportStatus,
 } from "@issuepilot/shared-contracts";
+
+import { deriveEvidenceId } from "./evidence-id.js";
 
 /**
  * V4.1 Workflow Spine aggregator (spec §15 / §12.5).
@@ -57,33 +57,49 @@ import {
  */
 export interface AggregateDeps {
   getRunReport(runId: string): Promise<RunReportArtifact | undefined>;
+  getEvidenceConfirmations?(
+    workItemId: string,
+  ): Promise<Record<string, { confirmedBy: string; confirmedAt: string }>>;
   now?(): string;
 }
+
+export interface AggregateResult {
+  report: WorkItemReport;
+  missing: Array<{
+    taskId: string;
+    reason: "no-run-report" | "no-link" | "incomplete-report";
+  }>;
+}
+
+type MissingEvidence = AggregateResult["missing"][number];
+
+type AggregateEntry = {
+  task: TaskNode;
+  link: TaskRunLink | undefined;
+  report: RunReportArtifact | undefined;
+};
 
 export async function aggregateWorkItem(
   workItem: WorkItem,
   plan: TaskPlan,
   links: TaskRunLink[],
   deps: AggregateDeps,
-): Promise<WorkItemReport> {
+): Promise<AggregateResult> {
   const generatedAt = deps.now?.() ?? new Date().toISOString();
+  const confirmations =
+    (await deps.getEvidenceConfirmations?.(workItem.workItemId)) ?? {};
 
   // Pick the latest TaskRunLink per task so retries are reflected.
   const latestLinkByTask = pickLatestLinkByTask(links);
 
-  type TaskEntry = {
-    task: TaskNode;
-    link: TaskRunLink | undefined;
-    report: RunReportArtifact | undefined;
-  };
-
-  const entries: TaskEntry[] = [];
+  const entries: AggregateEntry[] = [];
   for (const task of plan.tasks) {
     const link = latestLinkByTask.get(task.taskId);
     const report = link ? await deps.getRunReport(link.runId) : undefined;
     entries.push({ task, link, report });
   }
 
+  const missing = deriveMissing(entries);
   const overallStatus = decideOverallStatus(entries);
 
   const evidenceIndex: WorkItemEvidenceEntry[] = [];
@@ -96,60 +112,210 @@ export async function aggregateWorkItem(
 
       if (report) {
         if (report.diff?.summary) {
-          taskEvidence.push(buildEvidenceEntry({
-            taskId: task.taskId,
-            runId: report.runId,
-            kind: "diff",
-            label: `Diff: ${report.diff.filesChanged} file(s) changed`,
-            text: report.diff.summary,
-            confidence: "ai-claim",
-          }));
+          taskEvidence.push(
+            applyConfirmation(
+              buildEvidenceEntry({
+                taskId: task.taskId,
+                runId: report.runId,
+                kind: "diff",
+                label: `Diff: ${report.diff.filesChanged} file(s) changed`,
+                text: report.diff.summary,
+                confidence: "ai-claim",
+                seed: legacySeed({
+                  taskId: task.taskId,
+                  kind: "diff",
+                  runId: report.runId,
+                  parts: [
+                    String(report.diff.filesChanged),
+                    report.diff.summary,
+                    ...report.diff.notableFiles,
+                  ],
+                }),
+              }),
+              confirmations,
+            ),
+          );
         }
-        for (const [index, v] of report.handoff.validation.entries()) {
-          taskEvidence.push(buildEvidenceEntry({
-            taskId: task.taskId,
-            runId: report.runId,
-            kind: "validation",
-            label: "Validation",
-            text: v,
-            confidence: "ai-claim",
-            seed: `validation:${index}:${v}`,
-          }));
+        for (const [index, v] of (report.handoff?.validation ?? []).entries()) {
+          taskEvidence.push(
+            applyConfirmation(
+              buildEvidenceEntry({
+                taskId: task.taskId,
+                runId: report.runId,
+                kind: "validation",
+                label: "Validation",
+                text: v,
+                confidence: "ai-claim",
+                seed: legacySeed({
+                  taskId: task.taskId,
+                  kind: "validation",
+                  runId: report.runId,
+                  parts: [String(index), v],
+                }),
+              }),
+              confirmations,
+            ),
+          );
         }
-        for (const [index, r] of report.handoff.risks.entries()) {
-          taskEvidence.push(buildEvidenceEntry({
-            taskId: task.taskId,
-            runId: report.runId,
-            kind: "risk",
-            label: `Risk (${r.level})`,
-            text: r.text,
-            confidence: "ai-claim",
-            seed: `risk:${index}:${r.level}:${r.text}`,
-          }));
+        for (const [index, r] of (report.handoff?.risks ?? []).entries()) {
+          taskEvidence.push(
+            applyConfirmation(
+              buildEvidenceEntry({
+                taskId: task.taskId,
+                runId: report.runId,
+                kind: "risk",
+                label: `Risk (${r.level})`,
+                text: r.text,
+                confidence: "ai-claim",
+                seed: legacySeed({
+                  taskId: task.taskId,
+                  kind: "risk",
+                  runId: report.runId,
+                  parts: [String(index), r.level, r.text],
+                }),
+              }),
+              confirmations,
+            ),
+          );
         }
         if (report.ci) {
-          taskEvidence.push(buildEvidenceEntry({
-            taskId: task.taskId,
-            runId: report.runId,
-            kind: "ci",
-            label: `CI: ${report.ci.status}`,
-            confidence: "system-derived",
-            ...(report.ci.pipelineUrl ? { href: report.ci.pipelineUrl } : {}),
-          }));
+          taskEvidence.push(
+            applyConfirmation(
+              buildEvidenceEntry({
+                taskId: task.taskId,
+                runId: report.runId,
+                kind: "ci",
+                label: `CI: ${normalizeCiStatus(report.ci.status)}`,
+                confidence: "system-derived",
+                ...(report.ci.pipelineUrl
+                  ? { href: report.ci.pipelineUrl }
+                  : {}),
+                capturedAt: report.ci.checkedAt,
+                seed: legacySeed({
+                  taskId: task.taskId,
+                  kind: "ci",
+                  runId: report.runId,
+                  parts: [
+                    report.ci.status,
+                    report.ci.pipelineUrl ?? "",
+                    report.ci.checkedAt,
+                  ],
+                }),
+              }),
+              confirmations,
+            ),
+          );
         }
         if (report.reviewFeedback) {
           for (const [index, c] of report.reviewFeedback.comments.entries()) {
-            taskEvidence.push(buildEvidenceEntry({
-              taskId: task.taskId,
-              runId: report.runId,
-              kind: "review_feedback",
-              label: `Reviewer: ${c.author}${c.resolved ? " (resolved)" : ""}`,
-              href: c.url,
-              text: c.body,
-              confidence: "system-derived",
-              seed: `review_feedback:${index}:${c.url}:${c.createdAt}:${c.body}`,
-            }));
+            taskEvidence.push(
+              applyConfirmation(
+                buildEvidenceEntry({
+                  taskId: task.taskId,
+                  runId: report.runId,
+                  kind: "review_feedback",
+                  label: `Reviewer: ${c.author}${
+                    c.resolved ? " (resolved)" : ""
+                  }`,
+                  href: c.url,
+                  text: c.body,
+                  confidence: "ai-claim",
+                  capturedAt: c.createdAt,
+                  seed: legacySeed({
+                    taskId: task.taskId,
+                    kind: "review_feedback",
+                    runId: report.runId,
+                    parts: [
+                      String(index),
+                      c.author,
+                      c.url,
+                      c.createdAt,
+                      c.body,
+                      String(c.resolved),
+                    ],
+                  }),
+                }),
+                confirmations,
+              ),
+            );
           }
+        }
+        for (const [index, evidence] of (report.evidence ?? []).entries()) {
+          taskEvidence.push(
+            applyConfirmation(
+              buildEvidenceEntry({
+                taskId: task.taskId,
+                runId: report.runId,
+                kind: evidence.kind,
+                label: evidence.label,
+                confidence:
+                  evidence.confidence === "system-derived"
+                    ? "system-derived"
+                    : "ai-claim",
+                ...(evidence.href ? { href: evidence.href } : {}),
+                ...(evidence.mediaType
+                  ? { mediaType: evidence.mediaType }
+                  : {}),
+                ...(evidence.capturedAt
+                  ? { capturedAt: evidence.capturedAt }
+                  : {}),
+                ...(evidence.relPath
+                  ? {
+                      source: {
+                        runId: report.runId,
+                        relPath: evidence.relPath,
+                      },
+                    }
+                  : {}),
+                seed: legacySeed({
+                  taskId: task.taskId,
+                  kind: evidence.kind,
+                  runId: report.runId,
+                  parts: [
+                    String(index),
+                    evidence.label,
+                    evidence.relPath ?? "",
+                    evidence.href ?? "",
+                    evidence.mediaType ?? "",
+                    evidence.capturedAt ?? "",
+                    evidence.confidence ?? "",
+                  ],
+                }),
+              }),
+              confirmations,
+            ),
+          );
+        }
+        for (const [index, check] of (Array.isArray(report.checks)
+          ? report.checks
+          : []
+        ).entries()) {
+          taskEvidence.push(
+            applyConfirmation(
+              buildEvidenceEntry({
+                taskId: task.taskId,
+                runId: report.runId,
+                kind: "test_result",
+                label: `Check ${check.status}: ${check.name}`,
+                text: formatCheckText(check),
+                confidence: "system-derived",
+                seed: legacySeed({
+                  taskId: task.taskId,
+                  kind: "test_result",
+                  runId: report.runId,
+                  parts: [
+                    String(index),
+                    check.name,
+                    check.status,
+                    check.command ?? "",
+                    check.details ?? "",
+                    String(check.durationMs ?? ""),
+                  ],
+                }),
+              }),
+              confirmations,
+            ),
+          );
         }
       }
 
@@ -162,12 +328,10 @@ export async function aggregateWorkItem(
         title: task.title,
         taskStatus: status,
         ...(link?.runId ? { runId: link.runId } : {}),
-        ...(report?.diff?.summary
-          ? { diffSummary: report.diff.summary }
-          : {}),
-        validation: report?.handoff.validation ?? [],
-        risks: report?.handoff.risks ?? [],
-        followUps: report?.handoff.followUps ?? [],
+        ...(report?.diff?.summary ? { diffSummary: report.diff.summary } : {}),
+        validation: report?.handoff?.validation ?? [],
+        risks: report?.handoff?.risks ?? [],
+        followUps: report?.handoff?.followUps ?? [],
         ...(report?.mergeRequest?.url
           ? { mergeRequestUrl: report.mergeRequest.url }
           : {}),
@@ -177,7 +341,8 @@ export async function aggregateWorkItem(
     },
   );
 
-  return {
+  const ciSummary = buildCiSummary(entries);
+  const report: WorkItemReport = {
     workItemId: workItem.workItemId,
     overallStatus,
     taskSummaries,
@@ -188,13 +353,19 @@ export async function aggregateWorkItem(
       byTask: evidenceByTask,
     },
     openQuestions: buildOpenQuestions(entries),
-    recommendedNextActions: buildRecommendedNextActions(
+    recommendedNextActions: buildRecommendedNextActions(entries, overallStatus),
+    humanReviewChecklist: buildHumanReviewChecklist(
       entries,
+      missing,
       overallStatus,
+      ciSummary,
     ),
-    humanReviewChecklist: [],
+    ...(ciSummary ? { ciSummary } : {}),
+    testSummary: buildTestSummary(entries),
     generatedAt,
   };
+
+  return { report, missing };
 }
 
 function buildEvidenceEntry(
@@ -206,28 +377,53 @@ function buildEvidenceEntry(
   const { runId, seed, ...rest } = entry;
   return {
     ...rest,
-    evidenceId: deriveLegacyEvidenceId({
+    source: rest.source ?? { runId },
+    evidenceId: deriveEvidenceId({
       taskId: rest.taskId,
       kind: rest.kind,
       runId,
-      seed: seed ?? rest.href ?? rest.text ?? rest.label,
+      seed:
+        seed ??
+        legacySeed({
+          taskId: rest.taskId,
+          kind: rest.kind,
+          runId,
+          parts: [
+            rest.label,
+            rest.text ?? "",
+            rest.href ?? "",
+            rest.mediaType ?? "",
+            rest.capturedAt ?? "",
+          ],
+        }),
     }),
   };
 }
 
-function deriveLegacyEvidenceId(input: {
+function legacySeed(input: {
   taskId: string;
   kind: WorkItemEvidenceEntry["kind"];
   runId: string;
-  seed: string;
+  parts: string[];
 }): string {
-  const digest = createHash("sha1").update(input.seed).digest("base64url");
-  return `${input.taskId}:${input.kind}:${input.runId}:${digest.slice(0, 16)}`;
+  return [input.taskId, input.kind, input.runId, ...input.parts].join("\n");
 }
 
-function pickLatestLinkByTask(
-  links: TaskRunLink[],
-): Map<string, TaskRunLink> {
+function applyConfirmation(
+  entry: WorkItemEvidenceEntry,
+  confirmations: Record<string, { confirmedBy: string; confirmedAt: string }>,
+): WorkItemEvidenceEntry {
+  const confirmation = confirmations[entry.evidenceId];
+  if (!confirmation) return entry;
+  return {
+    ...entry,
+    confidence: "human-confirmed",
+    confirmedBy: confirmation.confirmedBy,
+    confirmedAt: confirmation.confirmedAt,
+  };
+}
+
+function pickLatestLinkByTask(links: TaskRunLink[]): Map<string, TaskRunLink> {
   const map = new Map<string, TaskRunLink>();
   for (const link of links) {
     const existing = map.get(link.taskId);
@@ -238,13 +434,46 @@ function pickLatestLinkByTask(
     // Prefer higher attempt; tie-break by latest startedAt.
     if (
       link.attempt > existing.attempt ||
-      (link.attempt === existing.attempt &&
-        link.startedAt > existing.startedAt)
+      (link.attempt === existing.attempt && link.startedAt > existing.startedAt)
     ) {
       map.set(link.taskId, link);
     }
   }
   return map;
+}
+
+function deriveMissing(entries: AggregateEntry[]): MissingEvidence[] {
+  const missing: MissingEvidence[] = [];
+  for (const e of entries) {
+    if (isOperatorSettled(e.task)) continue;
+    if (!e.link) {
+      missing.push({ taskId: e.task.taskId, reason: "no-link" });
+      continue;
+    }
+    if (e.link.status === "completed" && !e.report) {
+      missing.push({ taskId: e.task.taskId, reason: "no-run-report" });
+      continue;
+    }
+    if (e.report && !hasRequiredReportStructures(e.report)) {
+      missing.push({ taskId: e.task.taskId, reason: "incomplete-report" });
+    }
+  }
+  return missing;
+}
+
+function isOperatorSettled(task: TaskNode): boolean {
+  return task.status === "skipped" || task.status === "needs_rework";
+}
+
+function hasRequiredReportStructures(report: RunReportArtifact): boolean {
+  return Boolean(
+    report.diff &&
+    report.handoff &&
+    Array.isArray(report.handoff.validation) &&
+    Array.isArray(report.handoff.risks) &&
+    Array.isArray(report.handoff.followUps) &&
+    Array.isArray(report.checks),
+  );
 }
 
 /**
@@ -263,13 +492,7 @@ function pickLatestLinkByTask(
  * task that already has a TaskRunLink (the link is preserved for
  * audit, but the task is now off-plan).
  */
-function decideOverallStatus(
-  entries: Array<{
-    task: TaskNode;
-    link: TaskRunLink | undefined;
-    report: RunReportArtifact | undefined;
-  }>,
-): WorkItemReportStatus {
+function decideOverallStatus(entries: AggregateEntry[]): WorkItemReportStatus {
   // V4.1 §15.2: missing data dominates anything else; we cannot
   // promise the parent reviewer that everything is partial / complete
   // until every task has at least produced a TaskRunLink + report.
@@ -284,11 +507,12 @@ function decideOverallStatus(
   //  - Operator-driven skip / needs_rework are themselves settled
   //    states and do not block a verdict, even with no link present.
   for (const e of entries) {
-    const isOperatorSettled =
-      e.task.status === "skipped" || e.task.status === "needs_rework";
-    if (isOperatorSettled) continue;
+    if (isOperatorSettled(e.task)) continue;
     if (!e.link) return "incomplete";
     if (e.link.status === "completed" && !e.report) return "incomplete";
+    if (e.report && !hasRequiredReportStructures(e.report)) {
+      return "incomplete";
+    }
     // Link still in-flight (running / blocked-by-deps via task.status
     // resolving to a non-settled value) keeps WorkItem in-flight.
     const status = effectiveTaskStatus(e.task, e.link);
@@ -320,46 +544,28 @@ function decideOverallStatus(
   return "complete";
 }
 
-function buildValidationSummary(
-  entries: Array<{
-    task: TaskNode;
-    link: TaskRunLink | undefined;
-    report: RunReportArtifact | undefined;
-  }>,
-): string {
+function buildValidationSummary(entries: AggregateEntry[]): string {
   const lines: string[] = [];
   for (const e of entries) {
     if (!e.report) continue;
-    const v = e.report.handoff.validation.join("; ");
+    const v = (e.report.handoff?.validation ?? []).join("; ");
     if (v) lines.push(`- ${e.task.taskId}: ${v}`);
   }
   return lines.length === 0 ? "No validation reported." : lines.join("\n");
 }
 
-function buildRiskSummary(
-  entries: Array<{
-    task: TaskNode;
-    link: TaskRunLink | undefined;
-    report: RunReportArtifact | undefined;
-  }>,
-): string {
+function buildRiskSummary(entries: AggregateEntry[]): string {
   const lines: string[] = [];
   for (const e of entries) {
     if (!e.report) continue;
-    for (const r of e.report.handoff.risks) {
+    for (const r of e.report.handoff?.risks ?? []) {
       lines.push(`- ${e.task.taskId} (${r.level}): ${r.text}`);
     }
   }
   return lines.length === 0 ? "No risks reported." : lines.join("\n");
 }
 
-function buildOpenQuestions(
-  entries: Array<{
-    task: TaskNode;
-    link: TaskRunLink | undefined;
-    report: RunReportArtifact | undefined;
-  }>,
-): string[] {
+function buildOpenQuestions(entries: AggregateEntry[]): string[] {
   const questions: string[] = [];
   for (const e of entries) {
     const status = effectiveTaskStatus(e.task, e.link);
@@ -367,7 +573,7 @@ function buildOpenQuestions(
       const reason =
         e.task.needsReworkReason ??
         e.task.statusReason ??
-        e.report?.run.lastError?.message;
+        e.report?.run?.lastError?.message;
       questions.push(
         `Task ${e.task.taskId} (${e.task.title}) needs operator decision${
           reason ? `: ${reason}` : "."
@@ -379,11 +585,7 @@ function buildOpenQuestions(
 }
 
 function buildRecommendedNextActions(
-  entries: Array<{
-    task: TaskNode;
-    link: TaskRunLink | undefined;
-    report: RunReportArtifact | undefined;
-  }>,
+  entries: AggregateEntry[],
   overallStatus: WorkItemReportStatus,
 ): string[] {
   const actions: string[] = [];
@@ -438,13 +640,182 @@ function buildRecommendedNextActions(
   return actions;
 }
 
+function buildCiSummary(
+  entries: AggregateEntry[],
+): WorkItemReport["ciSummary"] | undefined {
+  const perTask: NonNullable<WorkItemReport["ciSummary"]>["perTask"] = {};
+  const statuses: Array<NonNullable<WorkItemReport["ciSummary"]>["overall"]> =
+    [];
+
+  for (const e of entries) {
+    const ci = e.report?.ci;
+    if (!ci) continue;
+    const status = normalizeCiStatus(ci.status);
+    statuses.push(status);
+    perTask[e.task.taskId] = {
+      status,
+      ...(ci.pipelineUrl ? { pipelineUrl: ci.pipelineUrl } : {}),
+    };
+  }
+
+  if (statuses.length === 0) return undefined;
+  return {
+    overall: deriveWorstCiStatus(statuses),
+    perTask,
+  };
+}
+
+function normalizeCiStatus(
+  status: NonNullable<RunReportArtifact["ci"]>["status"],
+): NonNullable<WorkItemReport["ciSummary"]>["overall"] {
+  switch (status) {
+    case "success":
+      return "passed";
+    case "failed":
+    case "canceled":
+      return "failed";
+    case "running":
+    case "pending":
+      return "running";
+    case "unknown":
+      return "unknown";
+  }
+}
+
+function deriveWorstCiStatus(
+  statuses: Array<NonNullable<WorkItemReport["ciSummary"]>["overall"]>,
+): NonNullable<WorkItemReport["ciSummary"]>["overall"] {
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.includes("running")) return "running";
+  if (statuses.includes("unknown")) return "unknown";
+  if (statuses.includes("passed")) return "passed";
+  return "unknown";
+}
+
+function buildTestSummary(
+  entries: AggregateEntry[],
+): NonNullable<WorkItemReport["testSummary"]> {
+  const summary: NonNullable<WorkItemReport["testSummary"]> = {
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    unknown: 0,
+    perTask: {},
+  };
+
+  for (const e of entries) {
+    const checks = Array.isArray(e.report?.checks) ? e.report.checks : [];
+    const taskCounts = { passed: 0, failed: 0, skipped: 0, unknown: 0 };
+    for (const check of checks) {
+      taskCounts[check.status] += 1;
+      summary[check.status] += 1;
+    }
+    if (checks.length > 0) {
+      summary.perTask[e.task.taskId] = taskCounts;
+    }
+  }
+
+  return summary;
+}
+
+function buildHumanReviewChecklist(
+  entries: AggregateEntry[],
+  missing: MissingEvidence[],
+  overallStatus: WorkItemReportStatus,
+  ciSummary: WorkItemReport["ciSummary"] | undefined,
+): WorkItemReport["humanReviewChecklist"] {
+  const items: WorkItemReport["humanReviewChecklist"] = [];
+  const seen = new Set<string>();
+  const add = (input: Omit<(typeof items)[number], "confirmed">): void => {
+    if (seen.has(input.itemId)) return;
+    seen.add(input.itemId);
+    items.push({ ...input, confirmed: false });
+  };
+
+  for (const e of entries) {
+    for (const risk of e.report?.handoff?.risks ?? []) {
+      if (risk.level === "medium") {
+        add({
+          itemId: `ai-risk-medium:${e.task.taskId}`,
+          taskId: e.task.taskId,
+          label: `Review medium AI risk for ${e.task.taskId}`,
+          reason: "ai-risk-medium",
+        });
+      }
+      if (risk.level === "high") {
+        add({
+          itemId: `ai-risk-high:${e.task.taskId}`,
+          taskId: e.task.taskId,
+          label: `Review high AI risk for ${e.task.taskId}`,
+          reason: "ai-risk-high",
+        });
+      }
+    }
+
+    const status = effectiveTaskStatus(e.task, e.link);
+    if (status === "needs_rework") {
+      add({
+        itemId: `needs-rework:${e.task.taskId}`,
+        taskId: e.task.taskId,
+        label: `Resolve needs-rework task ${e.task.taskId}`,
+        reason: "needs-rework",
+      });
+    }
+    if (status === "skipped") {
+      add({
+        itemId: `skipped-task:${e.task.taskId}`,
+        taskId: e.task.taskId,
+        label: `Confirm skipped task ${e.task.taskId}`,
+        reason: "skipped-task",
+      });
+    }
+  }
+
+  if (overallStatus === "partial") {
+    add({
+      itemId: "partial-overall:workItem",
+      label: "Review partial work item outcome",
+      reason: "partial-overall",
+    });
+  }
+
+  for (const m of missing) {
+    add({
+      itemId: `missing-evidence:${m.taskId}`,
+      taskId: m.taskId,
+      label: `Resolve missing evidence for ${m.taskId}: ${m.reason}`,
+      reason: "missing-evidence",
+    });
+  }
+
+  if (ciSummary?.overall === "failed") {
+    add({
+      itemId: "ci-failed:workItem",
+      label: "Review failed CI before handoff",
+      reason: "ci-failed",
+    });
+  }
+
+  return items;
+}
+
+function formatCheckText(check: RunReportArtifact["checks"][number]): string {
+  const parts = [`status: ${check.status}`];
+  if (check.command) parts.push(`command: ${check.command}`);
+  if (check.durationMs !== undefined) {
+    parts.push(`durationMs: ${check.durationMs}`);
+  }
+  if (check.details) parts.push(`details: ${check.details}`);
+  return parts.join("\n");
+}
+
 function deriveTaskNextAction(
   status: TaskNodeStatus,
   report: RunReportArtifact | undefined,
 ): string | undefined {
   switch (status) {
     case "completed":
-      return report?.handoff.nextAction ?? "Reviewer to inspect MR.";
+      return report?.handoff?.nextAction ?? "Reviewer to inspect MR.";
     case "failed":
       return "Retry the task run or escalate to operator.";
     case "blocked":

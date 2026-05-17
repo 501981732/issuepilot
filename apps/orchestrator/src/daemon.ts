@@ -1241,7 +1241,7 @@ export async function startDaemon(
       const links = await workItemStore.listAllTaskRunLinks(workItemId);
       const ts = new Date().toISOString();
 
-      const report = await aggregateWorkItem(wi, plan, links, {
+      const { report } = await aggregateWorkItem(wi, plan, links, {
         getRunReport: (runId) => reportStore.get(runId),
       });
       await workItemStore.saveReport(report);

@@ -743,7 +743,12 @@ export async function settleTaskRunFinal(
   if (!plan) return { workItem: wi, report: undefined };
   const links = await deps.store.listAllTaskRunLinks(input.workItemId);
 
-  const report = await aggregateWorkItem(wi, plan, links, deps.aggregateDeps);
+  const { report } = await aggregateWorkItem(
+    wi,
+    plan,
+    links,
+    deps.aggregateDeps,
+  );
   await deps.store.saveReport(report);
   deps.emit({
     type: "work_item_aggregated",

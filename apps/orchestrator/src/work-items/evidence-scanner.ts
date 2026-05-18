@@ -16,7 +16,7 @@ export interface OversizedEvidenceFile {
 
 export interface RejectedEvidenceEntry {
   relPath: string;
-  reason: "path-escape";
+  reason: "path-escape" | "manifest-overflow";
 }
 
 export interface ScanRunEvidenceResult {
@@ -27,6 +27,13 @@ export interface ScanRunEvidenceResult {
 }
 
 const DEFAULT_OVERSIZED_LIMIT_BYTES = 50 * 1024 * 1024;
+
+/**
+ * V4.3 安全：恶意 manifest 可以塞下数万条 entry 把 aggregator 的内存
+ * 撑爆。第一版给一个保守上限 1000 条；超出部分忽略并记一条 rejected
+ * 条目，aggregator 会把它转入 `WorkItemReport.openQuestions`。
+ */
+const MANIFEST_ENTRY_LIMIT = 1000;
 
 const EVIDENCE_DIR = ".issuepilot/evidence";
 
@@ -71,7 +78,17 @@ export async function scanRunEvidence({
   const rejected: RejectedEvidenceEntry[] = [];
 
   if (manifestUsed) {
-    const entries = await readManifestEntries(manifestPath);
+    const allEntries = await readManifestEntries(manifestPath);
+    // V4.3 防御：超出上限的 entry 不参与 validate，避免下游 map / sort
+    // 把内存撑爆；同时把超出量记一条 rejected，aggregator 会转入
+    // openQuestions 提醒 reviewer 检查 manifest 是否被脏数据污染。
+    const entries = allEntries.slice(0, MANIFEST_ENTRY_LIMIT);
+    if (allEntries.length > MANIFEST_ENTRY_LIMIT) {
+      rejected.push({
+        relPath: `manifest.json[${MANIFEST_ENTRY_LIMIT}..${allEntries.length - 1}]`,
+        reason: "manifest-overflow",
+      });
+    }
     const validated = entries.flatMap((entry) =>
       validateManifestEntry({
         evidenceRunRoot,

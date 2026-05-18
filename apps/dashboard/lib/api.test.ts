@@ -641,4 +641,22 @@ describe("V4.3 evidence client", () => {
       `${FAKE_BASE}/api/work-items/wi_01/evidence/file?runId=run-1&path=recordings%2Fdemo.mov&project=infra-tools`,
     );
   });
+
+  it("buildEvidenceFileUrl roundtrips path / runId through URLSearchParams (covers + and %2B)", () => {
+    // V4.3 minor：reviewer 提到 `+` / `%2B` 可能在 client/server 解码
+    // 不一致。client 用 URLSearchParams 编码，space → `+`、`+` → `%2B`；
+    // server 端 fastify 默认也是 form-decoded query，对 `+` 还原为
+    // space。这个 roundtrip 用例固化双方约定。
+    const id = "wi_01";
+    const runId = "run+with-plus";
+    const relPath = "commands/c+ +output.log";
+
+    const url = buildEvidenceFileUrl(id, runId, relPath);
+    const params = new URL(url).searchParams;
+    expect(params.get("runId")).toBe(runId);
+    expect(params.get("path")).toBe(relPath);
+    expect(url).toContain("runId=run%2Bwith-plus");
+    // URLSearchParams 把 space 编成 `+`；与 server 端 form-decode 对称。
+    expect(url).toContain("path=commands%2Fc%2B+%2Boutput.log");
+  });
 });

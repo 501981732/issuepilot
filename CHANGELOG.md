@@ -54,6 +54,70 @@
     `parentIssueLabelMode === "suppressed"`；不创建 child GitLab Issue；
     evidence 文件不离开 task worktree。
 
+### Security
+
+- 2026-05-18 — **evidence-file-server symlink bypass 收口**：当 task
+  worktree 内的 `<runId>` 子目录或 `.issuepilot` / `.issuepilot/evidence`
+  中间路径是 symlink 指向 worktree 外（理论上 Codex 在 worktree 内可写），
+  原本只对叶子文件做 `lstat` 不能阻止 sandbox 越界。现在
+  `apps/orchestrator/src/work-items/evidence-file-server.ts` 增加二次
+  realpath 校验：要求 realpath(`<taskWorktreePath>/.issuepilot/evidence/
+  <runId>`) 仍必须落在 realpath(`<taskWorktreePath>`)/.issuepilot/evidence
+  内。新增单测覆盖 runId 子目录是 symlink、`.issuepilot` 是 symlink 两类
+  bypass 场景，并在 `work-items-v43-e2e.test.ts` 加一条端到端 case。
+
+### Fixed
+
+- 2026-05-18 — **Dashboard `?view=` 持久化**：`work-item-detail.tsx`
+  通过 `history.replaceState` 把 `list` / `graph` / `evidence` 写回 URL，
+  share-link 与刷新都会回到同一视图。
+- 2026-05-18 — **EvidenceTab 乐观更新中间态消除**：confirm 期间
+  `ConfidencePill` 不再抢跑变绿，pill 与按钮共享 in-flight 收尾，避免
+  「pill 已绿 + 按钮仍 Confirming…」的可见冲突。失败时 pill 不需要回滚。
+- 2026-05-18 — **render-report.test.ts fixture**：把非法 `kind: "artifact"`
+  替换为合法 `command_output`，与 `WorkItemEvidenceKind` 枚举一致。
+- 2026-05-18 — **manifest 内存防御**：evidence scanner 给
+  `manifest.json.entries` 加 1000 条上限，超出量被记为 `manifest-overflow`
+  rejected，aggregator 经 `appendOversizedFollowUps` 转入
+  `WorkItemReport.openQuestions`，避免恶意/脏数据撑爆内存。
+
+### Tests
+
+- 2026-05-18 — V4.3 端到端 case 数量从 4 → 6：新增
+  `assertV4Invariants` helper（fake GitLab `createIssue` 调用次数 0、
+  per-task 唯一 `TaskRunLink`），并在每个 case 末尾正面断言；新增「runTaskOnce
+  路径上 `parentIssueLabelMode === "suppressed"`」与「`<runId>` symlink 指向
+  worktree 外被 forbidden」两条 e2e case。
+- 2026-05-18 — `confidence-pill.test.tsx` 显式断言 pill 不带
+  `role="status"` / `aria-live`，避免被 SR 当成 live region 反复 announcement。
+- 2026-05-18 — `lib/api.test.ts` 加 `buildEvidenceFileUrl` 往返测试，固化
+  client `URLSearchParams` 与 server form-decode 在 `+` / `%2B` / 空格 上
+  的对称约定。
+
+### CI / Tooling
+
+- 2026-05-18 — 新增 `scripts/ci-equivalent-check.sh`：把
+  `tsc -b` / `tsc -p scripts/tsconfig.json` / `next build`（dashboard）/
+  `eslint --max-warnings 0` / 各 package 的 `vitest run` / `git diff --check`
+  串成单一入口，给「默认 Node 跑不动 Rollup native binding」或缺少
+  `pnpm` / `corepack` 的机器提供与 `pnpm -r build|lint|test` 等价的本地
+  gate。配套更新 `AGENTS.md` §「验证要求」段落，把这个脚本写为代码变更
+  交付前的默认 gate。
+
+### Known limitations
+
+- 单文件 evidence 大小上限 50MB，超出文件不进 evidence index 但写入
+  `WorkItemReport.openQuestions`。
+- Playwright trace 不内嵌渲染，dashboard 仅给 `npx playwright show-trace`
+  提示链接。
+- 视频不做转码、不生成图片缩略图，`<img>` 直接使用原图 + CSS `max-h`。
+- `humanReviewChecklist` 在 V4.3 仅 read-only：所有项 `confirmed: false`，
+  人工确认仍走 evidence 级 `POST .../evidence/:evidenceId/confirm`。
+- `manifest.json.entries` 单 manifest 上限 1000 条，超出量被记为
+  `manifest-overflow` 并提示 reviewer 检查。
+- evidence 持久化保留在 task worktree，未引入对象存储；50MB 上限和
+  worktree 隔离都依赖文件系统语义，可在 V3 引入对象存储后放宽。
+
 ## [Unreleased] V4.2 Task Graph
 
 ### Added

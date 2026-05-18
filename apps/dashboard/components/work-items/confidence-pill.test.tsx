@@ -37,4 +37,15 @@ describe("ConfidencePill", () => {
       "系统生成",
     );
   });
+
+  it("does not announce as a live region (no role=status / aria-live)", () => {
+    // V4.3 minor：confidence pill 是静态 badge，不应该被 SR 当成 live
+    // region 反复 announcement。pill / badge 必须不带 role="status" 或
+    // aria-live。
+    const { container } = render(<ConfidencePill confidence="ai-claim" />);
+    const badge = container.querySelector("span[aria-label]");
+    expect(badge).not.toBeNull();
+    expect(badge!.getAttribute("role")).toBeNull();
+    expect(badge!.getAttribute("aria-live")).toBeNull();
+  });
 });

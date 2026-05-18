@@ -61,19 +61,29 @@ export async function serveEvidenceFile({
   }
 
   let stats;
+  let realTaskWorktree;
   let realExpectedRoot;
   let realRequested;
   try {
-    [stats, realExpectedRoot, realRequested] = await Promise.all([
-      stat(requested),
-      realpath(expectedRoot),
-      realpath(requested),
-    ]);
+    [stats, realTaskWorktree, realExpectedRoot, realRequested] =
+      await Promise.all([
+        stat(requested),
+        realpath(taskWorktreePath),
+        realpath(expectedRoot),
+        realpath(requested),
+      ]);
   } catch (error) {
     if (isNotFoundError(error)) {
       return { ok: false, error: "not_found" };
     }
     throw error;
+  }
+  // V4.3 安全收口：runId 子目录或中间路径若是 symlink 指向 worktree 外，
+  // realExpectedRoot 不会再以 realpath(taskWorktreePath)/.issuepilot/evidence 开头。
+  // 这是 lstat-on-leaf 之外的第二道防线，覆盖「runId 本身是 symlink」的场景。
+  const realEvidenceBase = path.join(realTaskWorktree, EVIDENCE_DIR);
+  if (!realExpectedRoot.startsWith(realEvidenceBase + path.sep)) {
+    return { ok: false, error: "forbidden" };
   }
   if (!realRequested.startsWith(realExpectedRoot + path.sep)) {
     return { ok: false, error: "forbidden" };

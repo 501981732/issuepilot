@@ -41,8 +41,10 @@ export function appendOversizedFollowUps(
           file.sizeBytes,
         )}MB)`,
     ),
-    ...rejected.map(
-      (entry) => `evidence rejected: ${entry.relPath} escapes evidence dir`,
+    ...rejected.map((entry) =>
+      entry.reason === "manifest-overflow"
+        ? `evidence rejected: ${entry.relPath} exceeds manifest entry limit`
+        : `evidence rejected: ${entry.relPath} escapes evidence dir`,
     ),
   ]) {
     if (seen.has(line)) continue;

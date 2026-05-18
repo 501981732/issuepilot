@@ -217,6 +217,25 @@ export function WorkItemDetail({
     [data.workItem.workItemId, operator, reload],
   );
 
+  // V4.3：把当前 view 写回 URL，这样 share-link / 刷新都能落到同一视图。
+  // 用 history.replaceState 而不是 router.replace 是为了避免触发 SSR 重渲染
+  // — view 切换是纯客户端状态，不需要重新调 getWorkItem。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (view === "list") {
+      url.searchParams.delete("view");
+    } else {
+      url.searchParams.set("view", view);
+    }
+    if (
+      url.search !== window.location.search ||
+      url.pathname !== window.location.pathname
+    ) {
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, [view]);
+
   // Fetch the graph projection lazily — only when the operator switches
   // to the Graph view. Switching back to List does not invalidate the
   // cached projection so toggling is snappy.

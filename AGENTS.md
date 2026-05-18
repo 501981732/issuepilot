@@ -70,7 +70,15 @@ IssuePilot P0 是：
 git diff --check
 ```
 
-后续 TypeScript 实现变更需要为触达的 package 添加并运行针对性测试。项目脚本建立后，交付前优先运行相关完整本地检查。
+涉及代码（orchestrator / dashboard / packages / tests）的变更，交付前优先运行：
+
+```bash
+scripts/ci-equivalent-check.sh
+```
+
+该脚本把 V4.3 acceptance 列出的 gate 串成单一入口（`tsc -b`、`tsc -p scripts/tsconfig.json`、`next build`、`eslint --max-warnings 0`、各 package 的 `vitest run`、`git diff --check`），用于在缺少 `pnpm` / `corepack` 或默认 runtime 不能跑 Rollup native binding 的机器上提供与 `pnpm -r build|lint|test` 等价的本地 gate。该脚本会自动尝试 `~/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin`，可通过 `NODE_BIN_DIR=...` 显式指定 Node runtime；快速反馈可用 `SKIP_E2E=1`。
+
+`pnpm -r build|lint|test` 仍是受支持入口；只要本机有 `pnpm` / `corepack` 且默认 Node 能加载 Rollup native module，可以直接用它替代脚本。但发布或合并前必须有一种通过的 gate（脚本或 `pnpm -r`），不能仅以「单测通过」收口。
 
 ## Git 规范
 

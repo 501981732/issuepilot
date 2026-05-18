@@ -326,4 +326,27 @@ describe("scanRunEvidence", () => {
       manifestUsed: true,
     });
   });
+
+  it("caps manifest entries at 1000 to avoid OOM and reports overflow", async () => {
+    const limit = 1000;
+    const entries = Array.from({ length: limit + 5 }, (_, idx) => ({
+      kind: "command_output" as const,
+      label: `entry-${idx}`,
+    }));
+    await writeEvidenceFile("manifest.json", JSON.stringify({ entries }));
+
+    const result = await scanRunEvidence({ taskWorktreePath, runId: "run-1" });
+    expect(result.manifestUsed).toBe(true);
+    expect(result.entries).toHaveLength(limit);
+    expect(result.entries[0].label).toBe("entry-0");
+    expect(result.entries[result.entries.length - 1].label).toBe(
+      `entry-${limit - 1}`,
+    );
+    expect(result.rejected).toEqual([
+      {
+        relPath: `manifest.json[${limit}..${limit + 4}]`,
+        reason: "manifest-overflow",
+      },
+    ]);
+  });
 });

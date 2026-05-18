@@ -266,6 +266,13 @@ describe("ci feedback E2E", () => {
     expect(issue?.labels).toContain("ai-rework");
     expect(issue?.labels).not.toContain("human-review");
 
+    await ws.gitlabServer.waitFor(
+      (s) =>
+        (s.notes.get(ISSUE_IID) ?? []).some((n) =>
+          n.body.includes(`<!-- issuepilot:ci-feedback:${handoffRun.runId} -->`),
+        ),
+      { timeoutMs: 20_000, intervalMs: 50 },
+    );
     const notes = ws.gitlabState.notes.get(ISSUE_IID) ?? [];
     const ciFeedbackNote = notes.find((n) =>
       n.body.includes(`<!-- issuepilot:ci-feedback:${handoffRun.runId} -->`),

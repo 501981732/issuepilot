@@ -156,7 +156,7 @@ describe("EvidenceTab", () => {
     expect(screen.queryByText("Checkout recording")).not.toBeInTheDocument();
   });
 
-  it("calls onConfirm and optimistically renders the pill as human-confirmed", async () => {
+  it("keeps the pill in its server confidence while confirm is in flight, then turns it human-confirmed when it resolves", async () => {
     let resolveConfirm: () => void = () => {};
     const onConfirm = vi.fn(
       () =>
@@ -177,20 +177,22 @@ describe("EvidenceTab", () => {
     fireEvent.click(within(item!).getByRole("button", { name: "Confirm" }));
 
     expect(onConfirm).toHaveBeenCalledWith("task-a", "ev_screenshot");
-    expect(within(item!).getByText("Human confirmed")).toBeInTheDocument();
+    // V4.3 UX: pill 不抢跑，与按钮共享 in-flight 状态。
+    expect(within(item!).getByText("AI inferred")).toBeInTheDocument();
     expect(
       within(item!).getByRole("button", { name: "Confirming…" }),
     ).toBeDisabled();
 
     resolveConfirm();
     await waitFor(() =>
-      expect(
-        within(item!).getByRole("button", { name: "Confirmed" }),
-      ).toBeDisabled(),
+      expect(within(item!).getByText("Human confirmed")).toBeInTheDocument(),
     );
+    expect(
+      within(item!).getByRole("button", { name: "Confirmed" }),
+    ).toBeDisabled();
   });
 
-  it("rolls back optimistic pill change when onConfirm rejects", async () => {
+  it("does not flip the pill when onConfirm rejects", async () => {
     const onConfirm = vi.fn().mockRejectedValue(new Error("nope"));
 
     render(
@@ -204,16 +206,17 @@ describe("EvidenceTab", () => {
     const item = screen.getByText("Login screenshot").closest("li");
     fireEvent.click(within(item!).getByRole("button", { name: "Confirm" }));
 
-    expect(within(item!).getByText("Human confirmed")).toBeInTheDocument();
+    // pill 在 in-flight 与 reject 之后都保持原 confidence。
+    expect(within(item!).getByText("AI inferred")).toBeInTheDocument();
     await waitFor(() =>
-      expect(within(item!).getByText("AI inferred")).toBeInTheDocument(),
+      expect(
+        within(item!).getByRole("button", { name: "Confirm" }),
+      ).toBeEnabled(),
     );
-    expect(
-      within(item!).getByRole("button", { name: "Confirm" }),
-    ).toBeEnabled();
+    expect(within(item!).getByText("AI inferred")).toBeInTheDocument();
   });
 
-  it("keeps another optimistic confirmation when a concurrent confirm rejects", async () => {
+  it("settles each confirm independently when concurrent attempts mix success and failure", async () => {
     let rejectScreenshot: (error: Error) => void = () => {};
     let resolveCommand: () => void = () => {};
     const onConfirm = vi.fn((taskId: string, evidenceId: string) => {
@@ -247,22 +250,27 @@ describe("EvidenceTab", () => {
       within(commandItem!).getByRole("button", { name: "Confirm" }),
     );
 
+    // 两个都还在 in-flight：pill 不抢跑，仍是 server confidence。
+    expect(within(screenshotItem!).getByText("AI inferred")).toBeInTheDocument();
+    expect(within(commandItem!).getByText("System derived")).toBeInTheDocument();
+
     rejectScreenshot(new Error("nope"));
     await waitFor(() =>
       expect(
-        within(screenshotItem!).getByText("AI inferred"),
-      ).toBeInTheDocument(),
+        within(screenshotItem!).getByRole("button", { name: "Confirm" }),
+      ).toBeEnabled(),
     );
-    expect(
-      within(commandItem!).getByText("Human confirmed"),
-    ).toBeInTheDocument();
+    expect(within(screenshotItem!).getByText("AI inferred")).toBeInTheDocument();
 
     resolveCommand();
     await waitFor(() =>
       expect(
-        within(commandItem!).getByRole("button", { name: "Confirmed" }),
-      ).toBeDisabled(),
+        within(commandItem!).getByText("Human confirmed"),
+      ).toBeInTheDocument(),
     );
+    expect(
+      within(commandItem!).getByRole("button", { name: "Confirmed" }),
+    ).toBeDisabled();
   });
 
   it("treats human-confirmed prop updates as confirmed state", () => {

@@ -200,6 +200,26 @@ describe("WorkItemDetail", () => {
     expect(getWorkItemGraph).not.toHaveBeenCalled();
   });
 
+  it("V4.3: persists ?view=evidence in the URL when the operator switches view", async () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [],
+      byTask: {},
+      missing: [],
+    });
+
+    window.history.replaceState(null, "", "/work-items/wi_1");
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+    await waitFor(() =>
+      expect(window.location.search).toBe("?view=evidence"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /List/ }));
+    await waitFor(() => expect(window.location.search).toBe(""));
+  });
+
   it("V4.3: fetches evidence when view=evidence", async () => {
     vi.mocked(getWorkItemEvidence).mockResolvedValue({
       index: [

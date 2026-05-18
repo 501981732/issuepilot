@@ -330,9 +330,9 @@ describe("renderWorkItemReportMarkdown", () => {
           index: [
             {
               taskId: "t1",
-              kind: "artifact",
-              evidenceId: "t1:artifact:run_a:001",
-              label: "Artifact [draft]",
+              kind: "command_output",
+              evidenceId: "t1:command_output:run_a:001",
+              label: "Command output [draft]",
               confidence: "system-derived",
               href: "https://reports.local/artifacts/1",
               source: { runId: "run_a" },
@@ -345,7 +345,7 @@ describe("renderWorkItemReportMarkdown", () => {
     );
 
     expect(body).toContain(
-      "- [Artifact \\[draft\\]](https://reports.local/artifacts/1) (system-derived)",
+      "- [Command output \\[draft\\]](https://reports.local/artifacts/1) (system-derived)",
     );
   });
 

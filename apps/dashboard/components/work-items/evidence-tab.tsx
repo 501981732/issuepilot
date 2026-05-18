@@ -78,18 +78,18 @@ export function EvidenceTab({
   );
 
   async function handleConfirm(entry: WorkItemEvidenceEntry) {
-    setOptimisticConfirmedIds((current) =>
-      new Set(current).add(entry.evidenceId),
-    );
+    // V4.3 UX：pill 与 button 共享同一收尾时机，避免「pill 已绿 + 按钮仍
+    // Confirming…」的可见中间态。pending 期间 pill 保持原 confidence；
+    // resolve 之后再把 evidenceId 写入 optimisticConfirmedIds，让 pill 与
+    // 「Confirmed」按钮同时切换。失败则 optimistic 不写入，pill 与按钮一起回弹。
     setPendingIds((current) => new Set(current).add(entry.evidenceId));
     try {
       await onConfirm(entry.taskId, entry.evidenceId);
+      setOptimisticConfirmedIds((current) =>
+        new Set(current).add(entry.evidenceId),
+      );
     } catch {
-      setOptimisticConfirmedIds((current) => {
-        const next = new Set(current);
-        next.delete(entry.evidenceId);
-        return next;
-      });
+      // pill 没有抢跑，无需 rollback；按钮通过 pending 状态退出 Confirming…
     } finally {
       setPendingIds((current) => {
         const next = new Set(current);
@@ -210,8 +210,11 @@ function TaskEvidenceCard({
                       workItemId={workItemId}
                       project={project}
                       confirmed={
+                        // V4.3：pill 仅在 server confidence 已升级，
+                        // 或 optimistic 落库（pending 已收尾）后才染绿。
                         entry.confidence === "human-confirmed" ||
-                        optimisticConfirmedIds.has(entry.evidenceId)
+                        (optimisticConfirmedIds.has(entry.evidenceId) &&
+                          !pendingIds.has(entry.evidenceId))
                       }
                       pending={pendingIds.has(entry.evidenceId)}
                       onConfirm={() => onConfirm(entry)}

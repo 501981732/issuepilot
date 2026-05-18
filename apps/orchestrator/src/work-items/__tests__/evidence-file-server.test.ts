@@ -135,6 +135,54 @@ describe("serveEvidenceFile", () => {
     ).resolves.toEqual({ ok: false, error: "forbidden" });
   });
 
+  it("returns forbidden when the runId directory itself is a symlink to outside the worktree", async () => {
+    const outsideDir = await mkdtemp(
+      path.join(tmpdir(), "issuepilot-evidence-outside-"),
+    );
+    try {
+      await writeFile(path.join(outsideDir, "passwd"), "root:x:0:0");
+      const evidenceBase = path.join(
+        taskWorktreePath,
+        ".issuepilot",
+        "evidence",
+      );
+      await mkdir(evidenceBase, { recursive: true });
+      await symlink(outsideDir, path.join(evidenceBase, "run-symlink"));
+
+      await expect(
+        serveEvidenceFile({
+          taskWorktreePath,
+          runId: "run-symlink",
+          relPath: "passwd",
+        }),
+      ).resolves.toEqual({ ok: false, error: "forbidden" });
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns forbidden when the .issuepilot directory is a symlink to outside the worktree", async () => {
+    const outsideDir = await mkdtemp(
+      path.join(tmpdir(), "issuepilot-evidence-outside-"),
+    );
+    try {
+      const fakeEvidence = path.join(outsideDir, "evidence", "run-1");
+      await mkdir(fakeEvidence, { recursive: true });
+      await writeFile(path.join(fakeEvidence, "leak.txt"), "leak");
+      await symlink(outsideDir, path.join(taskWorktreePath, ".issuepilot"));
+
+      await expect(
+        serveEvidenceFile({
+          taskWorktreePath,
+          runId: "run-1",
+          relPath: "leak.txt",
+        }),
+      ).resolves.toEqual({ ok: false, error: "forbidden" });
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns oversized when file size is greater than 50MB", async () => {
     const absPath = await writeEvidenceFile("recordings/big.mp4", "");
     await truncate(absPath, 50 * 1024 * 1024 + 1);

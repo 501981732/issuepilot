@@ -16,6 +16,12 @@ import {
   type AggregateDeps,
 } from "../work-items/aggregate.js";
 import {
+  runTaskOnce,
+  type DispatchTaskWorkflow,
+} from "../work-items/dispatch-task.js";
+import type { DispatchInput } from "../orchestrator/dispatch.js";
+import { createRuntimeState } from "../runtime/state.js";
+import {
   appendOversizedFollowUps,
   mergeReportEvidence,
 } from "../work-items/evidence-merge.js";
@@ -470,6 +476,35 @@ async function expectTaskRunBinding(
   expect(links.map((link) => [link.taskId, link.runId])).toEqual(expected);
 }
 
+/**
+ * V4.3 acceptance §不变量：把 V4.1/V4.2 task execution contract 在 e2e
+ * 末尾正面 assert 一遍，避免后续阶段静默回归。
+ *
+ * - fake GitLab `createIssue` 调用次数为 0（synthetic task run 不创建
+ *   child Issue）。
+ * - 每个 task 的 `TaskRunLink` 是 canonical 唯一映射；retry 之外不应
+ *   出现「同一 taskId 多个并发 runId」。
+ * - V4.3 evidence 流程不会触碰 child issue 列表。
+ */
+async function assertV4Invariants(
+  harness: Awaited<ReturnType<typeof buildHarness>>,
+  workItemId: string,
+): Promise<void> {
+  expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
+  expect(harness.gitlab.state.childIssues).toHaveLength(0);
+  const links = await harness.store.listAllTaskRunLinks(workItemId);
+  const byTask = new Map<string, Set<string>>();
+  for (const link of links) {
+    const set = byTask.get(link.taskId) ?? new Set<string>();
+    set.add(link.runId);
+    byTask.set(link.taskId, set);
+  }
+  for (const runIds of byTask.values()) {
+    // V4.3 e2e 不模拟 retry —— 每个 task 应当只有 1 个 canonical runId。
+    expect(runIds.size).toBe(1);
+  }
+}
+
 async function expectOneMarkdownRender(input: {
   service: ReturnType<typeof createWorkItemService>;
   events: EventRecord[];
@@ -586,7 +621,7 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
         detail: expect.objectContaining({ workItemId, audience: "markdown" }),
       }),
     );
-    expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
+    await assertV4Invariants(harness, workItemId);
   });
 
   it("confirm flow stamps evidence, rewrites the handoff note, and emits review events", async () => {
@@ -645,7 +680,7 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
       ]),
     );
     expect(harness.gitlab.state.labelLog.at(-1)?.add).toContain("human-review");
-    expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
+    await assertV4Invariants(harness, workItemId);
   });
 
   it("keeps oversized and path-escaped evidence out of the index and exposes review follow-up", async () => {
@@ -763,7 +798,7 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     expect(harness.gitlab.state.labelLog.flatMap((entry) => entry.add)).not.toContain(
       "human-review",
     );
-    expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
+    await assertV4Invariants(harness, workItemId);
   });
 
   it("marks reports incomplete when a terminal TaskRunLink has no run report", async () => {
@@ -833,6 +868,105 @@ describe("V4.3 Review Packet + Evidence end-to-end", () => {
     expect(harness.gitlab.state.labelLog.flatMap((entry) => entry.add)).not.toContain(
       "human-review",
     );
+    await assertV4Invariants(harness, workItemId);
+  });
+
+  it("evidence file server rejects symlinked runId directories that point outside the worktree", async () => {
+    // V4.3 安全 e2e：reviewer 抓出的 symlink bypass 路径——若 runId 子
+    // 目录或中间路径是 symlink 指向 worktree 外部，evidence-file-server
+    // 必须 forbidden。这条 e2e 与 evidence-file-server.test.ts 的单测
+    // 形成 belt-and-suspenders。
+    const taskWorktreePath = await mkdtemp(
+      join(rootDir, "v43-symlink-worktree-"),
+    );
+    const outsideDir = await mkdtemp(join(rootDir, "v43-symlink-outside-"));
+    await writeFile(join(outsideDir, "passwd"), "root:x:0:0");
+    const evidenceBase = join(taskWorktreePath, ".issuepilot", "evidence");
+    await mkdir(evidenceBase, { recursive: true });
+    const { symlink } = await import("node:fs/promises");
+    await symlink(outsideDir, join(evidenceBase, "run-symlink"));
+
+    await expect(
+      serveEvidenceFile({
+        taskWorktreePath,
+        runId: "run-symlink",
+        relPath: "passwd",
+      }),
+    ).resolves.toEqual({ ok: false, error: "forbidden" });
+  });
+
+  it("preserves V4.1 dispatch invariants on the real runTaskOnce path: parentIssueLabelMode=suppressed, no child issue creation, no parent label drift", async () => {
+    // V4.3 acceptance #4：把 spec §V4.1 task execution contract 在 e2e
+    // 显式断言，避免 future refactor 把 parent Issue label 误推回 dispatch
+    // 路径。dispatch-task.test.ts 单测覆盖 unit 级别；这条 e2e 强调
+    // V4.3 改动后该不变量仍然在端到端流程上成立。
+    const workItem: WorkItem = {
+      workItemId: "wi_e2e_invariants",
+      sourceIssue: {
+        projectId: ISSUE.projectId,
+        iid: ISSUE.iid,
+        url: ISSUE.url,
+        title: ISSUE.title,
+      },
+      title: ISSUE.title,
+      goal: "Verify dispatch invariants",
+      acceptanceCriteria: [],
+      status: "ready",
+      taskIds: ["T1"],
+      createdAt: "2026-05-17T00:00:00.000Z",
+      updatedAt: "2026-05-17T00:00:00.000Z",
+    };
+    const dispatchWorkflow: DispatchTaskWorkflow = {
+      git: {
+        repoUrl: "git@gitlab.example.com:group/project.git",
+        baseBranch: "main",
+        branchPrefix: "ai",
+      },
+      workspace: {
+        root: join(rootDir, "wt-root"),
+        repoCacheRoot: join(rootDir, "repo-cache"),
+      },
+      tracker: {
+        runningLabel: "ai-running",
+        handoffLabel: "human-review",
+        reworkLabel: "ai-rework",
+      },
+    };
+    const captured: DispatchInput[] = [];
+    const result = await runTaskOnce({
+      workItem,
+      task: {
+        taskId: "T1",
+        title: "Collect browser evidence",
+        goal: "screenshots",
+        scope: "apps/dashboard",
+        dependsOn: [],
+        suggestedValidation: ["pnpm test"],
+        status: "ready",
+        runIds: [],
+        riskLevel: "medium",
+      },
+      workflow: dispatchWorkflow,
+      promptTemplate: "issue.title={{ issue.title }}",
+      state: createRuntimeState(),
+      dispatch: async (input) => {
+        captured.push(input);
+      },
+      newRunId: () => "run_synthetic_v43",
+      now: () => "2026-05-17T00:10:00.000Z",
+    });
+
+    expect(result.runId).toBe("run_synthetic_v43");
+    expect(captured).toHaveLength(1);
+    const input = captured[0]!;
+    expect(input.parentIssueLabelMode).toBe("suppressed");
+    expect(input.runId).toBe("run_synthetic_v43");
+    expect(input.issue.iid).toBe(ISSUE.iid);
+    // Dispatch path 自身不能产生 GitLab createIssue / 标签写入；这两件事
+    // 都由 aggregator 路径在 reconcileWorkItem 时统一执行。
+    const harness = await buildHarness(rootDir);
     expect(harness.gitlab.state.createIssue).not.toHaveBeenCalled();
+    expect(harness.gitlab.state.labelLog).toEqual([]);
+    expect(harness.gitlab.state.notes).toEqual([]);
   });
 });

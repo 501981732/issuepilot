@@ -371,7 +371,27 @@
       "aria": "质量分析",
       "title": "质量分析",
       "description": "从本地 run 报告与 work item 报告聚合的成功率、失败率、返工率、CI、review 命中率与缺证据指标。",
-      "empty": "暂无质量数据。orchestrator 跑起来后，这里就会有数据。"
+      "empty": "暂无质量数据。orchestrator 跑起来后，这里就会有数据。",
+      "windowAria": "当前分析窗口",
+      "strip": "质量概览条",
+      "trendTitle": "趋势",
+      "trendSwitcher": "选择要查看的指标",
+      "trendLabel": "{metric} 趋势",
+      "emptyTrend": "窗口内暂无数据点。",
+      "patternsTitle": "失败模式",
+      "noPatterns": "未识别出失败模式。",
+      "drilldownTitle": "下钻明细",
+      "noDrilldown": "暂无匹配的下钻条目。",
+      "rowCount": "{count, plural, other {# 行}}",
+      "headProject": "项目",
+      "headTarget": "来源",
+      "headPattern": "模式",
+      "headReason": "原因",
+      "headUpdated": "更新于",
+      "headLink": "",
+      "openSource": "打开来源",
+      "diagnostics": "{count, plural, other {跳过 # 份无法解析的报告}}",
+      "unknownCount": "{count} 未知"
     }
   },
   "runDetail": {

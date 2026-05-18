@@ -94,7 +94,7 @@ describe("ReportsPage", () => {
     expect(
       screen.getByRole("heading", { name: /Quality Analytics/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Success rate/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Success rate/i).length).toBeGreaterThan(0);
   });
 
   it("renders an empty state when no reports exist", () => {

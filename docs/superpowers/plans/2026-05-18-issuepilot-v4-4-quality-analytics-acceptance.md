@@ -103,6 +103,33 @@ git diff --check
 
 期望：无 whitespace 警告。
 
+## 3.4 本次验证记录（2026-05-18）
+
+- 焦点单测全部通过：
+  - `pnpm --filter @issuepilot/shared-contracts exec vitest run src/__tests__/quality.test.ts` → 4/4 pass.
+  - `pnpm --filter @issuepilot/orchestrator exec vitest run src/quality src/server/__tests__/server.test.ts`
+    → 115/115 pass（含 V4.4 server route 8 个 cases）。
+  - `pnpm --filter @issuepilot/dashboard exec vitest run lib/api.test.ts components/reports/quality-analytics.test.tsx components/reports/reports-page.test.tsx`
+    → 58/58 pass。
+- 仓库 gate：`SKIP_E2E=1 scripts/ci-equivalent-check.sh` 全部 5 个 stage
+  通过：`tsc -b`、`tsc -p scripts/tsconfig.json`、`next build`
+  （`/reports` 等所有路由编译通过）、`eslint --max-warnings 0`、
+  orchestrator vitest 600 tests + dashboard vitest 222 tests、
+  `git diff --check` 无 whitespace 警告。
+- 第一次 gate 暴露两个问题，已在
+  `fix(orchestrator): satisfy strict TS and eslint import order in quality module`
+  提交中修复，并复跑通过：
+  - `aggregate.ts` 的 `median` helper 在 strict mode 下因数组下标返回
+    `number | undefined`，已加显式回退；
+  - `server/index.ts` 中 `quality/aggregate.js` 与 `quality/collect.js`
+    的导入顺序违反 `import/order`，已重新排序。
+- 跳过的 stage：本机 corepack / pnpm 与默认 Node Rollup native binding
+  受限，遵循 `AGENTS.md` 的指引使用脚本默认 `NODE_BIN_DIR`
+  （`~/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin`）。
+  `SKIP_E2E=1` 是脚本声明的快速 gate 路径；未跳过的核心 build / lint /
+  unit / 整库 vitest / `git diff --check` 均通过，对应 plan §21 的发布
+  gate 要求。
+
 ## 4. 风险与跟进
 
 - **指标定义稳定性**：metric id 与 pattern id 一旦发布，下游会缓存 URL 与

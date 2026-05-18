@@ -4,6 +4,7 @@ export const VERSION = "0.0.0";
 export * from "./api.js";
 export * from "./events.js";
 export * from "./issue.js";
+export * from "./quality.js";
 export * from "./report.js";
 export * from "./retention.js";
 export * from "./review.js";

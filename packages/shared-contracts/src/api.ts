@@ -3,6 +3,7 @@ import {
   type RunReportArtifact,
   type RunReportSummary,
 } from "./report.js";
+export type { QualitySummaryResponse } from "./quality.js";
 import { type RunRecord, type RunStatus } from "./run.js";
 import type {
   TaskNode,

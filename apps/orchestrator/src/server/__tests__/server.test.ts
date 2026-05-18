@@ -44,6 +44,8 @@ async function buildTestApp(
     reportsByProject?: ServerDeps["reportsByProject"];
     workItems?: ServerDeps["workItems"];
     workItemsByProject?: ServerDeps["workItemsByProject"];
+    quality?: ServerDeps["quality"];
+    qualityByProject?: ServerDeps["qualityByProject"];
   } = {},
 ) {
   const state = createRuntimeState();
@@ -70,6 +72,10 @@ async function buildTestApp(
       ...(overrides.workItems ? { workItems: overrides.workItems } : {}),
       ...(overrides.workItemsByProject
         ? { workItemsByProject: overrides.workItemsByProject }
+        : {}),
+      ...(overrides.quality ? { quality: overrides.quality } : {}),
+      ...(overrides.qualityByProject
+        ? { qualityByProject: overrides.qualityByProject }
         : {}),
     },
     { port: 0 },
@@ -900,6 +906,7 @@ describe("run reports", () => {
       summary: (runId: string) =>
         runId === report.runId ? summary : undefined,
       allSummaries: () => [summary],
+      all: async () => [report],
     };
   }
 
@@ -1174,6 +1181,7 @@ describe("V4.1 work item routes", () => {
         return report ? buildRunReportSummary(report) : undefined;
       },
       allSummaries: () => [...byRun.values()].map(buildRunReportSummary),
+      all: async () => [...byRun.values()],
     };
   }
 
@@ -2159,5 +2167,218 @@ describe("V4.1 work item routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  describe("V4.4 quality summary route", () => {
+    function fixtureRunReport(over: {
+      runId: string;
+      projectId?: string;
+      status?: "completed" | "failed" | "blocked";
+      ciStatus?: "success" | "failed";
+    }): RunReportArtifact {
+      return {
+        version: RUN_REPORT_VERSION,
+        runId: over.runId,
+        issue: {
+          projectId: over.projectId ?? "proj-a",
+          iid: 1,
+          title: "Issue",
+          url: "https://gitlab.example/1",
+          labels: ["human-review"],
+        },
+        run: {
+          status: over.status ?? "completed",
+          attempt: 1,
+          branch: "issuepilot/1",
+          workspacePath: "/tmp/ws",
+          startedAt: "2026-05-18T00:00:00.000Z",
+          endedAt: "2026-05-18T00:05:00.000Z",
+          durations: { totalMs: 300_000 },
+        },
+        handoff: {
+          summary: "ok",
+          validation: [],
+          risks: [],
+          followUps: [],
+          nextAction: "review",
+        },
+        diff: { summary: "", filesChanged: 0, notableFiles: [] },
+        checks: [{ name: "unit", status: "passed" }],
+        mergeReadiness: {
+          mode: "dry-run",
+          status: "unknown",
+          reasons: [],
+          evaluatedAt: "2026-05-18T00:05:00.000Z",
+        },
+        notes: {},
+        ...(over.ciStatus
+          ? {
+              ci: {
+                status: over.ciStatus,
+                checkedAt: "2026-05-18T00:05:00.000Z",
+              },
+            }
+          : {}),
+      };
+    }
+
+    function reportStoreWith(reports: RunReportArtifact[]) {
+      return {
+        save: async () => {},
+        get: async (runId: string) =>
+          reports.find((r) => r.runId === runId),
+        summary: () => undefined,
+        allSummaries: () => [],
+        all: async () => reports,
+      };
+    }
+
+    it("GET /api/quality/summary returns quality summary", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        reports: reportStoreWith([
+          fixtureRunReport({ runId: "ok", status: "completed" }),
+          fixtureRunReport({ runId: "bad", status: "failed" }),
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?window=7d",
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body);
+        expect(body.metrics).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: "success-rate" }),
+          ]),
+        );
+        expect(body.scope).toEqual({ mode: "single-project" });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("rejects project query to avoid scope ambiguity", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        reports: reportStoreWith([]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?project=proj-a",
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "project_query_unsupported",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("rejects unsupported status", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        reports: reportStoreWith([]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?status=failed",
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "invalid_status",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("requires x-issuepilot-project in team mode", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        qualityByProject: new Map([
+          ["proj-a", { reports: reportStoreWith([]) }],
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "project_required",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("rejects unknown project id in team mode", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        qualityByProject: new Map([
+          ["proj-a", { reports: reportStoreWith([]) }],
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+          headers: { "x-issuepilot-project": "missing" },
+        });
+        expect(resp.statusCode).toBe(404);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "project_not_found",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("routes team quality summary to the selected project", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        qualityByProject: new Map([
+          [
+            "proj-a",
+            { reports: reportStoreWith([fixtureRunReport({ runId: "a", projectId: "proj-a" })]) },
+          ],
+          [
+            "proj-b",
+            { reports: reportStoreWith([fixtureRunReport({ runId: "b", projectId: "proj-b" })]) },
+          ],
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+          headers: { "x-issuepilot-project": "proj-b" },
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body);
+        expect(body.scope).toEqual({
+          mode: "team-project",
+          projectId: "proj-b",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("returns stable empty response when stores are absent", async () => {
+      const { app } = await buildTestApp(async () => [], {});
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body);
+        expect(body.metrics.length).toBeGreaterThan(0);
+        expect(body.drilldown).toEqual([]);
+      } finally {
+        await app.close();
+      }
+    });
   });
 });

@@ -23,6 +23,10 @@ import { WORK_ITEM_STATUS_VALUES } from "@issuepilot/shared-contracts";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { OperatorActionResult } from "../operations/actions.js";
+import type { QualityCollectorDeps } from "../quality/collect.js";
+import { collectQualitySources } from "../quality/collect.js";
+import { buildQualitySummary } from "../quality/aggregate.js";
+import { parseQualityQuery } from "../quality/filters.js";
 import type { ReportStore } from "../reports/store.js";
 import type { RuntimeState } from "../runtime/state.js";
 import { serveEvidenceFile } from "../work-items/evidence-file-server.js";
@@ -211,6 +215,19 @@ export interface ServerDeps {
    * falls back to `workItems` regardless of the header.
    */
   workItemsByProject?: Map<string, WorkItemService>;
+  /**
+   * V4.4 Quality Analytics: source stores for single-project mode. When
+   * absent the server falls back to `deps.reports` (run-only metrics) so
+   * legacy callers still get a stable summary.
+   */
+  quality?: QualityCollectorDeps;
+  /**
+   * V4.4 Quality Analytics: per-project source stores for team-mode. When
+   * set, the route requires `x-issuepilot-project` and rejects the legacy
+   * `project` query string with `project_query_unsupported` so dashboards
+   * cannot accidentally leak cross-project analytics.
+   */
+  qualityByProject?: Map<string, QualityCollectorDeps>;
 }
 
 function resolveSnapshotField<T>(
@@ -1109,6 +1126,105 @@ export async function createServer(
       if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const report = await ctx.service.report(request.params.id);
       return reply.code(200).send({ report });
+    },
+  );
+
+  /**
+   * Returns the quality summary for the current project scope. Reads:
+   *   - `deps.qualityByProject` (team mode) keyed on `x-issuepilot-project`.
+   *   - `deps.quality` (single mode).
+   *   - `deps.reports` fallback when nothing else is wired so V4.4 still
+   *     produces a stable, run-only summary.
+   *
+   * Rejects the legacy `project=` query so dashboards can never accidentally
+   * leak cross-project analytics — team-mode scope flows exclusively through
+   * `x-issuepilot-project`.
+   */
+  app.get<{ Querystring: Record<string, unknown> }>(
+    "/api/quality/summary",
+    async (request, reply) => {
+      const headers = request.headers as Record<string, unknown>;
+      const query = request.query ?? {};
+
+      if (query["project"] !== undefined) {
+        return reply.code(400).send(
+          routeError(
+            "project_query_unsupported",
+            "project query is not supported; team mode uses x-issuepilot-project",
+          ),
+        );
+      }
+
+      let depsForRequest: QualityCollectorDeps | undefined;
+      let scope: { mode: "single-project" | "team-project"; projectId?: string };
+
+      if (deps.qualityByProject && deps.qualityByProject.size > 0) {
+        const raw = headers["x-issuepilot-project"];
+        const project = Array.isArray(raw) ? raw[0] : raw;
+        if (typeof project !== "string" || project.length === 0) {
+          return reply.code(400).send(
+            routeError(
+              "project_required",
+              "x-issuepilot-project header is required for quality summary in team mode",
+            ),
+          );
+        }
+        const projectDeps = deps.qualityByProject.get(project);
+        if (!projectDeps) {
+          return reply
+            .code(404)
+            .send(routeError("project_not_found", `Unknown project: ${project}`));
+        }
+        depsForRequest = projectDeps;
+        scope = { mode: "team-project", projectId: project };
+      } else {
+        depsForRequest = deps.quality ?? {
+          ...(deps.reports ? { reports: deps.reports } : {}),
+        };
+        scope = { mode: "single-project" };
+      }
+
+      const parseInput = {
+        ...(typeof query["workflow"] === "string"
+          ? { workflow: query["workflow"] }
+          : {}),
+        ...(typeof query["taskType"] === "string"
+          ? { taskType: query["taskType"] }
+          : {}),
+        ...(typeof query["status"] === "string"
+          ? { status: query["status"] }
+          : {}),
+        ...(typeof query["pattern"] === "string"
+          ? { pattern: query["pattern"] }
+          : {}),
+        ...(typeof query["from"] === "string" ? { from: query["from"] } : {}),
+        ...(typeof query["to"] === "string" ? { to: query["to"] } : {}),
+        ...(typeof query["window"] === "string"
+          ? { window: query["window"] }
+          : {}),
+      };
+      const parsed = parseQualityQuery(parseInput, {
+        now: new Date().toISOString(),
+      });
+      if (parsed.error || !parsed.filters) {
+        return reply
+          .code(400)
+          .send(
+            routeError(
+              parsed.error?.code ?? "invalid_query",
+              parsed.error?.message ?? "invalid quality query",
+            ),
+          );
+      }
+
+      const collection = await collectQualitySources(depsForRequest ?? {});
+      const summary = buildQualitySummary({
+        items: collection.items,
+        filters: parsed.filters,
+        scope,
+        diagnostics: collection.diagnostics,
+      });
+      return reply.code(200).send(summary);
     },
   );
 

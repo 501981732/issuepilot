@@ -23,9 +23,9 @@ import { WORK_ITEM_STATUS_VALUES } from "@issuepilot/shared-contracts";
 import Fastify, { type FastifyInstance } from "fastify";
 
 import type { OperatorActionResult } from "../operations/actions.js";
+import { buildQualitySummary } from "../quality/aggregate.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { collectQualitySources } from "../quality/collect.js";
-import { buildQualitySummary } from "../quality/aggregate.js";
 import { parseQualityQuery } from "../quality/filters.js";
 import type { ReportStore } from "../reports/store.js";
 import type { RuntimeState } from "../runtime/state.js";

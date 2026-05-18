@@ -82,6 +82,11 @@ const REQUIRED_EVENT_TYPES = [
   "workspace_cleanup_planned",
   "workspace_cleanup_completed",
   "workspace_cleanup_failed",
+  "work_item_evidence_indexed",
+  "work_item_evidence_index_skipped",
+  "work_item_evidence_index_failed",
+  "work_item_evidence_confirmed",
+  "work_item_report_rendered",
 ] as const;
 
 describe("@issuepilot/shared-contracts/events", () => {
@@ -164,6 +169,23 @@ describe("@issuepilot/shared-contracts/events", () => {
       expect(
         (EVENT_TYPE_VALUES as readonly string[]).includes(t),
         `V4.2 event not in EVENT_TYPE_VALUES: ${t}`,
+      ).toBe(true);
+    }
+  });
+
+  it("isEventType narrows V4.3 review packet + evidence types", () => {
+    const v43Types = [
+      "work_item_evidence_indexed",
+      "work_item_evidence_index_skipped",
+      "work_item_evidence_index_failed",
+      "work_item_evidence_confirmed",
+      "work_item_report_rendered",
+    ];
+    for (const t of v43Types) {
+      expect(isEventType(t), `missing V4.3 event: ${t}`).toBe(true);
+      expect(
+        (EVENT_TYPE_VALUES as readonly string[]).includes(t),
+        `V4.3 event not in EVENT_TYPE_VALUES: ${t}`,
       ).toBe(true);
     }
   });

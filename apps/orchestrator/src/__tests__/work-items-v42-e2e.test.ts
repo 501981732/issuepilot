@@ -236,7 +236,7 @@ function buildHarness(opts: {
     if (!wi || !plan) return;
     const links = await store.listAllTaskRunLinks(workItemId);
     const ts = "2026-05-17T00:00:00.000Z";
-    const report = await aggregateWorkItem(wi, plan, links, aggregateDeps);
+    const { report } = await aggregateWorkItem(wi, plan, links, aggregateDeps);
     await store.saveReport(report);
     const previousStatus = wi.status;
     const nextStatus = decideWorkItemStatus(report.overallStatus, plan, links);

@@ -7,10 +7,12 @@ import { renderWithIntl as render } from "../../test/intl";
 
 vi.mock("../../lib/api", () => ({
   acceptWorkItemPlan: vi.fn(),
+  confirmWorkItemTaskEvidence: vi.fn(),
   regenerateWorkItemPlan: vi.fn(),
   skipWorkItemTask: vi.fn(),
   retryWorkItemTask: vi.fn(),
   getWorkItem: vi.fn(),
+  getWorkItemEvidence: vi.fn(),
   getWorkItemGraph: vi.fn(),
   replanWorkItemTask: vi.fn(),
   markWorkItemTaskRework: vi.fn(),
@@ -19,7 +21,9 @@ vi.mock("../../lib/api", () => ({
 
 import {
   acceptWorkItemPlan,
+  confirmWorkItemTaskEvidence,
   getWorkItem,
+  getWorkItemEvidence,
   getWorkItemGraph,
   regenerateWorkItemPlan,
   retryWorkItemTask,
@@ -131,7 +135,7 @@ describe("WorkItemDetail", () => {
     ]);
     expect(opts).toEqual({ operator: "alice" });
 
-    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1", {}));
   });
 
   it("invokes regenerateWorkItemPlan with operator and reloads", async () => {
@@ -148,7 +152,7 @@ describe("WorkItemDetail", () => {
         operator: "alice",
       }),
     );
-    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1"));
+    await waitFor(() => expect(getWorkItem).toHaveBeenCalledWith("wi_1", {}));
   });
 
   it("V4.2: shows the view toggle and switches to TaskGraph when graph data loads", async () => {
@@ -179,6 +183,174 @@ describe("WorkItemDetail", () => {
     await waitFor(() => expect(getWorkItemGraph).toHaveBeenCalledWith("wi_1"));
     await waitFor(() =>
       expect(screen.getByTestId("task-graph-node-T1")).toBeInTheDocument(),
+    );
+  });
+
+  it("V4.3: switches to the evidence view without loading the graph", () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [],
+      byTask: {},
+      missing: [],
+    });
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+
+    expect(screen.getByText("No evidence matches this filter.")).toBeInTheDocument();
+    expect(getWorkItemGraph).not.toHaveBeenCalled();
+  });
+
+  it("V4.3: persists ?view=evidence in the URL when the operator switches view", async () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [],
+      byTask: {},
+      missing: [],
+    });
+
+    window.history.replaceState(null, "", "/work-items/wi_1");
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+    await waitFor(() =>
+      expect(window.location.search).toBe("?view=evidence"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /List/ }));
+    await waitFor(() => expect(window.location.search).toBe(""));
+  });
+
+  it("V4.3: fetches evidence when view=evidence", async () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [
+        {
+          taskId: "T1",
+          kind: "validation",
+          evidenceId: "ev_validation",
+          label: "pnpm test passed",
+          confidence: "system-derived",
+        },
+      ],
+      byTask: {},
+      missing: [],
+    });
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+
+    await waitFor(() =>
+      expect(getWorkItemEvidence).toHaveBeenCalledWith("wi_1", {}),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
+    );
+  });
+
+  it("V4.3: confirms evidence and reloads after confirm", async () => {
+    vi.mocked(getWorkItemEvidence)
+      .mockResolvedValueOnce({
+        index: [
+          {
+            taskId: "T1",
+            kind: "validation",
+            evidenceId: "ev_validation",
+            label: "pnpm test passed",
+            confidence: "ai-claim",
+          },
+        ],
+        byTask: {},
+        missing: [],
+      })
+      .mockResolvedValueOnce({
+        index: [
+          {
+            taskId: "T1",
+            kind: "validation",
+            evidenceId: "ev_validation",
+            label: "pnpm test passed",
+            confidence: "human-confirmed",
+          },
+        ],
+        byTask: {},
+        missing: [],
+      });
+    vi.mocked(confirmWorkItemTaskEvidence).mockResolvedValue({
+      evidenceId: "ev_validation",
+      confirmedAt: "2026-05-17T10:00:00.000Z",
+      report: {
+        workItemId: "wi_1",
+        overallStatus: "complete",
+        taskSummaries: [],
+        validationSummary: "",
+        riskSummary: "",
+        evidence: { index: [], byTask: {} },
+        openQuestions: [],
+        recommendedNextActions: [],
+        humanReviewChecklist: [],
+        generatedAt: "2026-05-17T10:00:00.000Z",
+      },
+    });
+    vi.mocked(getWorkItem).mockResolvedValue(acceptedDetail());
+
+    render(
+      <WorkItemDetail
+        initial={acceptedDetail()}
+        operator="alice"
+        project="platform-web"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+    await waitFor(() =>
+      expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() =>
+      expect(confirmWorkItemTaskEvidence).toHaveBeenCalledWith(
+        "wi_1",
+        "T1",
+        "ev_validation",
+        { operator: "alice", project: "platform-web" },
+      ),
+    );
+    await waitFor(() =>
+      expect(getWorkItem).toHaveBeenCalledWith("wi_1", {
+        project: "platform-web",
+      }),
+    );
+    expect(getWorkItemEvidence).toHaveBeenCalledWith("wi_1", {
+      project: "platform-web",
+    });
+    expect(getWorkItemEvidence).toHaveBeenCalledTimes(2);
+  });
+
+  it("V4.3: surfaces confirm evidence failures", async () => {
+    vi.mocked(getWorkItemEvidence).mockResolvedValue({
+      index: [
+        {
+          taskId: "T1",
+          kind: "validation",
+          evidenceId: "ev_validation",
+          label: "pnpm test passed",
+          confidence: "ai-claim",
+        },
+      ],
+      byTask: {},
+      missing: [],
+    });
+    vi.mocked(confirmWorkItemTaskEvidence).mockRejectedValue(
+      new Error("confirm failed"),
+    );
+
+    render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
+    fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
+    await waitFor(() =>
+      expect(screen.getByText("pnpm test passed")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("confirm failed"),
     );
   });
 

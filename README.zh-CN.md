@@ -1,6 +1,6 @@
 # IssuePilot
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.en.md) | [简体中文](README.md)
 
 > 开发项目管理常常需要监督编码代理：盯任务进度、催 PR、查 CI 状态、来回手动
 > 协调验收，效率被切碎在一次次"代理报告进度"上。
@@ -85,21 +85,21 @@ IssuePilot 起源于 OpenAI Symphony 的 fork，因此 **整体架构思路是�
 
 差异主要发生在**目标场景**与**实现选择**：
 
-| 维度          | OpenAI Symphony（参考实现，Elixir）              | IssuePilot（本仓库的产品方向）                                                  |
-| ------------- | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| 定位          | 公开的 prototype，鼓励 fork 自建加固版           | 公司内部的 P0 生产方向，目标是落地到内部工程团队日常使用                        |
-| Issue Tracker | Linear                                           | GitLab（Group Access Token / Personal Token，本地 SaaS / Self-managed 都支持）  |
-| 状态机表达    | 基于 Linear issue **status**（state-based）      | 基于 GitLab **label**（`ai-ready` / `ai-running` / `human-review` / …）         |
-| 工作流契约    | `WORKFLOW.md`（仓库根）                          | `WORKFLOW.md`（YAML front matter + Markdown prompt）                            |
-| 实现语言      | Elixir / OTP                                     | TypeScript / Node.js 22 LTS                                                     |
-| 运行形态      | 单进程 Elixir 服务 + 可选 status surface         | orchestrator（Fastify daemon）+ 只读 Next.js dashboard（Tailwind/shadcn）       |
-| 工作区策略    | 每 Issue 独立 workspace                          | bare mirror + git worktree（`~/.issuepilot/{repos,workspaces,state}`）          |
-| 事件 / 日志   | 结构化日志 + 可选 status surface                 | JSONL event store + 原子 run record + SSE 实时流 + pino structured logging      |
+| 维度          | OpenAI Symphony（参考实现，Elixir）              | IssuePilot（本仓库的产品方向）                                                                                         |
+| ------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 定位          | 公开的 prototype，鼓励 fork 自建加固版           | 公司内部的 P0 生产方向，目标是落地到内部工程团队日常使用                                                               |
+| Issue Tracker | Linear                                           | GitLab（Group Access Token / Personal Token，本地 SaaS / Self-managed 都支持）                                         |
+| 状态机表达    | 基于 Linear issue **status**（state-based）      | 基于 GitLab **label**（`ai-ready` / `ai-running` / `human-review` / …）                                                |
+| 工作流契约    | `WORKFLOW.md`（仓库根）                          | `WORKFLOW.md`（YAML front matter + Markdown prompt）                                                                   |
+| 实现语言      | Elixir / OTP                                     | TypeScript / Node.js 22 LTS                                                                                            |
+| 运行形态      | 单进程 Elixir 服务 + 可选 status surface         | orchestrator（Fastify daemon）+ 只读 Next.js dashboard（Tailwind/shadcn）                                              |
+| 工作区策略    | 每 Issue 独立 workspace                          | bare mirror + git worktree（`~/.issuepilot/{repos,workspaces,state}`）                                                 |
+| 事件 / 日志   | 结构化日志 + 可选 status surface                 | JSONL event store + 原子 run record + SSE 实时流 + pino structured logging                                             |
 | MR/PR 处理    | 由 agent 通过 workflow 内的 tools 自行 push / 写 | 混合模型：Codex 可调用窄范围 GitLab dynamic tools，orchestrator 负责认领、reconciliation 和 MR / note / label 兜底写入 |
-| 重启恢复      | tracker + 文件系统驱动                           | label 状态 + handoff note marker（`<!-- issuepilot:run:<runId> -->`）驱动       |
-| 安全姿态      | 实现自行声明 trust posture                       | 拒绝 `danger-full-access` sandbox、token 全链路 redact、Codex cwd 限定 worktree |
-| 公开 SPEC     | `SPEC.md` v1 (language-agnostic)                 | `SPEC.md` 保留为参考；产品 spec 见 `docs/superpowers/specs/`                    |
-| 当前状态      | 评估用 prototype，建议自行加固后使用             | V1 本地试点可用，release lock 仍待 evidence / tag 归档                          |
+| 重启恢复      | tracker + 文件系统驱动                           | label 状态 + handoff note marker（`<!-- issuepilot:run:<runId> -->`）驱动                                              |
+| 安全姿态      | 实现自行声明 trust posture                       | 拒绝 `danger-full-access` sandbox、token 全链路 redact、Codex cwd 限定 worktree                                        |
+| 公开 SPEC     | `SPEC.md` v1 (language-agnostic)                 | `SPEC.md` 保留为参考；产品 spec 见 `docs/superpowers/specs/`                                                           |
+| 当前状态      | 评估用 prototype，建议自行加固后使用             | V1 本地试点可用，release lock 仍待 evidence / tag 归档                                                                 |
 
 如果你需要的是 Linear + Elixir 路线的参考实现，请直接看
 [`elixir/`](elixir/README.md) 与 [`SPEC.md`](SPEC.md)。如果你需要的是
@@ -450,7 +450,7 @@ CI 回流、review feedback 与 workspace 清理。视觉版本：
 - 团队模式上手：[`USAGE.zh-CN.md` — Part 5](USAGE.zh-CN.md#part-5--v2-团队模式共享机器--多项目)
 
 - ✅ Phase 1 — Team Runtime Foundation：`issuepilot run --config
-  /path/to/issuepilot.team.yaml` team mode，用于多项目加载、lease-backed
+/path/to/issuepilot.team.yaml` team mode，用于多项目加载、lease-backed
   调度和 project-aware dashboard state。
 - ✅ 单 daemon 支持多项目；并发可在 1–5 之间配置，配套全局 + per-project
   租约槽位。
@@ -464,7 +464,7 @@ CI 回流、review feedback 与 workspace 清理。视觉版本：
   issue 被打回 `ai-rework` 时，新一轮 run 会自动继承上一轮的 summary，并以
   统一的 `## Review feedback` markdown 区段拼接到 agent prompt 之前。该 sweep
   始终开启，无需 workflow 开关。dashboard 的 run 详情页面新增 `Latest review
-  feedback` 面板，可直接跳转到 MR 上的每条评论。
+feedback` 面板，可直接跳转到 MR 上的每条评论。
 - ✅ Workspace retention（V2 Phase 5）：orchestrator 按 `retention.cleanup_interval_ms`
   周期清理 `~/.issuepilot/workspaces`，成功 run 默认 7 天到期、失败 run 默认
   保留 30 天供取证，active run 永远不删；总容量超出 `max_workspace_gb` 时
@@ -554,7 +554,7 @@ Center 减负、把信息密度调到合理区间。
   组合实现"从头截断"，文件名（`WORKFLOW.md`）始终可见，完整路径走原生
   `title=` tooltip。
 - ✅ **Section header 减负**。原本满屏的 `text-[11px] uppercase
-  tracking-[0.18em]` micro-label 改回普通 `text-base font-semibold`；
+tracking-[0.18em]` micro-label 改回普通 `text-base font-semibold`；
   `font-mono` micro-label 风格只保留给页面级 overhead label 和 `dt`
   metadata 标签 —— 它们才是真正的 kicker，在那里读起来自然。
 
@@ -569,7 +569,7 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
 预算这些平台底座，而是专注研发流程智能；等能力验证清楚后，再由 V3 把这些
 能力生产化。
 
-- **大 Issue 工作单元 / Parent Review Packet** — *V4.1 已落地*。
+- **大 Issue 工作单元 / Parent Review Packet** — _V4.1 已落地_。
   Operator 可以从 Command Center 选中一个 GitLab 大 Issue，「Plan work item」
   让 LLM 起草 2–5 个子任务，在 `/work-items/<id>` 接受 / 编辑 / 重新生成
   plan，每个子任务跑独立的 synthetic task run 并产出独立 MR；
@@ -580,7 +580,7 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`；
   实施计划：
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`。
-- **Task Graph 视图 + 依赖图执行 + branch chaining** — *V4.2 已落地*。
+- **Task Graph 视图 + 依赖图执行 + branch chaining** — _V4.2 已落地_。
   `/work-items/<id>` 现在可以在分组列表和 SVG Task Graph
   （topology 布局 + critical path 高亮）之间切换；orchestration 真正
   遵守 `dependsOn`：单上游依赖、上游 `completed` 且 MR 仍 `opened` 时，
@@ -595,6 +595,16 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   work-item API 自动带 `x-issuepilot-project` header；两个 project
   的 WorkItem 完全互不可见。实施计划：
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`。
+- **Review Packet + Evidence** — _V4.3 已落地_。WorkItem report 现在会从
+  task worktree 索引 reviewer evidence（`screenshot` / `recording` /
+  `playwright` / `command_output` / `test_result`），并把 AI / system claim
+  与 human-confirmed evidence 明确分开。Parent Review Packet 从同一个
+  renderer 生成 checklist、CI/test summary、风险和 evidence 链接，GitLab
+  handoff note 与 dashboard Markdown export 共用这份事实源。
+  `/work-items/<id>?view=evidence` 新增按 kind 过滤的 Evidence 视图，
+  支持单条 evidence 人工确认；`Copy as Markdown` 直接读取 orchestrator 的
+  `/api/work-items/<id>/report.md`。实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，

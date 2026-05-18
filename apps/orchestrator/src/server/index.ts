@@ -1,3 +1,5 @@
+import { createReadStream } from "node:fs";
+
 import {
   redact,
   type EventBus,
@@ -5,6 +7,7 @@ import {
 } from "@issuepilot/observability";
 import type {
   AcceptWorkItemPlanRequest,
+  ConfirmEvidenceResponse,
   IssuePilotInternalEvent,
   ProjectSummary,
   RunReportSummary,
@@ -12,6 +15,7 @@ import type {
   TeamRuntimeSummary,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemEvidenceResponse,
   WorkItemReport,
   WorkItemStatus,
 } from "@issuepilot/shared-contracts";
@@ -21,6 +25,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { OperatorActionResult } from "../operations/actions.js";
 import type { ReportStore } from "../reports/store.js";
 import type { RuntimeState } from "../runtime/state.js";
+import { serveEvidenceFile } from "../work-items/evidence-file-server.js";
 
 /**
  * V4.1 Workflow Spine work item service.
@@ -106,6 +111,16 @@ export interface WorkItemService {
     | WorkItemServiceError
   >;
   report(id: string): Promise<WorkItemReport | undefined>;
+  getReportMarkdown(id: string): Promise<string | WorkItemServiceError>;
+  getEvidence(
+    id: string,
+  ): Promise<WorkItemEvidenceResponse | WorkItemServiceError>;
+  confirmTaskEvidence(
+    workItemId: string,
+    taskId: string,
+    evidenceId: string,
+    input: { operator?: string },
+  ): Promise<ConfirmEvidenceResponse | WorkItemServiceError>;
 }
 
 export interface ServerDeps {
@@ -172,6 +187,13 @@ export interface ServerDeps {
    * legacy shape so older callers and tests remain unaffected.
    */
   reports?: ReportStore;
+  /**
+   * V4.3 team-mode: per-project report stores keyed by the same project id
+   * used by `workItemsByProject`. Evidence file routing must use the selected
+   * project's store so identical run ids in another project cannot resolve a
+   * foreign workspace.
+   */
+  reportsByProject?: Map<string, ReportStore>;
   /**
    * V4.1 Workflow Spine: WorkItem orchestration façade. When absent,
    * `/api/issues/:iid/plan` and `/api/work-items/*` routes uniformly
@@ -561,6 +583,7 @@ export async function createServer(
 
   function statusFromWorkItemCode(code: string): number {
     if (code === "not_found") return 404;
+    if (code === "report_not_ready") return 404;
     if (code === "invalid_status") return 409;
     if (code === "invalid_iid") return 400;
     if (code === "missing_plan_id") return 400;
@@ -571,7 +594,7 @@ export async function createServer(
   }
 
   type WorkItemRouteContext =
-    | { ok: true; service: WorkItemService }
+    | { ok: true; service: WorkItemService; projectId?: string }
     | {
         ok: false;
         statusCode: number;
@@ -587,9 +610,10 @@ export async function createServer(
    */
   function resolveWorkItemService(
     headers: Record<string, unknown>,
+    queryProject?: unknown,
   ): WorkItemRouteContext {
     if (deps.workItemsByProject && deps.workItemsByProject.size > 0) {
-      const raw = headers["x-issuepilot-project"];
+      const raw = headers["x-issuepilot-project"] ?? queryProject;
       const project = Array.isArray(raw) ? raw[0] : raw;
       if (typeof project !== "string" || project.length === 0) {
         return {
@@ -615,7 +639,7 @@ export async function createServer(
           },
         };
       }
-      return { ok: true, service: svc };
+      return { ok: true, service: svc, projectId: project };
     }
     if (!deps.workItems) {
       return {
@@ -625,6 +649,49 @@ export async function createServer(
       };
     }
     return { ok: true, service: deps.workItems };
+  }
+
+  function resolveReportStore(ctx: {
+    projectId?: string;
+  }): ReportStore | undefined {
+    return ctx.projectId
+      ? deps.reportsByProject?.get(ctx.projectId)
+      : deps.reports;
+  }
+
+  function workItemErrorBody(error: WorkItemServiceError["error"]) {
+    return { ok: false, ...error };
+  }
+
+  function routeError(code: string, message: string) {
+    return { ok: false, code, message };
+  }
+
+  function requiredQueryString(value: unknown, name: string) {
+    if (typeof value !== "string" || value.length === 0) {
+      return {
+        ok: false as const,
+        body: routeError(
+          "validation_failed",
+          `${name} must be a non-empty string`,
+        ),
+      };
+    }
+    return { ok: true as const, value };
+  }
+
+  function optionalQueryString(value: unknown, name: string) {
+    if (value === undefined) return { ok: true as const, value: undefined };
+    if (typeof value !== "string" || value.length === 0) {
+      return {
+        ok: false as const,
+        body: routeError(
+          "validation_failed",
+          `${name} must be a non-empty string`,
+        ),
+      };
+    }
+    return { ok: true as const, value };
   }
 
   app.post<{ Params: { iid: string }; Body?: { regenerate?: boolean } }>(
@@ -905,6 +972,129 @@ export async function createServer(
         return reply
           .code(statusFromWorkItemCode(result.error.code))
           .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/work-items/:id/report.md",
+    async (request, reply) => {
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const result = await ctx.service.getReportMarkdown(request.params.id);
+      if (typeof result !== "string") {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send(workItemErrorBody(result.error));
+      }
+      return reply.type("text/markdown; charset=utf-8").code(200).send(result);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/work-items/:id/evidence",
+    async (request, reply) => {
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const result = await ctx.service.getEvidence(request.params.id);
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send(workItemErrorBody(result.error));
+      }
+      return reply.code(200).send(result);
+    },
+  );
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { runId?: unknown; path?: unknown; project?: unknown };
+  }>("/api/work-items/:id/evidence/file", async (request, reply) => {
+    const project = optionalQueryString(request.query.project, "project");
+    if (!project.ok) return reply.code(400).send(project.body);
+    const ctx = resolveWorkItemService(
+      request.headers as Record<string, unknown>,
+      project.value,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+
+    const runId = requiredQueryString(request.query.runId, "runId");
+    if (!runId.ok) return reply.code(400).send(runId.body);
+    const relPath = requiredQueryString(request.query.path, "path");
+    if (!relPath.ok) return reply.code(400).send(relPath.body);
+
+    const detail = await ctx.service.detail(request.params.id);
+    const linked =
+      detail?.runLinks.some((link) => link.runId === runId.value) ?? false;
+    if (!linked) {
+      return reply
+        .code(404)
+        .send(routeError("not_found", "run is not linked to work item"));
+    }
+
+    const report = await resolveReportStore(ctx)?.get(runId.value);
+    const taskWorktreePath = report?.run.workspacePath;
+    if (!taskWorktreePath) {
+      return reply
+        .code(404)
+        .send(routeError("not_found", "run report workspace not found"));
+    }
+
+    const result = await serveEvidenceFile({
+      taskWorktreePath,
+      runId: runId.value,
+      relPath: relPath.value,
+    });
+    if (!result.ok) {
+      const status =
+        result.error === "forbidden"
+          ? 403
+          : result.error === "oversized"
+            ? 413
+            : 404;
+      return reply.code(status).send(routeError(result.error, result.error));
+    }
+
+    return reply
+      .type(result.mediaType)
+      .header("content-length", String(result.sizeBytes))
+      .code(200)
+      .send(createReadStream(result.absPath));
+  });
+
+  app.post<{
+    Params: { id: string; taskId: string; evidenceId: string };
+    Body?: { operator?: string };
+  }>(
+    "/api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm",
+    async (request, reply) => {
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const bodyOperator =
+        typeof request.body?.operator === "string" &&
+        request.body.operator.length > 0
+          ? request.body.operator
+          : undefined;
+      const operator =
+        bodyOperator ??
+        extractOperator(request.headers as Record<string, unknown>);
+      const result = await ctx.service.confirmTaskEvidence(
+        request.params.id,
+        request.params.taskId,
+        request.params.evidenceId,
+        { operator },
+      );
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send(workItemErrorBody(result.error));
       }
       return reply.code(200).send(result);
     },

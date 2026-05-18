@@ -2,12 +2,16 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { createEventBus } from "@issuepilot/observability";
 import { isEventType } from "@issuepilot/shared-contracts";
+import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 import type { GitLabAdapter } from "@issuepilot/tracker-gitlab";
 import type { WorkflowConfig } from "@issuepilot/workflow";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 
+import type { DispatchDeps, DispatchInput } from "../orchestrator/dispatch.js";
+import type * as ReconcileModule from "../orchestrator/reconcile.js";
 import {
   hostnameFromBaseUrl,
   splitCommand,
@@ -15,8 +19,118 @@ import {
 } from "../daemon.js";
 import { startDaemon } from "../daemon.js";
 import type { LoopDeps } from "../orchestrator/loop.js";
+import type * as ReportsStoreModule from "../reports/store.js";
 import type { ServerDeps } from "../server/index.js";
 import { createRuntimeState } from "../runtime/state.js";
+import type * as EvidenceScannerModule from "../work-items/evidence-scanner.js";
+
+const dispatchMockState = vi.hoisted(() => ({
+  workspacePath: "",
+  omitWorkspacePath: false,
+  beforeReconcile: undefined as
+    | ((input: DispatchInput) => Promise<void>)
+    | undefined,
+}));
+
+const reportStoreMockState = vi.hoisted(() => ({
+  stores: [] as Array<{
+    save: ReturnType<typeof vi.fn>;
+    get: (runId: string) => Promise<unknown>;
+  }>,
+  saveCallCount: 0,
+  failSaveCall: undefined as number | undefined,
+  saveError: undefined as Error | undefined,
+}));
+
+const evidenceScannerMockState = vi.hoisted(() => ({
+  error: undefined as Error | undefined,
+}));
+
+vi.mock("../orchestrator/dispatch.js", () => ({
+  dispatch: vi.fn(async (input: DispatchInput, deps: DispatchDeps) => {
+    await dispatchMockState.beforeReconcile?.(input);
+    await deps.reconcile({
+      runId: input.runId,
+      iid: input.issue.iid,
+      branch: input.branch,
+      baseBranch: input.baseBranch,
+      workspacePath: dispatchMockState.omitWorkspacePath
+        ? ""
+        : dispatchMockState.workspacePath,
+      attempt: 1,
+      issueUrl: input.issue.url,
+      issueIdentifier: `${input.issue.projectId}#${input.issue.iid}`,
+      runningLabel: input.runningLabel,
+      handoffLabel: input.handoffLabel,
+      reworkLabel: input.reworkLabel,
+      parentIssueLabelMode: input.parentIssueLabelMode,
+    });
+    deps.onEvent({
+      type: "dispatch_completed",
+      runId: input.runId,
+      ts: "2026-05-17T00:00:00.000Z",
+      detail: {},
+    });
+  }),
+}));
+
+vi.mock("../orchestrator/reconcile.js", async (importActual) => {
+  const actual = await importActual<typeof ReconcileModule>();
+  return {
+    ...actual,
+    reconcile: vi.fn(async () => ({
+      mergeRequest: {
+        iid: 11,
+        webUrl: "https://gitlab.example.com/group/project/-/merge_requests/11",
+      },
+      hadNewCommits: true,
+    })),
+  };
+});
+
+vi.mock("../reports/store.js", async (importActual) => {
+  const actual = await importActual<typeof ReportsStoreModule>();
+  return {
+    ...actual,
+    createReportStore: vi.fn(
+      (opts: Parameters<typeof actual.createReportStore>[0]) => {
+        const store = actual.createReportStore(opts);
+        const wrapped = {
+          ...store,
+          save: vi.fn(async (...args: Parameters<typeof store.save>) => {
+            reportStoreMockState.saveCallCount += 1;
+            if (
+              reportStoreMockState.failSaveCall ===
+              reportStoreMockState.saveCallCount
+            ) {
+              throw (
+                reportStoreMockState.saveError ?? new Error("save exploded")
+              );
+            }
+            await store.save(...args);
+          }),
+        };
+        reportStoreMockState.stores.push(wrapped);
+        return wrapped;
+      },
+    ),
+  };
+});
+
+vi.mock("../work-items/evidence-scanner.js", async (importActual) => {
+  const actual = await importActual<typeof EvidenceScannerModule>();
+  return {
+    ...actual,
+    scanRunEvidence: vi.fn(
+      async (...args: Parameters<typeof actual.scanRunEvidence>) => {
+        if (evidenceScannerMockState.error) {
+          throw evidenceScannerMockState.error;
+        }
+        return actual.scanRunEvidence(...args);
+      },
+    ),
+  };
+});
 
 function createWorkflow(root: string): WorkflowConfig {
   return {
@@ -205,6 +319,151 @@ function createFakeServer(): FastifyInstance {
   return {
     close: vi.fn(async () => {}),
   } as unknown as FastifyInstance;
+}
+
+function createOneTaskPlanner() {
+  return {
+    draft: vi.fn(async ({ workItemId }: { workItemId?: string }) => ({
+      ok: true as const,
+      plan: {
+        planId: "plan-1",
+        workItemId: workItemId ?? "",
+        version: 1,
+        tasks: [
+          {
+            taskId: "t1",
+            title: "Task one",
+            goal: "Implement task one",
+            scope: "Task one scope",
+            dependsOn: [],
+            suggestedValidation: [],
+            status: "planned" as const,
+            runIds: [],
+            riskLevel: "low" as const,
+          },
+        ],
+        dependencies: [],
+        operatorEdits: [],
+        status: "draft" as const,
+      },
+    })),
+  };
+}
+
+async function runSingleTaskWorkItemDispatch(opts: {
+  workspacePath: string;
+  beforeReconcile?: ((input: DispatchInput) => Promise<void>) | undefined;
+  omitWorkspacePath?: boolean | undefined;
+  evidenceScanError?: Error | undefined;
+  failReportSaveCall?: number | undefined;
+  reportSaveError?: Error | undefined;
+}): Promise<{
+  root: string;
+  daemon: Awaited<ReturnType<typeof startDaemon>>;
+  serverDeps: ServerDeps;
+  events: IssuePilotInternalEvent[];
+  publishEvent(event: IssuePilotInternalEvent): void;
+  reportStore: {
+    save: ReturnType<typeof vi.fn>;
+    get: (runId: string) => Promise<unknown>;
+  };
+}> {
+  reportStoreMockState.stores.length = 0;
+  reportStoreMockState.saveCallCount = 0;
+  reportStoreMockState.failSaveCall = opts.failReportSaveCall;
+  reportStoreMockState.saveError = opts.reportSaveError;
+  dispatchMockState.workspacePath = opts.workspacePath;
+  dispatchMockState.omitWorkspacePath = opts.omitWorkspacePath ?? false;
+  dispatchMockState.beforeReconcile = opts.beforeReconcile;
+  evidenceScannerMockState.error = opts.evidenceScanError;
+
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "issuepilot-daemon-evidence-"),
+  );
+  const workflow = createWorkflow(root);
+  let serverDeps: ServerDeps | undefined;
+  const events: IssuePilotInternalEvent[] = [];
+  const eventBus = createEventBus<IssuePilotInternalEvent>();
+  eventBus.subscribe((event) => events.push(event));
+
+  const daemon = await startDaemon(
+    { workflowPath: workflow.source.path },
+    {
+      workflowLoader: {
+        loadOnce: vi.fn(async () => workflow),
+        start: vi.fn(async () => ({
+          stop: vi.fn(async () => {}),
+        })),
+        render: vi.fn(() => "prompt"),
+      },
+      createGitLab: vi.fn(async () =>
+        createGitLabForHumanReviewScanPollution(),
+      ),
+      createServer: vi.fn(async (deps: ServerDeps) => {
+        serverDeps = deps;
+        return createFakeServer();
+      }),
+      startLoop: vi.fn(() => ({
+        tick: vi.fn(async () => {}),
+        stop: vi.fn(async () => {}),
+      })),
+      state: createRuntimeState(),
+      eventBus,
+      workItemPlanner: createOneTaskPlanner(),
+    },
+  );
+
+  if (!serverDeps) {
+    throw new Error("server deps were not captured");
+  }
+
+  const draft = await serverDeps.workItems!.planFromIssue({
+    iid: 7,
+    operator: "alice",
+  });
+  if (!("plan" in draft)) {
+    throw new Error(`planFromIssue failed: ${draft.message}`);
+  }
+
+  const accepted = await serverDeps.workItems!.acceptPlan({
+    workItemId: draft.workItem.workItemId,
+    planId: draft.plan.planId,
+    edits: [],
+    operator: "alice",
+  });
+  if (!("plan" in accepted)) {
+    throw new Error(`acceptPlan failed: ${accepted.message}`);
+  }
+
+  const reportStore = reportStoreMockState.stores.at(-1);
+  if (!reportStore) {
+    throw new Error("report store was not captured");
+  }
+
+  return {
+    root,
+    daemon,
+    serverDeps,
+    events,
+    publishEvent: (event) => eventBus.publish(event),
+    reportStore,
+  };
+}
+
+async function removeTempDir(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOTEMPTY" && code !== "EBUSY") {
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  await fs.rm(dir, { recursive: true, force: true });
 }
 
 describe("hostnameFromBaseUrl", () => {
@@ -756,6 +1015,372 @@ describe("startDaemon human-review event publishing", () => {
     } finally {
       await daemon.stop();
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("patches the task report with scanned evidence after dispatch", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      beforeReconcile: async (input) => {
+        const screenshotPath = path.join(
+          workspacePath,
+          ".issuepilot",
+          "evidence",
+          input.runId,
+          "screenshots",
+          "login.png",
+        );
+        await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+        await fs.writeFile(screenshotPath, "png");
+      },
+    });
+
+    try {
+      await vi.waitFor(async () => {
+        const report = await ctx.serverDeps.reports.get(
+          ctx.events.find((event) => event.type === "dispatch_completed")!
+            .runId,
+        );
+        expect(report).toMatchObject({
+          evidence: [
+            {
+              kind: "screenshot",
+              label: "login.png",
+              relPath: "screenshots/login.png",
+              mediaType: "image/png",
+            },
+          ],
+        });
+      });
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("emits work_item_evidence_indexed once per task dispatch", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      beforeReconcile: async (input) => {
+        const commandPath = path.join(
+          workspacePath,
+          ".issuepilot",
+          "evidence",
+          input.runId,
+          "commands",
+          "vitest.log",
+        );
+        await fs.mkdir(path.dirname(commandPath), { recursive: true });
+        await fs.writeFile(commandPath, "ok");
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        const indexed = ctx.events.filter(
+          (event) => event.type === "work_item_evidence_indexed",
+        );
+        expect(indexed).toHaveLength(1);
+        expect(indexed[0]?.data).toMatchObject({
+          count: 1,
+          oversizedCount: 0,
+          rejectedCount: 0,
+          manifestUsed: false,
+        });
+      });
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("overlays evidence confirmations through the daemon settle path", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      beforeReconcile: async (input) => {
+        const screenshotPath = path.join(
+          workspacePath,
+          ".issuepilot",
+          "evidence",
+          input.runId,
+          "screenshots",
+          "login.png",
+        );
+        await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+        await fs.writeFile(screenshotPath, "png");
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_indexed",
+        );
+      });
+      const [workItem] = await ctx.serverDeps.workItems!.list();
+      expect(workItem).toBeDefined();
+      const evidence = await ctx.serverDeps.workItems!.getEvidence(
+        workItem!.workItemId,
+      );
+      if ("error" in evidence) {
+        throw new Error(evidence.error.message);
+      }
+      const screenshot = evidence.index.find(
+        (entry) => entry.kind === "screenshot",
+      );
+      expect(screenshot).toBeDefined();
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const before = await ctx.serverDeps.workItems!.report(
+        workItem!.workItemId,
+      );
+      expect(before?.evidence.index).toContainEqual(
+        expect.objectContaining({
+          evidenceId: screenshot!.evidenceId,
+          confidence: "ai-claim",
+        }),
+      );
+
+      const confirmed = await ctx.serverDeps.workItems!.confirmTaskEvidence(
+        workItem!.workItemId,
+        screenshot!.taskId,
+        screenshot!.evidenceId,
+        { operator: "alice" },
+      );
+      if ("error" in confirmed) {
+        throw new Error(confirmed.error.message);
+      }
+      const aggregateCountBefore = ctx.events.filter(
+        (event) => event.type === "work_item_aggregated",
+      ).length;
+
+      ctx.publishEvent({
+        id: "manual-dispatch-completed",
+        runId,
+        type: "dispatch_completed",
+        message: "dispatch_completed",
+        data: {},
+        createdAt: "2026-05-17T04:00:01.000Z",
+        ts: "2026-05-17T04:00:01.000Z",
+        issue: {
+          id: "7",
+          iid: 7,
+          title: "Needs review",
+          url: "https://gitlab.example.com/group/project/-/issues/7",
+          projectId: "group/project",
+        },
+      });
+
+      await vi.waitFor(async () => {
+        expect(
+          ctx.events.filter((event) => event.type === "work_item_aggregated")
+            .length,
+        ).toBeGreaterThan(aggregateCountBefore);
+        const storedReport = await ctx.serverDeps.workItems!.report(
+          workItem!.workItemId,
+        );
+        expect(storedReport?.evidence.index).toContainEqual(
+          expect.objectContaining({
+            evidenceId: screenshot!.evidenceId,
+            confidence: "human-confirmed",
+            confirmedBy: "alice",
+            confirmedAt: confirmed.confirmedAt,
+          }),
+        );
+      });
+      expect(
+        ctx.events.filter(
+          (event) =>
+            event.type === "dispatch_completed" &&
+            event.id === "manual-dispatch-completed",
+        ),
+      ).toHaveLength(1);
+      const saved = await ctx.serverDeps.workItems!.report(
+        workItem!.workItemId,
+      );
+      expect(saved?.evidence.index).toContainEqual(
+        expect.objectContaining({
+          evidenceId: screenshot!.evidenceId,
+          confidence: "human-confirmed",
+          confirmedBy: "alice",
+          confirmedAt: confirmed.confirmedAt,
+        }),
+      );
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("does not patch the task report when the task worktree has no evidence dir", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({ workspacePath });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "dispatch_completed",
+        );
+      });
+      expect(ctx.reportStore.save).toHaveBeenCalledTimes(2);
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const report = await ctx.serverDeps.reports.get(runId);
+      expect(report).not.toHaveProperty("evidence");
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("skips evidence scan when final report workspacePath is empty", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      omitWorkspacePath: true,
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_index_skipped",
+        );
+      });
+      expect(ctx.reportStore.save).toHaveBeenCalledTimes(2);
+      const skipped = ctx.events.find(
+        (event) => event.type === "work_item_evidence_index_skipped",
+      );
+      expect(skipped?.data).toMatchObject({
+        reason: "missing-workspace-path",
+      });
+      expect(
+        ctx.events.some((event) => event.type === "work_item_evidence_indexed"),
+      ).toBe(false);
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("keeps a successful dispatch completed when evidence scan fails", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      evidenceScanError: new Error("scan exploded"),
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_index_failed",
+        );
+      });
+      const types = ctx.events.map((event) => event.type);
+      expect(types).toContain("dispatch_completed");
+      expect(types).not.toContain("dispatch_failed");
+      const failed = ctx.events.find(
+        (event) => event.type === "work_item_evidence_index_failed",
+      );
+      expect(failed?.data).toMatchObject({
+        reason: "scan exploded",
+      });
+
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const report = await ctx.serverDeps.reports.get(runId);
+      expect(report).toMatchObject({
+        mergeRequest: {
+          iid: 11,
+          state: "opened",
+        },
+        run: {
+          workspacePath,
+        },
+      });
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
+    }
+  });
+
+  it("keeps a successful dispatch completed when evidence patch save fails", async () => {
+    const workspacePath = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-task-worktree-"),
+    );
+    const ctx = await runSingleTaskWorkItemDispatch({
+      workspacePath,
+      failReportSaveCall: 3,
+      reportSaveError: new Error("patch save exploded"),
+      beforeReconcile: async (input) => {
+        const screenshotPath = path.join(
+          workspacePath,
+          ".issuepilot",
+          "evidence",
+          input.runId,
+          "screenshots",
+          "login.png",
+        );
+        await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+        await fs.writeFile(screenshotPath, "png");
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(ctx.events.map((event) => event.type)).toContain(
+          "work_item_evidence_index_failed",
+        );
+      });
+      const types = ctx.events.map((event) => event.type);
+      expect(types).toContain("dispatch_completed");
+      expect(types).toContain("work_item_evidence_indexed");
+      expect(types).not.toContain("dispatch_failed");
+      const failed = ctx.events.find(
+        (event) => event.type === "work_item_evidence_index_failed",
+      );
+      expect(failed?.data).toMatchObject({
+        reason: "patch save exploded",
+      });
+
+      const runId = ctx.events.find(
+        (event) => event.type === "dispatch_completed",
+      )!.runId;
+      const report = await ctx.serverDeps.reports.get(runId);
+      expect(report).toMatchObject({
+        mergeRequest: {
+          iid: 11,
+          state: "opened",
+        },
+      });
+      expect(report).not.toHaveProperty("evidence");
+    } finally {
+      await ctx.daemon.stop();
+      await removeTempDir(ctx.root);
+      await removeTempDir(workspacePath);
     }
   });
 });

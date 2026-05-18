@@ -15,6 +15,7 @@ import {
   type ParentHandoffDeps,
   type ParentHandoffWorkflow,
 } from "../handoff.js";
+import { renderWorkItemReportMarkdown } from "../render-report.js";
 
 const workflow: ParentHandoffWorkflow = {
   runningLabel: "ai-running",
@@ -113,6 +114,7 @@ const completeReport: WorkItemReport = {
   recommendedNextActions: [
     "All synthetic task runs completed. Move the parent Issue to human-review and ask the reviewer to inspect each MR.",
   ],
+  humanReviewChecklist: [],
   generatedAt: "2026-05-17T00:10:00.000Z",
 };
 
@@ -176,9 +178,41 @@ describe("decideParentLabelTransition", () => {
     expect(r.add).toEqual(["ai-running"]);
     expect(r.remove).toEqual(["human-review"]);
   });
+
+  it("keeps blocked transitions label-neutral", () => {
+    for (const previousStatus of [
+      undefined,
+      "planning",
+      "ready",
+      "running",
+      "partial",
+      "completed",
+    ] satisfies Array<WorkItemStatus | undefined>) {
+      expect(
+        decideParentLabelTransition(previousStatus, "blocked", workflow),
+      ).toEqual({ add: [], remove: [] });
+    }
+  });
 });
 
 describe("renderWorkItemHandoffNoteBody", () => {
+  it("equals exactly one marker + renderWorkItemReportMarkdown(gitlab)", () => {
+    const marker = workItemHandoffMarker(baseWorkItem.workItemId);
+    const body = renderWorkItemHandoffNoteBody(
+      baseWorkItem,
+      basePlan,
+      completeReport,
+    );
+    const rendered = renderWorkItemReportMarkdown(
+      baseWorkItem,
+      basePlan,
+      completeReport,
+      { audience: "gitlab" },
+    );
+
+    expect(body).toBe(`${marker}\n${rendered}`);
+  });
+
   it("starts with the canonical work-item marker", () => {
     const body = renderWorkItemHandoffNoteBody(
       baseWorkItem,
@@ -188,6 +222,23 @@ describe("renderWorkItemHandoffNoteBody", () => {
     expect(body.startsWith(workItemHandoffMarker(baseWorkItem.workItemId))).toBe(
       true,
     );
+  });
+
+  it("keeps the marker on the first line and emits it exactly once", () => {
+    const marker = workItemHandoffMarker(baseWorkItem.workItemId);
+    const body = renderWorkItemHandoffNoteBody(
+      baseWorkItem,
+      basePlan,
+      completeReport,
+    );
+
+    expect(body.split("\n")[0]).toBe(marker);
+    expect(body.split(marker)).toHaveLength(2);
+    expect(
+      renderWorkItemReportMarkdown(baseWorkItem, basePlan, completeReport, {
+        audience: "gitlab",
+      }),
+    ).not.toContain(marker);
   });
 
   it("includes each task title and merge request link", () => {
@@ -208,7 +259,7 @@ describe("renderWorkItemHandoffNoteBody", () => {
       basePlan,
       completeReport,
     );
-    expect(body).toContain("Next action");
+    expect(body).toContain("Recommended next actions");
     expect(body).toContain("ask the reviewer");
   });
 
@@ -231,22 +282,35 @@ interface FakeGitlabCalls {
 function makeFakeDeps(opts: FakeGitlabCalls = { found: false }): {
   deps: ParentHandoffDeps;
   calls: string[];
+  gitlabCalls: {
+    findWorkpadNote: Array<{ iid: number; marker: string }>;
+    createNote: Array<{ iid: number; body: string }>;
+    updateNote: Array<{ iid: number; noteId: number; body: string }>;
+  };
   emitted: Array<{ type: string; detail: Record<string, unknown> }>;
 } {
   const calls: string[] = [];
+  const gitlabCalls = {
+    findWorkpadNote: [] as Array<{ iid: number; marker: string }>,
+    createNote: [] as Array<{ iid: number; body: string }>,
+    updateNote: [] as Array<{ iid: number; noteId: number; body: string }>,
+  };
   const emitted: Array<{ type: string; detail: Record<string, unknown> }> = [];
   const deps: ParentHandoffDeps = {
     gitlab: {
-      findWorkpadNote: async (_iid, _marker) => {
+      findWorkpadNote: async (iid, marker) => {
         calls.push("find-note");
+        gitlabCalls.findWorkpadNote.push({ iid, marker });
         return opts.found ? { id: opts.noteId ?? 5, body: "old" } : null;
       },
-      createNote: async (_iid, _body) => {
+      createNote: async (iid, body) => {
         calls.push("create-note");
+        gitlabCalls.createNote.push({ iid, body });
         return { id: 7 };
       },
-      updateNote: async (_iid, _noteId, _body) => {
+      updateNote: async (iid, noteId, body) => {
         calls.push("update-note");
+        gitlabCalls.updateNote.push({ iid, noteId, body });
       },
       transitionLabels: async (_iid, opts) => {
         calls.push(
@@ -257,14 +321,23 @@ function makeFakeDeps(opts: FakeGitlabCalls = { found: false }): {
     emit: (e) => emitted.push({ type: e.type, detail: e.detail }),
     now: () => "2026-05-17T00:11:00.000Z",
   };
-  return { deps, calls, emitted };
+  return { deps, calls, gitlabCalls, emitted };
 }
 
 describe("writeParentHandoff", () => {
   it("creates note when marker not found, applies running→completed transition", async () => {
-    const { deps, calls, emitted } = makeFakeDeps({ found: false });
+    const workItem = { ...baseWorkItem, status: "completed" as const };
+    const expectedBody = renderWorkItemHandoffNoteBody(
+      workItem,
+      basePlan,
+      completeReport,
+    );
+    const marker = workItemHandoffMarker(workItem.workItemId);
+    const { deps, calls, gitlabCalls, emitted } = makeFakeDeps({
+      found: false,
+    });
     await writeParentHandoff({
-      workItem: { ...baseWorkItem, status: "completed" },
+      workItem,
       plan: basePlan,
       report: completeReport,
       previousStatus: "running",
@@ -276,13 +349,30 @@ describe("writeParentHandoff", () => {
     expect(
       calls.some((c) => c.startsWith("transition-labels add=human-review")),
     ).toBe(true);
+    expect(gitlabCalls.findWorkpadNote).toEqual([
+      { iid: workItem.sourceIssue.iid, marker },
+    ]);
+    expect(gitlabCalls.createNote).toEqual([
+      { iid: workItem.sourceIssue.iid, body: expectedBody },
+    ]);
+    expect(gitlabCalls.createNote[0]!.body.split("\n")[0]).toBe(marker);
     expect(emitted.map((e) => e.type)).toContain("work_item_handoff_written");
   });
 
   it("updates note when marker is found", async () => {
-    const { deps, calls } = makeFakeDeps({ found: true, noteId: 99 });
+    const workItem = { ...baseWorkItem, status: "completed" as const };
+    const expectedBody = renderWorkItemHandoffNoteBody(
+      workItem,
+      basePlan,
+      completeReport,
+    );
+    const marker = workItemHandoffMarker(workItem.workItemId);
+    const { deps, calls, gitlabCalls } = makeFakeDeps({
+      found: true,
+      noteId: 99,
+    });
     await writeParentHandoff({
-      workItem: { ...baseWorkItem, status: "completed" },
+      workItem,
       plan: basePlan,
       report: completeReport,
       previousStatus: "running",
@@ -291,6 +381,13 @@ describe("writeParentHandoff", () => {
     });
     expect(calls).toContain("update-note");
     expect(calls).not.toContain("create-note");
+    expect(gitlabCalls.findWorkpadNote).toEqual([
+      { iid: workItem.sourceIssue.iid, marker },
+    ]);
+    expect(gitlabCalls.updateNote).toEqual([
+      { iid: workItem.sourceIssue.iid, noteId: 99, body: expectedBody },
+    ]);
+    expect(gitlabCalls.updateNote[0]!.body.split("\n")[0]).toBe(marker);
   });
 
   it("ready → running transitions labels but does NOT write a note", async () => {

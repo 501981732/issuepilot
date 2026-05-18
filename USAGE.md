@@ -47,7 +47,9 @@ Visual versions:
   - [5.5 Phase 4 — Review feedback sweep](#55-phase-4--review-feedback-sweep)
   - [5.6 Phase 5 — Workspace retention](#56-phase-5--workspace-retention)
   - [5.7 V4.1 Workflow Spine — plan a large issue end to end](#57-v41-workflow-spine--plan-a-large-issue-end-to-end)
-  - [5.8 Current V2 boundaries and gaps](#58-current-v2-boundaries-and-gaps)
+  - [5.8 V4.2 Task Graph — graph view, replan, mark-rework, branch chaining, team-mode project switcher](#58-v42-task-graph--graph-view-replan-mark-rework-branch-chaining-team-mode-project-switcher)
+  - [5.9 V4.3 Review Packet + Evidence — reviewer packet, evidence view, human confirmation](#59-v43-review-packet--evidence--reviewer-packet-evidence-view-human-confirmation)
+  - [5.10 Current V2 boundaries and gaps](#510-current-v2-boundaries-and-gaps)
 - [Part 6 — Day-2 operations and troubleshooting](#part-6--day-2-operations-and-troubleshooting)
   - [6.1 Where to look](#61-where-to-look)
   - [6.2 Forensics for failed / blocked runs](#62-forensics-for-failed--blocked-runs)
@@ -82,17 +84,17 @@ IssuePilot is not a SaaS, not a cluster, and **never auto-merges MRs**.
 
 ### 1.2 V1 single-project vs V2 team mode
 
-| Dimension | V1 single-project | V2 team mode |
-| --- | --- | --- |
-| Best for | Personal machine, one daemon → one project | Shared machine, one daemon → many GitLab projects |
-| Entry | `issuepilot run --workflow /path/to/WORKFLOW.md` | `issuepilot run --config /path/to/issuepilot.team.yaml` |
-| Config source of truth | Per-project `WORKFLOW.md` in the business repo | Central `issuepilot-config/` directory: `issuepilot.team.yaml` + `projects/*.yaml` + `workflows/*.md` |
-| Concurrency | Single run, one worktree | 1–5, global + per-project lease prevents duplicate claim |
-| Dashboard actions | retry / stop / archive available | retry / stop / archive not yet wired (returns `503 actions_unavailable`) |
-| CI feedback | ✅ | ✅ |
-| Review feedback sweep | ✅ | ✅ |
-| Workspace cleanup loop | ✅ | ⚠ `retention` schema parsed but cleanup loop not yet running (follow-up) |
-| Dashboard project view | Single project | All projects listed in team config order |
+| Dimension              | V1 single-project                                | V2 team mode                                                                                          |
+| ---------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Best for               | Personal machine, one daemon → one project       | Shared machine, one daemon → many GitLab projects                                                     |
+| Entry                  | `issuepilot run --workflow /path/to/WORKFLOW.md` | `issuepilot run --config /path/to/issuepilot.team.yaml`                                               |
+| Config source of truth | Per-project `WORKFLOW.md` in the business repo   | Central `issuepilot-config/` directory: `issuepilot.team.yaml` + `projects/*.yaml` + `workflows/*.md` |
+| Concurrency            | Single run, one worktree                         | 1–5, global + per-project lease prevents duplicate claim                                              |
+| Dashboard actions      | retry / stop / archive available                 | retry / stop / archive not yet wired (returns `503 actions_unavailable`)                              |
+| CI feedback            | ✅                                               | ✅                                                                                                    |
+| Review feedback sweep  | ✅                                               | ✅                                                                                                    |
+| Workspace cleanup loop | ✅                                               | ⚠ `retention` schema parsed but cleanup loop not yet running (follow-up)                              |
+| Dashboard project view | Single project                                   | All projects listed in team config order                                                              |
 
 The two entrypoints are **mutually exclusive**; passing both exits with an
 error. They can coexist: in a team scenario where you want Phase 5 cleanup
@@ -137,14 +139,14 @@ Shortest path from "installed nothing" to "first Issue in `human-review`".
 
 ### 2.1 Environment requirements
 
-| Tool | Requirement |
-| --- | --- |
-| Node.js | `>=22 <23` |
-| pnpm | `10.x` (via corepack) |
-| Git | `>=2.40` |
-| Codex CLI | Can run `codex app-server` and is signed in |
-| GitLab | A test project with API / label / Issue / MR support |
-| SSH key | Can push to the target project |
+| Tool      | Requirement                                          |
+| --------- | ---------------------------------------------------- |
+| Node.js   | `>=22 <23`                                           |
+| pnpm      | `10.x` (via corepack)                                |
+| Git       | `>=2.40`                                             |
+| Codex CLI | Can run `codex app-server` and is signed in          |
+| GitLab    | A test project with API / label / Issue / MR support |
+| SSH key   | Can push to the target project                       |
 
 ### 2.2 Install IssuePilot
 
@@ -162,6 +164,7 @@ Expected: `doctor` reports `[OK]` for Node.js, Git, Codex app-server, and
 `~/.issuepilot/state`.
 
 > **Contributor fallback** (run from the source tree without global install):
+>
 > ```bash
 > pnpm build
 > pnpm exec issuepilot doctor
@@ -194,14 +197,14 @@ validate --config` instead).
 
 ### 3.1 Create workflow labels
 
-| Label | Meaning |
-| --- | --- |
-| `ai-ready` | Candidate Issue; IssuePilot will claim it |
-| `ai-running` | IssuePilot has claimed it, in progress |
-| `human-review` | MR ready; awaiting human review |
-| `ai-rework` | Human asked AI to take another pass |
-| `ai-failed` | Run failed; needs human investigation |
-| `ai-blocked` | Missing info / permission / secret |
+| Label          | Meaning                                   |
+| -------------- | ----------------------------------------- |
+| `ai-ready`     | Candidate Issue; IssuePilot will claim it |
+| `ai-running`   | IssuePilot has claimed it, in progress    |
+| `human-review` | MR ready; awaiting human review           |
+| `ai-rework`    | Human asked AI to take another pass       |
+| `ai-failed`    | Run failed; needs human investigation     |
+| `ai-blocked`   | Missing info / permission / secret        |
 
 ### 3.2 SSH can push to the target project
 
@@ -300,17 +303,17 @@ git push origin main
 
 Field cheat sheet:
 
-| Field | How to fill |
-| --- | --- |
-| `tracker.kind` | always `gitlab`; do not write `gitlabee` |
-| `tracker.base_url` | GitLab instance URL |
-| `tracker.project_id` | project path or numeric ID |
-| `tracker.token_env` | **only when using the env-token path**; value is a variable name, not a token value |
-| `git.repo_url` | SSH clone URL of the target project |
-| `git.base_branch` | MR target branch (usually `main`) |
-| `agent.max_concurrent_agents` | start with `1`, ramp up only after it is stable |
-| `codex.approval_policy` | P0 recommends `never` |
-| `poll_interval_ms` | default 10000ms; smaller = faster reaction, more GitLab API load |
+| Field                         | How to fill                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `tracker.kind`                | always `gitlab`; do not write `gitlabee`                                            |
+| `tracker.base_url`            | GitLab instance URL                                                                 |
+| `tracker.project_id`          | project path or numeric ID                                                          |
+| `tracker.token_env`           | **only when using the env-token path**; value is a variable name, not a token value |
+| `git.repo_url`                | SSH clone URL of the target project                                                 |
+| `git.base_branch`             | MR target branch (usually `main`)                                                   |
+| `agent.max_concurrent_agents` | start with `1`, ramp up only after it is stable                                     |
+| `codex.approval_policy`       | P0 recommends `never`                                                               |
+| `poll_interval_ms`            | default 10000ms; smaller = faster reaction, more GitLab API load                    |
 
 ⚠ Workflow rejects `danger-full-access` / `dangerFullAccess` sandbox; never
 write a plaintext token — everything is injected through env vars or OAuth
@@ -393,12 +396,12 @@ Validation passed.
 
 Common failures:
 
-| Error | Fix |
-| --- | --- |
-| `WorkflowConfigError: tracker` | Check workflow front matter field names and indentation |
+| Error                                    | Fix                                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `WorkflowConfigError: tracker`           | Check workflow front matter field names and indentation                                                      |
 | `WorkflowConfigError: tracker.token_env` | Workflow declares `token_env` but the env var is missing; either export it or drop `token_env` and use OAuth |
-| `GitLabError(category="auth")` | Token wrong, expired, or OAuth credentials missing |
-| `GitLabError(category="permission")` | Token lacks `api` scope or has no access to the project |
+| `GitLabError(category="auth")`           | Token wrong, expired, or OAuth credentials missing                                                           |
+| `GitLabError(category="permission")`     | Token lacks `api` scope or has no access to the project                                                      |
 
 ---
 
@@ -490,14 +493,14 @@ Then a human reviews the MR:
 
 ### 4.3 What to do for each of the 6 label states
 
-| Current label | What you should do |
-| --- | --- |
-| `ai-ready` | Wait for IssuePilot to pick it up (every `poll_interval_ms`) |
-| `ai-running` | Watch the dashboard; do not change labels manually |
-| `human-review` | Review the MR in GitLab; optionally wait for CI auto-update |
-| `ai-rework` | Wait for IssuePilot to take another pass |
-| `ai-failed` | Inspect dashboard timeline + failure note; fix and click Retry, or relabel to `ai-ready` |
-| `ai-blocked` | Provide missing info / permission / secret, then relabel to `ai-ready` |
+| Current label  | What you should do                                                                       |
+| -------------- | ---------------------------------------------------------------------------------------- |
+| `ai-ready`     | Wait for IssuePilot to pick it up (every `poll_interval_ms`)                             |
+| `ai-running`   | Watch the dashboard; do not change labels manually                                       |
+| `human-review` | Review the MR in GitLab; optionally wait for CI auto-update                              |
+| `ai-rework`    | Wait for IssuePilot to take another pass                                                 |
+| `ai-failed`    | Inspect dashboard timeline + failure note; fix and click Retry, or relabel to `ai-ready` |
+| `ai-blocked`   | Provide missing info / permission / secret, then relabel to `ai-ready`                   |
 
 ---
 
@@ -622,15 +625,15 @@ Target repo: `{{ project.git.repo_url }}`, default branch `{{ project.git.base_b
 
 Field constraints (violations fail at startup with a dotted path):
 
-| Field | Constraint |
-| --- | --- |
-| `version` | must be `1` |
-| `scheduler.max_concurrent_runs` | `1..5` |
-| `scheduler.lease_ttl_ms` | `>= 60000` |
-| `scheduler.poll_interval_ms` | `>= 1000` |
-| `projects[].id` | lowercase alphanum + dashes; unique per config |
-| `projects[].project` / `projects[].workflow_profile` | both required; relative paths resolve against the team config directory |
-| `ci` (precedence) | `projects[].ci > team ci > workflow profile ci`; any override must carry all three keys |
+| Field                                                | Constraint                                                                              |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `version`                                            | must be `1`                                                                             |
+| `scheduler.max_concurrent_runs`                      | `1..5`                                                                                  |
+| `scheduler.lease_ttl_ms`                             | `>= 60000`                                                                              |
+| `scheduler.poll_interval_ms`                         | `>= 1000`                                                                               |
+| `projects[].id`                                      | lowercase alphanum + dashes; unique per config                                          |
+| `projects[].project` / `projects[].workflow_profile` | both required; relative paths resolve against the team config directory                 |
+| `ci` (precedence)                                    | `projects[].ci > team ci > workflow profile ci`; any override must carry all three keys |
 
 `projects[].workflow` (the legacy single-file pointer) is **no longer
 supported in team mode**; the loader rejects it with an actionable
@@ -668,11 +671,11 @@ summary.
 Dashboard runs list and detail pages expose three buttons. Every action
 emits an `operator_action_*` event to the event store.
 
-| Action | Applies to | Behavior | Notes |
-| --- | --- | --- | --- |
-| **Retry** | `ai-failed` / `ai-blocked` / `ai-rework` / archived failed run | Issue label flips to `ai-rework`; run status set to `claimed` | V2 team daemon not wired yet → `503 actions_unavailable`; V1 works |
-| **Stop** | Active `ai-running` run | Real Codex `turn/interrupt`; 5s timeout escalates `stopping` and finally converges via `turnTimeoutMs` | Does not touch GitLab labels directly; failures emit `operator_action_failed { code: cancel_timeout / cancel_threw / not_registered }` |
-| **Archive** | Terminal run (`completed` / `failed` / `blocked`) | Records `archivedAt`; dashboard hides by default | List header has a `Show archived` toggle |
+| Action      | Applies to                                                     | Behavior                                                                                               | Notes                                                                                                                                  |
+| ----------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Retry**   | `ai-failed` / `ai-blocked` / `ai-rework` / archived failed run | Issue label flips to `ai-rework`; run status set to `claimed`                                          | V2 team daemon not wired yet → `503 actions_unavailable`; V1 works                                                                     |
+| **Stop**    | Active `ai-running` run                                        | Real Codex `turn/interrupt`; 5s timeout escalates `stopping` and finally converges via `turnTimeoutMs` | Does not touch GitLab labels directly; failures emit `operator_action_failed { code: cancel_timeout / cancel_threw / not_registered }` |
+| **Archive** | Terminal run (`completed` / `failed` / `blocked`)              | Records `archivedAt`; dashboard hides by default                                                       | List header has a `Show archived` toggle                                                                                               |
 
 Operator identity defaults to the server-side `"system"` fallback; the
 `x-issuepilot-operator` HTTP header is the hook for V3 RBAC.
@@ -686,19 +689,19 @@ Issue sits in `human-review`, the orchestrator polls the MR pipeline every
 ```yaml
 ci:
   enabled: true
-  on_failure: ai-rework        # or human-review
+  on_failure: ai-rework # or human-review
   wait_for_pipeline: true
 ```
 
 Behavior matrix:
 
-| pipeline state | `on_failure` | Effect |
-| --- | --- | --- |
-| `success` | — | Stay in `human-review`; dashboard marks it ready for review |
-| `failed` | `ai-rework` | Label flips to `ai-rework`; note posted with `<!-- issuepilot:ci-feedback:<runId> -->` marker |
-| `failed` | `human-review` | Labels untouched; marker note only; `ci_status_observed { action: "noop" }` |
-| `running` / `pending` / `unknown` | — | Stay in `human-review`; wait for next poll; no note |
-| `canceled` / `skipped` | — | Marker note hinting human review; `ci_status_observed { action: "manual" }` |
+| pipeline state                    | `on_failure`   | Effect                                                                                        |
+| --------------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
+| `success`                         | —              | Stay in `human-review`; dashboard marks it ready for review                                   |
+| `failed`                          | `ai-rework`    | Label flips to `ai-rework`; note posted with `<!-- issuepilot:ci-feedback:<runId> -->` marker |
+| `failed`                          | `human-review` | Labels untouched; marker note only; `ci_status_observed { action: "noop" }`                   |
+| `running` / `pending` / `unknown` | —              | Stay in `human-review`; wait for next poll; no note                                           |
+| `canceled` / `skipped`            | —              | Marker note hinting human review; `ci_status_observed { action: "manual" }`                   |
 
 Constraints:
 
@@ -719,7 +722,7 @@ record.
 - When a human flips the Issue back to `ai-rework`, the next dispatch
   prepends a standardised `## Review feedback` markdown block to the prompt;
   reviewer bodies are wrapped in `<<<REVIEWER_BODY id=N>>> ...
-  <<<END_REVIEWER_BODY>>>` envelopes to defend against prompt injection.
+<<<END_REVIEWER_BODY>>>` envelopes to defend against prompt injection.
 - **Always on**. No-op when there is no MR or no comment; no workflow toggle.
 - Does not auto-merge and does not replace Phase 3 CI feedback.
 
@@ -728,12 +731,12 @@ record.
 Default retention policy (override in workflow or team config top-level
 `retention`):
 
-| Run state | Default kept |
-| --- | --- |
-| active / running / stopping / claimed / retrying | never auto-deleted |
-| successful / closed | 7 days |
-| failed / blocked | 30 days |
-| archived terminal | counted from original terminal time |
+| Run state                                        | Default kept                        |
+| ------------------------------------------------ | ----------------------------------- |
+| active / running / stopping / claimed / retrying | never auto-deleted                  |
+| successful / closed                              | 7 days                              |
+| failed / blocked                                 | 30 days                             |
+| archived terminal                                | counted from original terminal time |
 
 Constraints:
 
@@ -812,7 +815,7 @@ Operator workflow:
    the same content into Slack / a code review thread.
 5. The orchestrator writes a single workpad note on the parent Issue
    carrying the marker `<!-- issuepilot:work-item:<id> -->` so the same
-   note is updated on every reconciliation. When *every* required task
+   note is updated on every reconciliation. When _every_ required task
    ends `completed`, IssuePilot transitions the parent Issue from
    `ai-running` to `human-review`. Partial / failed outcomes leave the
    parent label untouched and let the operator decide.
@@ -861,7 +864,7 @@ still aggregator-owned; synthetic task runs never flip it themselves).
    a dialog asking for a `reason` (required) and an optional `hint`.
    Submitting POSTs to
    `/api/work-items/<id>/tasks/<taskId>/replan`. IssuePilot drafts a
-   new plan version that replaces *only* the targeted task; the
+   new plan version that replaces _only_ the targeted task; the
    non-replanned tasks inherit their previous `status` and `runIds`
    so an in-flight workflow does not reset. The previous plan is
    marked `superseded` and the new plan starts as `draft` so you can
@@ -883,7 +886,7 @@ still aggregator-owned; synthetic task runs never flip it themselves).
    the downstream task using `origin/<upstream-branch>` as the
    `DispatchInput.baseBranch`. This lets a linear refactor land its
    pieces end-to-end without waiting for every MR to merge. Multi
-   -upstream tasks still wait for *all* upstream MRs to merge before
+   -upstream tasks still wait for _all_ upstream MRs to merge before
    dispatch (no implicit merge-commit synthesis).
 6. **Team-mode project switcher**. When the orchestrator runs in
    team-mode (started via `issuepilot start --config issuepilot.team.yaml`),
@@ -934,7 +937,78 @@ V4.2 invariants worth knowing as an operator:
   in-flight downstream run keeps running and reports its outcome
   back to the aggregator like normal.
 
-### 5.9 Current V2 boundaries and gaps
+### 5.9 V4.3 Review Packet + Evidence — reviewer packet, evidence view, human confirmation
+
+V4.3 turns the WorkItem report into the reviewer-facing handoff packet. The
+parent Review Packet, GitLab handoff note, dashboard Evidence view, and
+Markdown export all read the same `WorkItemReport` facts.
+
+1. **Evidence directory convention**. A task run may write files under
+   `<task-worktree>/.issuepilot/evidence/<runId>/`. Without a manifest,
+   IssuePilot auto-indexes these subdirectories:
+   `screenshots/*.png|*.jpg|*.jpeg|*.webp`,
+   `recordings/*.mp4|*.webm|*.mov`, `playwright/*.zip`,
+   `commands/*.txt|*.log`, and `tests/*.json`. If `manifest.json` exists,
+   it takes precedence with `entries[]` objects containing `kind`, `label`,
+   optional `relPath`, `href`, `mediaType`, `capturedAt`, and `confidence`.
+   Files over 50 MB are not served in V4.3; path traversal entries are
+   rejected and surfaced as follow-up questions.
+2. **Evidence view**. Open `/work-items/<id>?view=evidence` or click
+   **Evidence** in the work-item header. The tab groups evidence by task and
+   provides a kind filter for screenshot, recording, Playwright walkthrough,
+   command output, and test result evidence. Screenshots render inline;
+   recordings, Playwright zips, command logs, and test result files link
+   through the orchestrator evidence file route.
+3. **AI vs human confirmation**. Evidence starts as `ai-claim` or
+   `system-derived`; operator confirmation upgrades one entry to
+   `human-confirmed`. Use the per-entry confirm button in the Evidence tab.
+   The dashboard calls
+   `POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm`,
+   persists `confirmedBy` / `confirmedAt`, emits
+   `work_item_evidence_confirmed`, and re-renders the parent handoff note.
+4. **Human review checklist**. The Parent Review Packet now derives checklist
+   rows for medium/high risks, `needs_rework`, partial WorkItems, skipped
+   tasks, failed CI, and missing evidence. V4.3 checklist rows are read-only;
+   individual evidence confirmation still happens in the Evidence tab.
+5. **Markdown export**. `Copy as Markdown` requests
+   `GET /api/work-items/:id/report.md` from the orchestrator. This is the same
+   renderer used for the GitLab parent handoff note, with Markdown output
+   using a top-level `# Parent Review Packet — ...` heading and GitLab output
+   using the issue-note heading.
+6. **Team mode**. Header-based API calls still use
+   `x-issuepilot-project: <id>`. Browser media elements cannot attach that
+   header, so evidence file links also carry `?project=<id>` in the query.
+   The server still validates that `runId` belongs to the requested WorkItem
+   and that the file path stays inside the task worktree evidence directory.
+
+CLI / direct HTTP equivalents:
+
+```bash
+# Read the reviewer-facing Markdown packet
+curl http://127.0.0.1:4738/api/work-items/<wi>/report.md
+
+# Read the evidence index
+curl http://127.0.0.1:4738/api/work-items/<wi>/evidence
+
+# Confirm one evidence entry
+curl -X POST -H 'content-type: application/json' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/evidence/<evidenceId>/confirm
+
+# Team-mode evidence file link fallback
+curl 'http://127.0.0.1:4738/api/work-items/<wi>/evidence/file?runId=<runId>&path=screenshots/main.png&project=platform-web'
+```
+
+V4.3 invariants worth knowing as an operator:
+
+- Evidence files stay in the task worktree; the dashboard only reads them
+  through the orchestrator's restricted route.
+- `TaskRunLink` remains the canonical task-to-run binding. Evidence lookup
+  goes through `TaskRunLink.runId -> RunReportArtifact.run.workspacePath`.
+- Parent Issue labels and handoff notes still go through aggregator
+  reconciliation; evidence confirmation triggers a re-render but does not let
+  synthetic task runs write parent labels directly.
+
+### 5.10 Current V2 boundaries and gaps
 
 The main V2 surface is complete. **Explicitly out of scope** for V2 (will be
 handled in V3 / V4):
@@ -958,16 +1032,16 @@ Open follow-ups (do not block day-to-day use):
 
 ### 6.1 Where to look
 
-| What you want | Where to look |
-| --- | --- |
-| Current daemon state / concurrency / poll interval | dashboard service header or `GET /api/state` |
-| All runs / status distribution | dashboard `/` (archived hidden by default) |
-| Per-run timeline / tool calls / log tail / review feedback | dashboard `/runs/<runId>` |
-| Real-time event stream | `GET /api/events/stream?runId=<runId>` (SSE) |
-| One Issue's event history | `~/.issuepilot/state/events/<project-slug>-<iid>.jsonl` |
-| Per-run metadata | `~/.issuepilot/state/runs/<project-slug>-<iid>.json` |
-| Daemon global log | `~/.issuepilot/state/logs/issuepilot.log` |
-| Workspace cleanup history | `/api/events?runId=workspace-cleanup` |
+| What you want                                              | Where to look                                           |
+| ---------------------------------------------------------- | ------------------------------------------------------- |
+| Current daemon state / concurrency / poll interval         | dashboard service header or `GET /api/state`            |
+| All runs / status distribution                             | dashboard `/` (archived hidden by default)              |
+| Per-run timeline / tool calls / log tail / review feedback | dashboard `/runs/<runId>`                               |
+| Real-time event stream                                     | `GET /api/events/stream?runId=<runId>` (SSE)            |
+| One Issue's event history                                  | `~/.issuepilot/state/events/<project-slug>-<iid>.jsonl` |
+| Per-run metadata                                           | `~/.issuepilot/state/runs/<project-slug>-<iid>.json`    |
+| Daemon global log                                          | `~/.issuepilot/state/logs/issuepilot.log`               |
+| Workspace cleanup history                                  | `/api/events?runId=workspace-cleanup`                   |
 
 ### 6.2 Forensics for failed / blocked runs
 

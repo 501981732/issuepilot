@@ -5,6 +5,7 @@ import {
   RUN_REPORT_VERSION,
   buildRunReportSummary,
   isMergeReadinessStatus,
+  type ReportEvidence,
   type RunReportArtifact,
 } from "../report.js";
 
@@ -102,6 +103,25 @@ describe("report contracts", () => {
       highestRisk: "low",
       updatedAt: "2026-05-16T00:05:00.000Z",
       totalMs: 300000,
+    });
+  });
+
+  it("allows run reports to declare V4.3 evidence references", () => {
+    const evidence: ReportEvidence = {
+      kind: "command_output",
+      label: "Shared contracts vitest output",
+      relPath: "commands/shared-contracts.log",
+      mediaType: "text/plain",
+      capturedAt: "2026-05-17T08:00:00.000Z",
+      confidence: "system-derived",
+    };
+    const report: RunReportArtifact = {
+      ...baseReport,
+      evidence: [evidence],
+    };
+    expect(report.evidence?.[0]).toMatchObject({
+      kind: "command_output",
+      relPath: "commands/shared-contracts.log",
     });
   });
 });

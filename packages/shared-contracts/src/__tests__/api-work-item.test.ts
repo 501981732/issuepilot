@@ -2,11 +2,14 @@ import { describe, expect, it, expectTypeOf } from "vitest";
 
 import type {
   AcceptWorkItemPlanRequest,
+  ConfirmEvidenceRequest,
+  ConfirmEvidenceResponse,
   MarkTaskReworkRequest,
   PlanWorkItemRequest,
   ReplanTaskRequest,
   UnskipTaskRequest,
   WorkItemDetailResponse,
+  WorkItemEvidenceResponse,
   WorkItemGraphResponse,
   WorkItemReportResponse,
   WorkItemsListResponse,
@@ -147,5 +150,82 @@ describe("V4.2 API contracts", () => {
     expectTypeOf<WorkItemGraphResponse>()
       .toHaveProperty("criticalPathTaskIds")
       .toEqualTypeOf<string[]>();
+  });
+});
+
+describe("V4.3 API contracts", () => {
+  it("ConfirmEvidenceRequest can omit operator (server uses header)", () => {
+    const req: ConfirmEvidenceRequest = {};
+    expect(req.operator).toBeUndefined();
+    expectTypeOf<ConfirmEvidenceRequest>()
+      .toHaveProperty("operator")
+      .toEqualTypeOf<string | undefined>();
+  });
+
+  it("ConfirmEvidenceResponse echoes evidenceId + report", () => {
+    const report: WorkItemReport = {
+      workItemId: "wi_01",
+      overallStatus: "complete",
+      taskSummaries: [],
+      validationSummary: "",
+      riskSummary: "",
+      evidence: { index: [], byTask: {} },
+      openQuestions: [],
+      recommendedNextActions: [],
+      humanReviewChecklist: [],
+      generatedAt: "2026-05-17T10:00:00.000Z",
+    };
+    const r: ConfirmEvidenceResponse = {
+      evidenceId: "t1:screenshot:run_a:login",
+      confirmedAt: "2026-05-17T10:00:00.000Z",
+      report,
+    };
+    expect(r.evidenceId).toBe("t1:screenshot:run_a:login");
+    expectTypeOf<ConfirmEvidenceResponse>()
+      .toHaveProperty("report")
+      .toEqualTypeOf<WorkItemReport>();
+  });
+
+  it("WorkItemEvidenceResponse exposes grouped index and missing tasks", () => {
+    const r: WorkItemEvidenceResponse = {
+      index: [
+        {
+          taskId: "t1",
+          kind: "screenshot",
+          evidenceId: "t1:screenshot:run_a:login",
+          label: "Login form",
+          confidence: "ai-claim",
+          source: { runId: "run_a", relPath: "screenshots/login.png" },
+        },
+      ],
+      byTask: {
+        t1: [
+          {
+            taskId: "t1",
+            kind: "screenshot",
+            evidenceId: "t1:screenshot:run_a:login",
+            label: "Login form",
+            confidence: "ai-claim",
+          },
+        ],
+      },
+      missing: [{ taskId: "t2", reason: "no-run-report" }],
+    };
+    expect(r.byTask.t1).toHaveLength(1);
+    expect(r.missing).toEqual([{ taskId: "t2", reason: "no-run-report" }]);
+    expectTypeOf<WorkItemEvidenceResponse>()
+      .toHaveProperty("missing")
+      .toEqualTypeOf<
+        Array<{
+          taskId: string;
+          reason: "no-run-report" | "no-link" | "incomplete-report";
+        }>
+      >();
+  });
+
+  it("keeps the existing JSON report response separate from report.md", () => {
+    expectTypeOf<WorkItemReportResponse>()
+      .toHaveProperty("report")
+      .toEqualTypeOf<WorkItemReport | undefined>();
   });
 });

@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { renderWithIntl as render } from "../../test/intl";
 
+vi.mock("../../lib/api", () => ({
+  getWorkItemReportMarkdown: vi.fn(),
+}));
+
+import { getWorkItemReportMarkdown } from "../../lib/api";
 import { ParentReviewPacket } from "./parent-review-packet";
 
 const baseReport = (over: Partial<WorkItemReport> = {}): WorkItemReport => ({
@@ -31,19 +36,31 @@ const baseReport = (over: Partial<WorkItemReport> = {}): WorkItemReport => ({
       {
         taskId: "T1",
         kind: "diff",
+        evidenceId: "T1:diff:run_a:diff",
         label: "diff link",
+        confidence: "ai-claim",
         href: "https://gl/-/mr/7/diffs",
       },
       {
         taskId: "T1",
         kind: "validation",
+        evidenceId: "T1:validation:run_a:test",
         label: "pnpm test passed",
+        confidence: "ai-claim",
+      },
+      {
+        taskId: "T1",
+        kind: "screenshot",
+        evidenceId: "T1:screenshot:run_a:login",
+        label: "login screenshot",
+        confidence: "ai-claim",
       },
     ],
     byTask: {},
   },
   openQuestions: ["Q1"],
   recommendedNextActions: ["Reviewer to inspect MR"],
+  humanReviewChecklist: [],
   generatedAt: "2026-05-17T01:00:00.000Z",
   ...over,
 });
@@ -70,7 +87,41 @@ describe("ParentReviewPacket", () => {
     expect(
       screen.getByRole("link", { name: "diff link" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("login screenshot")).toBeInTheDocument();
     expect(screen.getByText("Reviewer to inspect MR")).toBeInTheDocument();
+  });
+
+  it("renders ConfidencePill for each evidence entry", () => {
+    render(<ParentReviewPacket report={baseReport()} />);
+
+    expect(screen.getAllByText("AI inferred")).toHaveLength(3);
+  });
+
+  it("renders HumanReviewChecklist when report.humanReviewChecklist is non-empty", () => {
+    render(
+      <ParentReviewPacket
+        report={baseReport({
+          humanReviewChecklist: [
+            {
+              itemId: "ai-risk-medium:T1",
+              taskId: "T1",
+              label: "Review medium AI risk for T1",
+              reason: "ai-risk-medium",
+              confirmed: false,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Confirm evidence item by item in the Evidence tab."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Review medium AI risk for T1")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
   it("renders partial status banner with the partial label", () => {
@@ -105,18 +156,25 @@ describe("ParentReviewPacket", () => {
     expect(screen.queryByText(/ready_to_merge/i)).not.toBeInTheDocument();
   });
 
-  it("Copy as Markdown writes a markdown blob to navigator.clipboard", async () => {
+  it("Copy as Markdown fetches report.md and writes it to navigator.clipboard", async () => {
+    vi.mocked(getWorkItemReportMarkdown).mockResolvedValue(
+      "# Server-rendered Review Packet\n\nAll synthetic tests pass\n",
+    );
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
-    render(<ParentReviewPacket report={baseReport()} />);
+    render(<ParentReviewPacket report={baseReport()} project="platform-web" />);
     fireEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+    await waitFor(() =>
+      expect(getWorkItemReportMarkdown).toHaveBeenCalledWith("wi_1", {
+        project: "platform-web",
+      }),
+    );
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     const md = writeText.mock.calls[0]![0] as string;
-    expect(md).toContain("# Parent Review Packet");
+    expect(md).toContain("# Server-rendered Review Packet");
     expect(md).toContain("All synthetic tests pass");
-    expect(md).toContain("T1 Title");
   });
 });

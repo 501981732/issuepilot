@@ -180,7 +180,119 @@
     },
     "viewToggle": {
       "list": "List",
-      "graph": "Graph"
+      "graph": "Graph",
+      "evidence": "Evidence"
+    },
+    "view": {
+      "evidence": "Evidence"
+    },
+    "evidence": {
+      "title": "Evidence",
+      "empty": "No evidence matches this filter.",
+      "missing": "Missing evidence — task {taskId} has a TaskRunLink but no report",
+      "filter": {
+        "all": "All",
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "commandOutput": "Commands",
+        "testResult": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review": "Review"
+      },
+      "confirmAction": "Confirm",
+      "confirmedBy": "Confirmed by {confirmedBy}"
+    },
+    "confidence": {
+      "ai-claim": "AI inferred",
+      "system-derived": "System derived",
+      "human-confirmed": "Human confirmed"
+    },
+    "checklist": {
+      "title": "Human review checklist",
+      "empty": "No human review items.",
+      "confirmHint": "Confirm evidence item by item in the Evidence tab.",
+      "confirmAction": "Confirm",
+      "confirmedSuffix": "(confirmed by {confirmedBy} at {confirmedAt})",
+      "confirmedAria": "{label} is confirmed",
+      "unconfirmedAria": "{label} is not confirmed",
+      "unknownOperator": "unknown operator",
+      "unknownTime": "unknown time",
+      "reasons": {
+        "ai-risk-medium": {
+          "label": "Medium AI risk",
+          "description": "Review AI-identified medium risk before handoff."
+        },
+        "ai-risk-high": {
+          "label": "High AI risk",
+          "description": "Resolve or explicitly accept high AI risk before handoff."
+        },
+        "needs-rework": {
+          "label": "Needs rework",
+          "description": "A task is marked for rework and needs operator review."
+        },
+        "partial-overall": {
+          "label": "Partial outcome",
+          "description": "The work item completed only partially and needs a decision."
+        },
+        "missing-evidence": {
+          "label": "Missing evidence",
+          "description": "Required evidence is absent or incomplete for this task."
+        },
+        "skipped-task": {
+          "label": "Skipped task",
+          "description": "Confirm that the skipped task is intentional."
+        },
+        "ci-failed": {
+          "label": "CI failed",
+          "description": "Failed CI must be reviewed before human handoff."
+        }
+      }
+    },
+    "evidenceTab": {
+      "ariaLabel": "Evidence",
+      "filterAria": "Evidence kind filter",
+      "empty": "No evidence matches this filter.",
+      "confirm": "Confirm",
+      "confirming": "Confirming…",
+      "confirmed": "Confirmed",
+      "capturedAt": "Captured at {capturedAt}",
+      "openPlaywrightTrace": "Open Playwright trace",
+      "playwrightHint": "Open locally with `npx playwright show-trace`.",
+      "missing": "Missing evidence — task {taskId} has a TaskRunLink but no report",
+      "filters": {
+        "all": "All",
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "command_output": "Commands",
+        "test_result": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review_feedback": "Review"
+      },
+      "kinds": {
+        "screenshot": "Screenshots",
+        "recording": "Recordings",
+        "playwright": "Playwright",
+        "command_output": "Commands",
+        "test_result": "Tests",
+        "diff": "Diff",
+        "validation": "Validation",
+        "risk": "Risk",
+        "ci": "CI",
+        "review_feedback": "Review"
+      },
+      "missingReasons": {
+        "no-run-report": "The task has a linked run, but the run report is missing.",
+        "no-link": "The task has no TaskRunLink yet.",
+        "incomplete-report": "The task report exists but does not include evidence."
+      }
     },
     "replanDialog": {
       "title": "Replan task",
@@ -220,6 +332,7 @@
       "evidenceReview": "Reviewer",
       "noNextActions": "Reviewer to inspect the linked MRs and decide next steps.",
       "copyMarkdown": "Copy as Markdown",
+      "copyFromServer": "Copy the server-rendered Review Packet.",
       "copied": "Copied"
     },
     "action": {

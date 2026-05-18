@@ -180,7 +180,119 @@
     },
     "viewToggle": {
       "list": "列表",
-      "graph": "图谱"
+      "graph": "图谱",
+      "evidence": "证据"
+    },
+    "view": {
+      "evidence": "证据"
+    },
+    "evidence": {
+      "title": "证据",
+      "empty": "当前筛选下没有证据。",
+      "missing": "缺少证据 — 任务 {taskId} 有 TaskRunLink，但没有 report",
+      "filter": {
+        "all": "全部",
+        "screenshot": "截图",
+        "recording": "录屏",
+        "playwright": "Playwright trace",
+        "commandOutput": "命令输出",
+        "testResult": "测试结果",
+        "diff": "Diff",
+        "validation": "验证",
+        "risk": "风险",
+        "ci": "CI",
+        "review": "评审反馈"
+      },
+      "confirmAction": "确认",
+      "confirmedBy": "由 {confirmedBy} 确认"
+    },
+    "confidence": {
+      "ai-claim": "AI 推断",
+      "system-derived": "系统生成",
+      "human-confirmed": "人工确认"
+    },
+    "checklist": {
+      "title": "人工复核清单",
+      "empty": "暂无人工复核项。",
+      "confirmHint": "逐条证据确认请到证据标签页。",
+      "confirmAction": "确认",
+      "confirmedSuffix": "（由 {confirmedBy} 于 {confirmedAt} 确认）",
+      "confirmedAria": "{label} 已确认",
+      "unconfirmedAria": "{label} 未确认",
+      "unknownOperator": "未知操作员",
+      "unknownTime": "未知时间",
+      "reasons": {
+        "ai-risk-medium": {
+          "label": "中等 AI 风险",
+          "description": "交接前请复核 AI 标记的中等风险。"
+        },
+        "ai-risk-high": {
+          "label": "高 AI 风险",
+          "description": "交接前请解决或明确接受高 AI 风险。"
+        },
+        "needs-rework": {
+          "label": "需要返工",
+          "description": "任务已被标记为返工，需要操作员复核。"
+        },
+        "partial-overall": {
+          "label": "部分完成",
+          "description": "工作单元仅部分完成，需要操作员决策。"
+        },
+        "missing-evidence": {
+          "label": "缺少证据",
+          "description": "该任务缺少必要证据或证据不完整。"
+        },
+        "skipped-task": {
+          "label": "已跳过任务",
+          "description": "请确认该任务跳过是有意为之。"
+        },
+        "ci-failed": {
+          "label": "CI 失败",
+          "description": "人工交接前必须复核失败的 CI。"
+        }
+      }
+    },
+    "evidenceTab": {
+      "ariaLabel": "证据",
+      "filterAria": "证据类型筛选",
+      "empty": "当前筛选下没有证据。",
+      "confirm": "确认",
+      "confirming": "确认中…",
+      "confirmed": "已确认",
+      "capturedAt": "采集于 {capturedAt}",
+      "openPlaywrightTrace": "打开 Playwright trace",
+      "playwrightHint": "在本地用 `npx playwright show-trace` 打开。",
+      "missing": "缺少证据 — 任务 {taskId} 有 TaskRunLink，但没有 report",
+      "filters": {
+        "all": "全部",
+        "screenshot": "截图",
+        "recording": "录屏",
+        "playwright": "Playwright",
+        "command_output": "命令输出",
+        "test_result": "测试结果",
+        "diff": "Diff",
+        "validation": "验证",
+        "risk": "风险",
+        "ci": "CI",
+        "review_feedback": "评审反馈"
+      },
+      "kinds": {
+        "screenshot": "截图",
+        "recording": "录屏",
+        "playwright": "Playwright",
+        "command_output": "命令输出",
+        "test_result": "测试结果",
+        "diff": "Diff",
+        "validation": "验证",
+        "risk": "风险",
+        "ci": "CI",
+        "review_feedback": "评审反馈"
+      },
+      "missingReasons": {
+        "no-run-report": "任务有关联 run，但 run report 缺失。",
+        "no-link": "任务还没有 TaskRunLink。",
+        "incomplete-report": "任务 report 已存在，但没有包含 evidence。"
+      }
     },
     "replanDialog": {
       "title": "重新规划任务",
@@ -220,6 +332,7 @@
       "evidenceReview": "Reviewer",
       "noNextActions": "请审阅相关 MR 并决定下一步。",
       "copyMarkdown": "复制 Markdown",
+      "copyFromServer": "复制服务端渲染的 Review Packet。",
       "copied": "已复制"
     },
     "action": {

@@ -174,6 +174,7 @@ describe("work-item contracts", () => {
       evidence: { index: [], byTask: {} },
       openQuestions: [],
       recommendedNextActions: ["Reviewer to look at merged tasks"],
+      humanReviewChecklist: [],
       generatedAt: "2026-05-17T00:10:00.000Z",
     };
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);

@@ -45,7 +45,9 @@ workspace 的团队 daemon。
   - [5.5 Phase 4 — Review feedback sweep](#55-phase-4--review-feedback-sweep)
   - [5.6 Phase 5 — Workspace retention 自动清理](#56-phase-5--workspace-retention-自动清理)
   - [5.7 V4.1 Workflow Spine — 大 Issue 端到端走一圈](#57-v41-workflow-spine--大-issue-端到端走一圈)
-  - [5.8 V2 当前的边界与未覆盖](#58-v2-当前的边界与未覆盖)
+  - [5.8 V4.2 Task Graph — graph 视图、replan、mark-rework、branch chaining、team-mode project switcher](#58-v42-task-graph--graph-视图replanmark-reworkbranch-chainingteam-mode-project-switcher)
+  - [5.9 V4.3 Review Packet + Evidence — reviewer packet、evidence 视图、人工确认](#59-v43-review-packet--evidence--reviewer-packetevidence-视图人工确认)
+  - [5.10 V2 当前的边界与未覆盖](#510-v2-当前的边界与未覆盖)
 - [Part 6 — 日常运维与排障](#part-6--日常运维与排障)
   - [6.1 在哪里看什么](#61-在哪里看什么)
   - [6.2 失败 / blocked run 取证](#62-失败--blocked-run-取证)
@@ -77,17 +79,17 @@ IssuePilot 不是 SaaS、不是集群、**不会自动 merge MR**。
 
 ### 1.2 V1 单项目 vs V2 团队模式
 
-| 维度 | V1 单项目 | V2 团队模式 |
-| --- | --- | --- |
-| 适合场景 | 个人开发机，一台 daemon 服务一个项目 | 团队共享机器，一台 daemon 同时管多个 GitLab 项目 |
-| 入口 | `issuepilot run --workflow /path/to/WORKFLOW.md` | `issuepilot run --config /path/to/issuepilot.team.yaml` |
-| 配置事实来源 | 各项目业务仓库根目录的 `WORKFLOW.md` | 中心化 `issuepilot-config/` 目录：`issuepilot.team.yaml` + `projects/*.yaml` + `workflows/*.md` |
-| 并发 | 单 run，1 个 worktree | 1–5，全局 + per-project lease 防重复 claim |
-| Dashboard 操作 | retry / stop / archive 可用 | retry / stop / archive 暂未装配（返回 `503 actions_unavailable`） |
-| CI 回流 | ✅ | ✅ |
-| Review feedback sweep | ✅ | ✅ |
-| Workspace cleanup loop | ✅ | ⚠ schema 已解析但 cleanup loop 暂未自动跑（follow-up） |
-| Dashboard 项目视图 | 单项目 | 按 team config 顺序列出所有项目 |
+| 维度                   | V1 单项目                                        | V2 团队模式                                                                                     |
+| ---------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 适合场景               | 个人开发机，一台 daemon 服务一个项目             | 团队共享机器，一台 daemon 同时管多个 GitLab 项目                                                |
+| 入口                   | `issuepilot run --workflow /path/to/WORKFLOW.md` | `issuepilot run --config /path/to/issuepilot.team.yaml`                                         |
+| 配置事实来源           | 各项目业务仓库根目录的 `WORKFLOW.md`             | 中心化 `issuepilot-config/` 目录：`issuepilot.team.yaml` + `projects/*.yaml` + `workflows/*.md` |
+| 并发                   | 单 run，1 个 worktree                            | 1–5，全局 + per-project lease 防重复 claim                                                      |
+| Dashboard 操作         | retry / stop / archive 可用                      | retry / stop / archive 暂未装配（返回 `503 actions_unavailable`）                               |
+| CI 回流                | ✅                                               | ✅                                                                                              |
+| Review feedback sweep  | ✅                                               | ✅                                                                                              |
+| Workspace cleanup loop | ✅                                               | ⚠ schema 已解析但 cleanup loop 暂未自动跑（follow-up）                                          |
+| Dashboard 项目视图     | 单项目                                           | 按 team config 顺序列出所有项目                                                                 |
 
 两个入口**互斥**，同时传给 CLI 会报错退出。两种模式可以共存：团队场景下
 若要 Phase 5 自动清理，目前的兜底是用 V1 入口逐项目启动。
@@ -131,14 +133,14 @@ IssuePilot 不是 SaaS、不是集群、**不会自动 merge MR**。
 
 ### 2.1 环境要求
 
-| 工具 | 要求 |
-| --- | --- |
-| Node.js | `>=22 <23` |
-| pnpm | `10.x`（通过 corepack 使用） |
-| Git | `>=2.40` |
-| Codex CLI | 能执行 `codex app-server` 且已登录 |
-| GitLab | 一个测试项目，支持 API / label / Issue / MR |
-| SSH key | 能 push 到目标项目 |
+| 工具      | 要求                                        |
+| --------- | ------------------------------------------- |
+| Node.js   | `>=22 <23`                                  |
+| pnpm      | `10.x`（通过 corepack 使用）                |
+| Git       | `>=2.40`                                    |
+| Codex CLI | 能执行 `codex app-server` 且已登录          |
+| GitLab    | 一个测试项目，支持 API / label / Issue / MR |
+| SSH key   | 能 push 到目标项目                          |
 
 ### 2.2 安装 IssuePilot
 
@@ -156,6 +158,7 @@ issuepilot doctor
 四项都是 `[OK]`。
 
 > **贡献者兜底**（在本仓库源码里跑，不安装全局 CLI）：
+>
 > ```bash
 > pnpm build
 > pnpm exec issuepilot doctor
@@ -187,14 +190,14 @@ issuepilot doctor
 
 ### 3.1 创建 workflow labels
 
-| Label | 含义 |
-| --- | --- |
-| `ai-ready` | 候选 Issue，IssuePilot 会自动认领 |
-| `ai-running` | IssuePilot 已认领，正在跑 |
-| `human-review` | MR 已生成，等待人工 review |
-| `ai-rework` | 人工 review 后要求 AI 再跑一轮 |
-| `ai-failed` | 运行失败，需人工排障 |
-| `ai-blocked` | 缺信息、权限或密钥 |
+| Label          | 含义                              |
+| -------------- | --------------------------------- |
+| `ai-ready`     | 候选 Issue，IssuePilot 会自动认领 |
+| `ai-running`   | IssuePilot 已认领，正在跑         |
+| `human-review` | MR 已生成，等待人工 review        |
+| `ai-rework`    | 人工 review 后要求 AI 再跑一轮    |
+| `ai-failed`    | 运行失败，需人工排障              |
+| `ai-blocked`   | 缺信息、权限或密钥                |
 
 ### 3.2 SSH 能 push 到目标项目
 
@@ -292,17 +295,17 @@ git push origin main
 
 关键字段速查：
 
-| 字段 | 怎么填 |
-| --- | --- |
-| `tracker.kind` | 固定 `gitlab`，不要写 `gitlabee` |
-| `tracker.base_url` | GitLab 实例地址 |
-| `tracker.project_id` | 项目路径或数字 ID |
-| `tracker.token_env` | **仅环境变量 token 模式才填**；值是变量名，不是 token 值 |
-| `git.repo_url` | 目标项目 SSH clone 地址 |
-| `git.base_branch` | MR target branch（一般是 `main`） |
-| `agent.max_concurrent_agents` | 先用 `1`，稳定后再调大 |
-| `codex.approval_policy` | P0 推荐 `never` |
-| `poll_interval_ms` | 默认 10000ms；越小响应越快、GitLab API 压力越大 |
+| 字段                          | 怎么填                                                   |
+| ----------------------------- | -------------------------------------------------------- |
+| `tracker.kind`                | 固定 `gitlab`，不要写 `gitlabee`                         |
+| `tracker.base_url`            | GitLab 实例地址                                          |
+| `tracker.project_id`          | 项目路径或数字 ID                                        |
+| `tracker.token_env`           | **仅环境变量 token 模式才填**；值是变量名，不是 token 值 |
+| `git.repo_url`                | 目标项目 SSH clone 地址                                  |
+| `git.base_branch`             | MR target branch（一般是 `main`）                        |
+| `agent.max_concurrent_agents` | 先用 `1`，稳定后再调大                                   |
+| `codex.approval_policy`       | P0 推荐 `never`                                          |
+| `poll_interval_ms`            | 默认 10000ms；越小响应越快、GitLab API 压力越大          |
 
 ⚠ workflow 拒绝 `danger-full-access` / `dangerFullAccess` sandbox；不要写
 明文 token，全程通过环境变量或 OAuth credentials 注入。
@@ -382,12 +385,12 @@ Validation passed.
 
 常见失败：
 
-| 错误 | 处理方式 |
-| --- | --- |
-| `WorkflowConfigError: tracker` | 检查 workflow front matter 字段名和缩进 |
+| 错误                                     | 处理方式                                                                                          |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `WorkflowConfigError: tracker`           | 检查 workflow front matter 字段名和缩进                                                           |
 | `WorkflowConfigError: tracker.token_env` | workflow 写了 `token_env` 但 shell 没有对应环境变量；要么 export，要么删掉 `token_env` 并走 OAuth |
-| `GitLabError(category="auth")` | token 错误、过期，或 OAuth credentials 不存在 |
-| `GitLabError(category="permission")` | token 缺 `api` scope，或无目标项目权限 |
+| `GitLabError(category="auth")`           | token 错误、过期，或 OAuth credentials 不存在                                                     |
+| `GitLabError(category="permission")`     | token 缺 `api` scope，或无目标项目权限                                                            |
 
 ---
 
@@ -474,14 +477,14 @@ CI 状态、run id、branch、路径，以及 `IssuePilot` / `Codex` / `GitLab` 
 
 ### 4.3 6 个 label 状态对应该做什么
 
-| 当前 label | 你该做什么 |
-| --- | --- |
-| `ai-ready` | 等 IssuePilot 拾取（每 `poll_interval_ms` 一次） |
-| `ai-running` | 看 dashboard 等结果；不要手工改 label |
-| `human-review` | 去 GitLab review MR；可选等 CI 状态自动更新 |
-| `ai-rework` | 等 IssuePilot 再跑一轮 |
-| `ai-failed` | 看 dashboard timeline + 失败 note；修复后用 dashboard Retry，或人工把 label 改回 `ai-ready` |
-| `ai-blocked` | 补信息、权限或密钥，解决后把 label 改回 `ai-ready` |
+| 当前 label     | 你该做什么                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| `ai-ready`     | 等 IssuePilot 拾取（每 `poll_interval_ms` 一次）                                            |
+| `ai-running`   | 看 dashboard 等结果；不要手工改 label                                                       |
+| `human-review` | 去 GitLab review MR；可选等 CI 状态自动更新                                                 |
+| `ai-rework`    | 等 IssuePilot 再跑一轮                                                                      |
+| `ai-failed`    | 看 dashboard timeline + 失败 note；修复后用 dashboard Retry，或人工把 label 改回 `ai-ready` |
+| `ai-blocked`   | 补信息、权限或密钥，解决后把 label 改回 `ai-ready`                                          |
 
 ---
 
@@ -603,15 +606,15 @@ ci:
 
 字段约束（违反会启动失败并报具体 dotted path）：
 
-| 字段 | 约束 |
-| --- | --- |
-| `version` | 固定 `1` |
-| `scheduler.max_concurrent_runs` | `1..5` |
-| `scheduler.lease_ttl_ms` | `>= 60000` |
-| `scheduler.poll_interval_ms` | `>= 1000` |
-| `projects[].id` | 小写字母数字 + 中划线；同一 config 不能重复 |
-| `projects[].project` / `projects[].workflow_profile` | 都必填；相对路径基于 team config 目录解析为绝对路径 |
-| `ci`（precedence） | `projects[].ci > team ci > workflow profile ci`；任何 override 必须三键齐发 |
+| 字段                                                 | 约束                                                                        |
+| ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| `version`                                            | 固定 `1`                                                                    |
+| `scheduler.max_concurrent_runs`                      | `1..5`                                                                      |
+| `scheduler.lease_ttl_ms`                             | `>= 60000`                                                                  |
+| `scheduler.poll_interval_ms`                         | `>= 1000`                                                                   |
+| `projects[].id`                                      | 小写字母数字 + 中划线；同一 config 不能重复                                 |
+| `projects[].project` / `projects[].workflow_profile` | 都必填；相对路径基于 team config 目录解析为绝对路径                         |
+| `ci`（precedence）                                   | `projects[].ci > team ci > workflow profile ci`；任何 override 必须三键齐发 |
 
 `projects[].workflow`（旧的单文件指针）在 team 模式下**已不再支持**，
 loader 会用可操作的 dotted-path 错误（明确指向需要替换为的字段）拒绝加载。
@@ -645,11 +648,11 @@ badge；workflow 编译失败的项目显示红色 `load error` badge + 错误�
 dashboard 的 runs 列表与 detail 页提供三个按钮，所有操作都会写
 `operator_action_*` 事件到 event store。
 
-| 操作 | 适用状态 | 行为 | 备注 |
-| --- | --- | --- | --- |
-| **Retry** | `ai-failed` / `ai-blocked` / `ai-rework` / archived failed run | issue label 翻 `ai-rework`，dashboard run 状态置 `claimed` | V2 team daemon 暂未装配，返回 `503 actions_unavailable`；V1 入口可用 |
-| **Stop** | active `ai-running` run | 通过 Codex `turn/interrupt` 真实取消 turn；5s 超时升级 `stopping`，最终走 `turnTimeoutMs` 收敛 | 不直接动 GitLab labels；失败 emit `operator_action_failed { code: cancel_timeout / cancel_threw / not_registered }` |
-| **Archive** | terminal run（`completed` / `failed` / `blocked`） | run record 写 `archivedAt`，dashboard 默认隐藏 | 列表顶部有 `Show archived` toggle |
+| 操作        | 适用状态                                                       | 行为                                                                                           | 备注                                                                                                                |
+| ----------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Retry**   | `ai-failed` / `ai-blocked` / `ai-rework` / archived failed run | issue label 翻 `ai-rework`，dashboard run 状态置 `claimed`                                     | V2 team daemon 暂未装配，返回 `503 actions_unavailable`；V1 入口可用                                                |
+| **Stop**    | active `ai-running` run                                        | 通过 Codex `turn/interrupt` 真实取消 turn；5s 超时升级 `stopping`，最终走 `turnTimeoutMs` 收敛 | 不直接动 GitLab labels；失败 emit `operator_action_failed { code: cancel_timeout / cancel_threw / not_registered }` |
+| **Archive** | terminal run（`completed` / `failed` / `blocked`）             | run record 写 `archivedAt`，dashboard 默认隐藏                                                 | 列表顶部有 `Show archived` toggle                                                                                   |
 
 操作者身份默认 server 端 `"system"` 兜底；HTTP `x-issuepilot-operator`
 header 留作 V3 RBAC 接入口。
@@ -662,19 +665,19 @@ header 留作 V3 RBAC 接入口。
 ```yaml
 ci:
   enabled: true
-  on_failure: ai-rework        # 或 human-review
+  on_failure: ai-rework # 或 human-review
   wait_for_pipeline: true
 ```
 
 行为矩阵：
 
-| pipeline 状态 | `on_failure` | 行为 |
-| --- | --- | --- |
-| `success` | — | 保持 `human-review`，dashboard 标记可 review |
-| `failed` | `ai-rework` | label 翻 `ai-rework` + 写带 `<!-- issuepilot:ci-feedback:<runId> -->` marker 的 note |
-| `failed` | `human-review` | 不动 labels，仅写一条 marker note + emit `ci_status_observed { action: "noop" }` |
-| `running` / `pending` / `unknown` | — | 保持 `human-review`，等下一轮 poll，不写 note |
-| `canceled` / `skipped` | — | 写一条提示人工 review 的 marker note + emit `ci_status_observed { action: "manual" }` |
+| pipeline 状态                     | `on_failure`   | 行为                                                                                  |
+| --------------------------------- | -------------- | ------------------------------------------------------------------------------------- |
+| `success`                         | —              | 保持 `human-review`，dashboard 标记可 review                                          |
+| `failed`                          | `ai-rework`    | label 翻 `ai-rework` + 写带 `<!-- issuepilot:ci-feedback:<runId> -->` marker 的 note  |
+| `failed`                          | `human-review` | 不动 labels，仅写一条 marker note + emit `ci_status_observed { action: "noop" }`      |
+| `running` / `pending` / `unknown` | —              | 保持 `human-review`，等下一轮 poll，不写 note                                         |
+| `canceled` / `skipped`            | —              | 写一条提示人工 review 的 marker note + emit `ci_status_observed { action: "manual" }` |
 
 约束：
 
@@ -702,12 +705,12 @@ ci:
 
 默认 retention policy（可在 workflow 或 team config 顶层 `retention` 节覆盖）：
 
-| Run 状态 | 默认保留 |
-| --- | --- |
-| active / running / stopping / claimed / retrying | 永不自动清理 |
-| successful / closed | 7 天 |
-| failed / blocked | 30 天 |
-| archived terminal | 按原终态保留期计算 |
+| Run 状态                                         | 默认保留           |
+| ------------------------------------------------ | ------------------ |
+| active / running / stopping / claimed / retrying | 永不自动清理       |
+| successful / closed                              | 7 天               |
+| failed / blocked                                 | 30 天              |
+| archived terminal                                | 按原终态保留期计算 |
 
 约束：
 
@@ -777,7 +780,7 @@ Operator 操作流：
    线程里。
 5. orchestrator 会在父 Issue 写**单条** workpad note，note 里带
    marker `<!-- issuepilot:work-item:<id> -->`，每次 reconcile 都更新
-   同一条 note。当 *所有* 必需 task 都 `completed` 时，IssuePilot 把
+   同一条 note。当 _所有_ 必需 task 都 `completed` 时，IssuePilot 把
    父 Issue label 从 `ai-running` 切到 `human-review`；部分失败 /
    失败 / 阻塞场景下父 label 不动，由 operator 决定下一步。
 
@@ -883,7 +886,74 @@ V4.2 operator 视角的不变量：
   下游链回到 `blocked_by_dependency`，等 operator 决策；已 dispatch
   的下游 in-flight run 仍跑完，其结果由 aggregator 反映。
 
-### 5.9 V2 当前的边界与未覆盖
+### 5.9 V4.3 Review Packet + Evidence — reviewer packet、evidence 视图、人工确认
+
+V4.3 把 WorkItem report 升级成面向 reviewer 的交付包。Parent Review
+Packet、GitLab handoff note、dashboard Evidence 视图和 Markdown export
+都读取同一个 `WorkItemReport` 事实源。
+
+1. **Evidence 目录约定**。task run 可以把文件写到
+   `<task-worktree>/.issuepilot/evidence/<runId>/`。没有 manifest 时，
+   IssuePilot 会自动索引这些子目录：
+   `screenshots/*.png|*.jpg|*.jpeg|*.webp`、
+   `recordings/*.mp4|*.webm|*.mov`、`playwright/*.zip`、
+   `commands/*.txt|*.log`、`tests/*.json`。如果存在 `manifest.json`，
+   manifest 优先，格式是 `entries[]`，每条包含 `kind`、`label`，
+   以及可选的 `relPath`、`href`、`mediaType`、`capturedAt`、`confidence`。
+   V4.3 不服务超过 50MB 的文件；path traversal entry 会被拒绝，并作为
+   follow-up question 暴露给 reviewer。
+2. **Evidence 视图**。打开 `/work-items/<id>?view=evidence`，或在
+   work-item header 点击 **Evidence**。该视图按 task 分组 evidence，
+   并提供 kind filter：截图、录屏、Playwright walkthrough、命令输出、
+   测试结果。截图内联渲染；录屏、Playwright zip、命令 log 和测试结果
+   文件通过 orchestrator 的 evidence file route 打开。
+3. **AI vs human confirmation**。Evidence 初始是 `ai-claim` 或
+   `system-derived`；operator 在 Evidence tab 逐条确认后会升级成
+   `human-confirmed`。dashboard 调
+   `POST /api/work-items/:id/tasks/:taskId/evidence/:evidenceId/confirm`，
+   持久化 `confirmedBy` / `confirmedAt`，emit
+   `work_item_evidence_confirmed`，并重新渲染父 Issue handoff note。
+4. **Human review checklist**。Parent Review Packet 会为 medium/high
+   risk、`needs_rework`、partial WorkItem、skipped task、CI failed 和
+   missing evidence 派生 checklist 行。V4.3 的 checklist 是只读入口；
+   单条 evidence 的人工确认仍在 Evidence tab 完成。
+5. **Markdown export**。`Copy as Markdown` 请求 orchestrator 的
+   `GET /api/work-items/:id/report.md`。这和 GitLab 父 Issue handoff note
+   使用同一个 renderer，只是 Markdown 输出用
+   `# Parent Review Packet — ...` 一级标题，GitLab note 使用 issue-note
+   语境标题。
+6. **Team mode**。普通 API 仍通过 `x-issuepilot-project: <id>` header
+   分发。浏览器媒体元素无法带这个 header，所以 evidence file link 也会在
+   query 里附带 `?project=<id>`。server 仍会校验 `runId` 属于当前
+   WorkItem，且文件路径不能逃逸 task worktree 的 evidence 目录。
+
+CLI / 直接 HTTP 等价命令：
+
+```bash
+# 拉取 reviewer-facing Markdown packet
+curl http://127.0.0.1:4738/api/work-items/<wi>/report.md
+
+# 拉取 evidence index
+curl http://127.0.0.1:4738/api/work-items/<wi>/evidence
+
+# 确认一条 evidence
+curl -X POST -H 'content-type: application/json' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/evidence/<evidenceId>/confirm
+
+# Team-mode evidence file link fallback
+curl 'http://127.0.0.1:4738/api/work-items/<wi>/evidence/file?runId=<runId>&path=screenshots/main.png&project=platform-web'
+```
+
+V4.3 operator 视角的不变量：
+
+- Evidence 文件留在 task worktree；dashboard 只能通过 orchestrator 的受限
+  route 读取。
+- `TaskRunLink` 仍是 task-to-run 的 canonical binding。Evidence lookup
+  必须走 `TaskRunLink.runId -> RunReportArtifact.run.workspacePath`。
+- 父 Issue label / handoff note 仍经 aggregator reconciliation 写入；
+  evidence confirm 只触发重新渲染，不允许 synthetic task run 直接改父 label。
+
+### 5.10 V2 当前的边界与未覆盖
 
 V2 主体已完成，**显式不在 V2 范围**的能力（会在 V3 / V4 处理）：
 
@@ -906,16 +976,16 @@ V2 主体已完成，**显式不在 V2 范围**的能力（会在 V3 / V4 处理
 
 ### 6.1 在哪里看什么
 
-| 想看什么 | 去哪里 |
-| --- | --- |
-| 当前 daemon 状态 / 并发 / pollIntervalMs | dashboard service header 或 `GET /api/state` |
-| 所有 run 列表 / 状态分布 | dashboard `/`（默认隐藏 archived） |
-| 单个 run 的时间线 / tool calls / log tail / review feedback | dashboard `/runs/<runId>` |
-| 实时事件流 | `GET /api/events/stream?runId=<runId>`（SSE） |
-| 单个 Issue 的事件历史 | `~/.issuepilot/state/events/<project-slug>-<iid>.jsonl` |
-| 单个 run 的元数据 | `~/.issuepilot/state/runs/<project-slug>-<iid>.json` |
-| daemon 全局日志 | `~/.issuepilot/state/logs/issuepilot.log` |
-| Workspace cleanup 历史 | `/api/events?runId=workspace-cleanup` |
+| 想看什么                                                    | 去哪里                                                  |
+| ----------------------------------------------------------- | ------------------------------------------------------- |
+| 当前 daemon 状态 / 并发 / pollIntervalMs                    | dashboard service header 或 `GET /api/state`            |
+| 所有 run 列表 / 状态分布                                    | dashboard `/`（默认隐藏 archived）                      |
+| 单个 run 的时间线 / tool calls / log tail / review feedback | dashboard `/runs/<runId>`                               |
+| 实时事件流                                                  | `GET /api/events/stream?runId=<runId>`（SSE）           |
+| 单个 Issue 的事件历史                                       | `~/.issuepilot/state/events/<project-slug>-<iid>.jsonl` |
+| 单个 run 的元数据                                           | `~/.issuepilot/state/runs/<project-slug>-<iid>.json`    |
+| daemon 全局日志                                             | `~/.issuepilot/state/logs/issuepilot.log`               |
+| Workspace cleanup 历史                                      | `/api/events?runId=workspace-cleanup`                   |
 
 ### 6.2 失败 / blocked run 取证
 

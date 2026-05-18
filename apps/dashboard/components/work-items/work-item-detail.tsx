@@ -6,6 +6,7 @@ import type {
   TaskPlanEdit,
   WorkItem,
   WorkItemDetailResponse,
+  WorkItemEvidenceResponse,
   WorkItemGraphResponse,
 } from "@issuepilot/shared-contracts";
 import Link from "next/link";
@@ -14,7 +15,9 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 
 import {
   acceptWorkItemPlan,
+  confirmWorkItemTaskEvidence,
   getWorkItem,
+  getWorkItemEvidence,
   getWorkItemGraph,
   markWorkItemTaskRework,
   regenerateWorkItemPlan,
@@ -26,6 +29,7 @@ import {
 import { cn } from "../../lib/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
+import { EvidenceTab } from "./evidence-tab";
 import { ParentReviewPacket } from "./parent-review-packet";
 import { PlanEditor } from "./plan-editor";
 import { TaskGraph } from "./task-graph";
@@ -51,12 +55,15 @@ export interface WorkItemDetailProps {
    * `list` when not provided.
    */
   initialView?: WorkItemView;
+  /** Team-mode project id resolved from SSR cookie; used before client hydration. */
+  project?: string;
 }
 
 export function WorkItemDetail({
   initial,
   operator = "operator",
   initialView = "list",
+  project,
 }: WorkItemDetailProps) {
   const t = useTranslations("workItem");
   const [data, setData] = useState<WorkItemDetailResponse>(initial);
@@ -66,15 +73,22 @@ export function WorkItemDetail({
   const [view, setView] = useState<WorkItemView>(initialView);
   const [graph, setGraph] = useState<WorkItemGraphResponse | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<WorkItemEvidenceResponse | null>(
+    null,
+  );
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
 
   const refresh = useCallback((next: WorkItemDetailResponse) => {
     setData(next);
   }, []);
 
   const reload = useCallback(async () => {
-    const next = await getWorkItem(data.workItem.workItemId);
+    const next = await getWorkItem(
+      data.workItem.workItemId,
+      project ? { project } : {},
+    );
     startTransition(() => refresh(next));
-  }, [data.workItem.workItemId, refresh]);
+  }, [data.workItem.workItemId, project, refresh]);
 
   const handleAccept = useCallback(
     async ({
@@ -203,6 +217,25 @@ export function WorkItemDetail({
     [data.workItem.workItemId, operator, reload],
   );
 
+  // V4.3：把当前 view 写回 URL，这样 share-link / 刷新都能落到同一视图。
+  // 用 history.replaceState 而不是 router.replace 是为了避免触发 SSR 重渲染
+  // — view 切换是纯客户端状态，不需要重新调 getWorkItem。
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (view === "list") {
+      url.searchParams.delete("view");
+    } else {
+      url.searchParams.set("view", view);
+    }
+    if (
+      url.search !== window.location.search ||
+      url.pathname !== window.location.pathname
+    ) {
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, [view]);
+
   // Fetch the graph projection lazily — only when the operator switches
   // to the Graph view. Switching back to List does not invalidate the
   // cached projection so toggling is snappy.
@@ -223,6 +256,51 @@ export function WorkItemDetail({
       cancelled = true;
     };
   }, [view, data.workItem.workItemId]);
+
+  useEffect(() => {
+    if (view !== "evidence") return;
+    let cancelled = false;
+    setEvidenceError(null);
+    getWorkItemEvidence(data.workItem.workItemId, project ? { project } : {})
+      .then((next) => {
+        if (!cancelled) setEvidence(next);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setEvidenceError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, data.workItem.workItemId, project]);
+
+  const handleConfirmEvidence = useCallback(
+    async (taskId: string, evidenceId: string) => {
+      setError(null);
+      try {
+        await confirmWorkItemTaskEvidence(
+          data.workItem.workItemId,
+          taskId,
+          evidenceId,
+          { operator, ...(project ? { project } : {}) },
+        );
+        const [nextEvidence] = await Promise.all([
+          getWorkItemEvidence(
+            data.workItem.workItemId,
+            project ? { project } : {},
+          ),
+          reload(),
+        ]);
+        setEvidence(nextEvidence);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        throw err;
+      }
+    },
+    [data.workItem.workItemId, operator, project, reload],
+  );
 
   const wi = data.workItem;
   const planAccepted = data.plan.current.status === "accepted";
@@ -323,6 +401,26 @@ export function WorkItemDetail({
               onUnskip={handleUnskip}
               actionsEnabled
             />
+          ) : view === "evidence" ? (
+            evidence ? (
+              <EvidenceTab
+                workItemId={data.workItem.workItemId}
+                evidence={evidence}
+                project={project}
+                onConfirm={handleConfirmEvidence}
+              />
+            ) : (
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("evidenceTab.ariaLabel")}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-fg-subtle">
+                    {evidenceError ?? t("evidenceTab.empty")}
+                  </p>
+                </CardContent>
+              </Card>
+            )
           ) : graph ? (
             <TaskGraph graph={graph} tasks={data.tasks} />
           ) : (
@@ -340,7 +438,9 @@ export function WorkItemDetail({
         </div>
       ) : null}
 
-      {planAccepted ? <ParentReviewPacket report={data.report} /> : null}
+      {planAccepted ? (
+        <ParentReviewPacket report={data.report} project={project} />
+      ) : null}
     </div>
   );
 }

@@ -17,6 +17,8 @@
   （已落地，覆盖 §17 V4.1 验收标准）。
 - V4.2 Task Graph：`docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`
   （已落地，覆盖 §7 V4.2 + §12.3 + §12.4 + §14.2 + branch chaining）。
+- V4.3 Review Packet + Evidence：`docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`
+  （已落地，覆盖 §7 V4.3 + §14.3 + §14.4 + §15）。
 
 ## 1. Roadmap 决策
 

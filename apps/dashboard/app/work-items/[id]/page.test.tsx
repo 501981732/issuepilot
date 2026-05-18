@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { WorkItemDetailResponse } from "@issuepilot/shared-contracts";
+import { screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import enMessages from "../../../i18n/messages/en.json";
@@ -62,9 +63,17 @@ vi.mock("next-intl/server", async () => {
 vi.mock("../../../components/work-items/work-item-detail", () => ({
   WorkItemDetail: ({
     initial,
+    initialView,
+    project,
   }: {
     initial: WorkItemDetailResponse;
-  }) => <div data-testid="detail">{initial.workItem.workItemId}</div>,
+    initialView?: string;
+    project?: string;
+  }) => (
+    <div data-testid="detail" data-view={initialView} data-project={project}>
+      {initial.workItem.workItemId}
+    </div>
+  ),
 }));
 
 function makeDetail(): WorkItemDetailResponse {
@@ -118,6 +127,10 @@ describe("WorkItemDetailRoute (SSR)", () => {
     const [calledId, calledOpts] = vi.mocked(getWorkItem).mock.calls[0]!;
     expect(calledId).toBe("wi_42");
     expect(calledOpts).toMatchObject({ project: "platform-web" });
+    expect(screen.getByTestId("detail")).toHaveAttribute(
+      "data-project",
+      "platform-web",
+    );
   });
 
   it("omits the project option when no cookie is present (single-mode behaviour preserved)", async () => {
@@ -130,5 +143,19 @@ describe("WorkItemDetailRoute (SSR)", () => {
     const [calledId, calledOpts] = vi.mocked(getWorkItem).mock.calls[0]!;
     expect(calledId).toBe("wi_42");
     expect(calledOpts?.project).toBeUndefined();
+  });
+
+  it("preserves ?view=evidence as the initial detail view", async () => {
+    vi.mocked(getWorkItem).mockResolvedValue(makeDetail());
+
+    const params = Promise.resolve({ id: "wi_42" });
+    const searchParams = Promise.resolve({ view: "evidence" });
+    const page = await WorkItemDetailRoute({ params, searchParams });
+    render(page);
+
+    expect(screen.getByTestId("detail")).toHaveAttribute(
+      "data-view",
+      "evidence",
+    );
   });
 });

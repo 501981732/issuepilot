@@ -5,6 +5,10 @@ import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
 import {
+  createReportStore,
+  type ReportStore,
+} from "../reports/store.js";
+import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
 } from "../runtime/leases.js";
@@ -106,9 +110,9 @@ type TeamEvent = IssuePilotInternalEvent;
  *    GitLab adapter under team-mode this will swap in the project's
  *    {@link RegisteredProject.workflow} tracker credentials.
  *  - tick: no-op — team-mode does not auto-poll GitLab and currently does
- *    not dispatch synthetic task runs. The dispatch wiring lives in the
- *    single-project daemon, follow-up tracked alongside the team-mode
- *    workspace retention task.
+ *    not dispatch synthetic task runs. V4.3 therefore wires per-project
+ *    stores / report lookup only; the evidence scan hook belongs with the
+ *    future team dispatch runner once that entrypoint exists.
  *  - reconcileWorkItem: no-op — there is no parent Issue label transition
  *    to run until the GitLab adapter is wired.
  *
@@ -119,6 +123,7 @@ type TeamEvent = IssuePilotInternalEvent;
 function buildProjectWorkItemService(
   project: RegisteredProject,
   eventBus: EventBus<TeamEvent>,
+  reportStore: ReportStore,
 ): WorkItemService {
   const store = createWorkItemStore({
     rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
@@ -140,6 +145,9 @@ function buildProjectWorkItemService(
     },
     tick: async () => {},
     reconcileWorkItem: async () => {},
+    aggregateDeps: {
+      getRunReport: (runId) => reportStore.get(runId),
+    },
     emit: (event) => {
       eventBus.publish({
         type: event.type,
@@ -217,10 +225,15 @@ export async function startTeamDaemon(
   // acceptPlan / dispatch are operator-driven (see daemon.ts header comment
   // and §17 of the design spec).
   const workItemsByProject = new Map<string, WorkItemService>();
+  const reportsByProject = new Map<string, ReportStore>();
   for (const project of registry.enabledProjects()) {
+    const reportStore = createReportStore({
+      rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
+    });
+    reportsByProject.set(project.id, reportStore);
     workItemsByProject.set(
       project.id,
-      buildProjectWorkItemService(project, eventBus),
+      buildProjectWorkItemService(project, eventBus, reportStore),
     );
   }
 
@@ -246,6 +259,7 @@ export async function startTeamDaemon(
       readEvents: async () => [],
       readLogsTail: async () => [],
       workItemsByProject,
+      reportsByProject,
     },
     { host, port },
   );

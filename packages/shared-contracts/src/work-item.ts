@@ -258,10 +258,86 @@ export function effectiveTaskStatus(
  */
 export interface WorkItemEvidenceEntry {
   taskId: string;
-  kind: "diff" | "validation" | "risk" | "ci" | "review_feedback";
+  kind: WorkItemEvidenceKind;
+  /**
+   * V4.3: stable id derived by orchestrator evidence-id helpers. It must not
+   * be an array index, because human confirmations are stored against it.
+   */
+  evidenceId: string;
   label: string;
+  /** How trustworthy the evidence is for reviewer-facing UI. */
+  confidence: WorkItemEvidenceConfidence;
   href?: string;
   text?: string;
+  mediaType?: string;
+  thumbnailHref?: string;
+  capturedAt?: string;
+  source?: { runId: string; relPath?: string };
+  confirmedBy?: string;
+  confirmedAt?: string;
+}
+
+export type WorkItemEvidenceKind =
+  | "diff"
+  | "validation"
+  | "risk"
+  | "ci"
+  | "review_feedback"
+  | "screenshot"
+  | "recording"
+  | "playwright"
+  | "command_output"
+  | "test_result";
+
+export type WorkItemEvidenceConfidence =
+  | "ai-claim"
+  | "system-derived"
+  | "human-confirmed";
+
+export interface HumanReviewChecklistItem {
+  itemId: string;
+  taskId?: string;
+  label: string;
+  /** Codified reason for dashboard grouping and markdown rendering. */
+  reason:
+    | "ai-risk-medium"
+    | "ai-risk-high"
+    | "needs-rework"
+    | "partial-overall"
+    | "missing-evidence"
+    | "skipped-task"
+    | "ci-failed";
+  confirmed: boolean;
+  confirmedBy?: string;
+  confirmedAt?: string;
+}
+
+export interface WorkItemCiSummary {
+  /** Worst CI status across the constituent task reports. */
+  overall: "passed" | "failed" | "running" | "unknown";
+  perTask: Record<
+    string,
+    {
+      status: string;
+      pipelineUrl?: string;
+    }
+  >;
+}
+
+export interface WorkItemTestSummary {
+  passed: number;
+  failed: number;
+  skipped: number;
+  unknown: number;
+  perTask: Record<
+    string,
+    {
+      passed: number;
+      failed: number;
+      skipped: number;
+      unknown: number;
+    }
+  >;
 }
 
 export interface WorkItemTaskSummary {
@@ -291,5 +367,8 @@ export interface WorkItemReport {
   };
   openQuestions: string[];
   recommendedNextActions: string[];
+  humanReviewChecklist: HumanReviewChecklistItem[];
+  ciSummary?: WorkItemCiSummary;
+  testSummary?: WorkItemTestSummary;
   generatedAt: string;
 }

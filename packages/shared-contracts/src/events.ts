@@ -123,6 +123,12 @@ export const EVENT_TYPE_VALUES = [
   // V4.1 aggregation + parent handoff
   "work_item_aggregated",
   "work_item_handoff_written",
+  // V4.3 review packet + evidence
+  "work_item_evidence_indexed",
+  "work_item_evidence_index_skipped",
+  "work_item_evidence_index_failed",
+  "work_item_evidence_confirmed",
+  "work_item_report_rendered",
   // V4.2 task graph + operator actions
   "task_marked_needs_rework",
   "task_replanned",

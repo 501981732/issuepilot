@@ -2,6 +2,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import {
+  RUN_REPORT_VERSION,
+  type RunReportArtifact,
+  type TaskNode,
+  type TaskPlan,
+  type TaskRunLink,
+  type WorkItem,
+} from "@issuepilot/shared-contracts";
 import type { WorkflowConfig } from "@issuepilot/workflow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -136,6 +144,141 @@ function makeLeaseStore(): LeaseStore {
     active: vi.fn(async () => []),
     activeCount: () => 0,
   };
+}
+
+function workItemFixture(projectId: string): WorkItem {
+  return {
+    workItemId: "wi_01",
+    sourceIssue: {
+      projectId: `group/${projectId}`,
+      iid: 7,
+      url: `https://gitlab.com/group/${projectId}/-/issues/7`,
+      title: "Project work item",
+    },
+    title: "Project work item",
+    goal: "Ship scoped evidence",
+    acceptanceCriteria: ["Evidence is project-scoped"],
+    status: "ready",
+    taskIds: ["t1"],
+    createdAt: "2026-05-17T00:00:00.000Z",
+    updatedAt: "2026-05-17T00:00:00.000Z",
+  };
+}
+
+function taskFixture(): TaskNode {
+  return {
+    taskId: "t1",
+    title: "Collect evidence",
+    goal: "Expose review evidence",
+    scope: "apps/orchestrator",
+    dependsOn: [],
+    suggestedValidation: ["vitest"],
+    status: "completed",
+    runIds: ["shared-run"],
+    riskLevel: "low",
+  };
+}
+
+function planFixture(projectId: string): TaskPlan {
+  return {
+    planId: `tp_${projectId}`,
+    workItemId: "wi_01",
+    version: 1,
+    tasks: [taskFixture()],
+    dependencies: [],
+    operatorEdits: [],
+    status: "accepted",
+    acceptedAt: "2026-05-17T00:00:01.000Z",
+  };
+}
+
+function linkFixture(): TaskRunLink {
+  return {
+    taskId: "t1",
+    runId: "shared-run",
+    attempt: 1,
+    status: "completed",
+    branch: "issuepilot/t1",
+    startedAt: "2026-05-17T00:00:02.000Z",
+    completedAt: "2026-05-17T00:01:00.000Z",
+  };
+}
+
+function runReportFixture(projectId: string): RunReportArtifact {
+  return {
+    version: RUN_REPORT_VERSION,
+    runId: "shared-run",
+    issue: {
+      projectId: `group/${projectId}`,
+      iid: 7,
+      title: "Project work item",
+      url: `https://gitlab.com/group/${projectId}/-/issues/7`,
+      labels: ["human-review"],
+    },
+    run: {
+      status: "completed",
+      attempt: 1,
+      branch: "issuepilot/t1",
+      workspacePath: `/tmp/${projectId}/shared-run`,
+      startedAt: "2026-05-17T00:00:02.000Z",
+      endedAt: "2026-05-17T00:01:00.000Z",
+      durations: { totalMs: 58_000 },
+    },
+    handoff: {
+      summary: `summary for ${projectId}`,
+      validation: [],
+      risks: [],
+      followUps: [],
+      nextAction: "Review the scoped report.",
+    },
+    diff: {
+      summary: `diff for ${projectId}`,
+      filesChanged: 1,
+      notableFiles: ["apps/orchestrator/src/team/daemon.ts"],
+    },
+    checks: [],
+    evidence: [
+      {
+        kind: "screenshot",
+        label: `${projectId} screenshot`,
+        relPath: "screenshots/login.png",
+      },
+    ],
+    mergeReadiness: {
+      mode: "dry-run",
+      status: "ready",
+      reasons: [],
+      evaluatedAt: "2026-05-17T00:01:01.000Z",
+    },
+    notes: {},
+  };
+}
+
+async function seedWorkItemGraph(
+  workspaceRoot: string,
+  projectId: string,
+): Promise<void> {
+  const root = path.join(workspaceRoot, ".issuepilot");
+  await fs.mkdir(path.join(root, "work-items"), { recursive: true });
+  await fs.mkdir(path.join(root, "task-plans"), { recursive: true });
+  await fs.mkdir(path.join(root, "task-run-links", "t1"), {
+    recursive: true,
+  });
+  await fs.writeFile(
+    path.join(root, "work-items", "wi_01.json"),
+    JSON.stringify(workItemFixture(projectId), null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(root, "task-plans", `tp_${projectId}.json`),
+    JSON.stringify(planFixture(projectId), null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(root, "task-run-links", "t1", "shared-run.json"),
+    JSON.stringify(linkFixture(), null, 2),
+    "utf8",
+  );
 }
 
 beforeEach(() => {
@@ -321,6 +464,113 @@ describe("team daemon V4.1/V4.2 work-items wiring", () => {
         expect(Array.isArray(b)).toBe(true);
         expect(byProject.get("platform-web")).not.toBe(
           byProject.get("infra-tools"),
+        );
+      } finally {
+        await handle.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes per-project ReportStores and aggregates evidence from the selected project only", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-team-wi-reports-"),
+    );
+    try {
+      const workspaceA = path.join(root, "workspaces/platform-web");
+      const workspaceB = path.join(root, "workspaces/infra-tools");
+      await fs.mkdir(workspaceA, { recursive: true });
+      await fs.mkdir(workspaceB, { recursive: true });
+      const projects: RegisteredProject[] = [
+        {
+          id: "platform-web",
+          name: "Platform Web",
+          projectPath: "/cfg/projects/platform-web.yaml",
+          workflowProfilePath: "/cfg/workflows/default-web.md",
+          effectiveWorkflowPath: "/cfg/.generated/platform-web.workflow.md",
+          enabled: true,
+          workflow: makeWorkflow("platform-web", workspaceA),
+          lastPollAt: null,
+          activeRuns: 0,
+        },
+        {
+          id: "infra-tools",
+          name: "Infra Tools",
+          projectPath: "/cfg/projects/infra-tools.yaml",
+          workflowProfilePath: "/cfg/workflows/default-node-lib.md",
+          effectiveWorkflowPath: "/cfg/.generated/infra-tools.workflow.md",
+          enabled: true,
+          workflow: makeWorkflow("infra-tools", workspaceB),
+          lastPollAt: null,
+          activeRuns: 0,
+        },
+      ];
+      const registry = makeRegistry(projects);
+      const loadTeamConfig = vi.fn(async () => baseConfig(root));
+      const createProjectRegistry = vi.fn(async () => registry);
+      const createLeaseStore = vi.fn(() => makeLeaseStore());
+      const createServer = vi.fn(async (deps: ServerDeps) => {
+        capturedDeps = deps;
+        const fake: FakeServer = {
+          listening: true,
+          close: vi.fn(async () => {}),
+          server: { address: () => ({ port: 4738 }) },
+        };
+        capturedApp = fake;
+        return fake as never;
+      });
+
+      const handle = await startTeamDaemon(
+        {
+          configPath: `${root}/issuepilot.team.yaml`,
+          host: "127.0.0.1",
+          port: 4738,
+        },
+        {
+          loadTeamConfig,
+          createProjectRegistry,
+          createServer,
+          createLeaseStore,
+        },
+      );
+      try {
+        expect(capturedDeps?.reportsByProject).toBeInstanceOf(Map);
+        expect(capturedDeps?.reportsByProject?.size).toBe(2);
+        expect(capturedDeps?.reportsByProject?.has("platform-web")).toBe(true);
+        expect(capturedDeps?.reportsByProject?.has("infra-tools")).toBe(true);
+        expect(capturedDeps?.reports).toBeUndefined();
+
+        await seedWorkItemGraph(workspaceA, "platform-web");
+        await seedWorkItemGraph(workspaceB, "infra-tools");
+        await capturedDeps!.reportsByProject!
+          .get("platform-web")!
+          .save(runReportFixture("platform-web"));
+        await capturedDeps!.reportsByProject!
+          .get("infra-tools")!
+          .save(runReportFixture("infra-tools"));
+
+        const platformEvidence = await capturedDeps!.workItemsByProject!
+          .get("platform-web")!
+          .getEvidence("wi_01");
+        const infraEvidence = await capturedDeps!.workItemsByProject!
+          .get("infra-tools")!
+          .getEvidence("wi_01");
+
+        expect("error" in platformEvidence).toBe(false);
+        expect("error" in infraEvidence).toBe(false);
+        if ("error" in platformEvidence || "error" in infraEvidence) return;
+        expect(platformEvidence.index.map((entry) => entry.label)).toContain(
+          "platform-web screenshot",
+        );
+        expect(platformEvidence.index.map((entry) => entry.label)).not.toContain(
+          "infra-tools screenshot",
+        );
+        expect(infraEvidence.index.map((entry) => entry.label)).toContain(
+          "infra-tools screenshot",
+        );
+        expect(infraEvidence.index.map((entry) => entry.label)).not.toContain(
+          "platform-web screenshot",
         );
       } finally {
         await handle.stop();

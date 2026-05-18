@@ -9,9 +9,13 @@ import type {
 import { useTranslations } from "next-intl";
 import { useCallback, useState } from "react";
 
+import { getWorkItemReportMarkdown } from "../../lib/api";
 import { cn } from "../../lib/cn";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
+
+import { ConfidencePill } from "./confidence-pill";
+import { HumanReviewChecklist } from "./human-review-checklist";
 
 const STATUS_TONE: Record<WorkItemReportStatus, string> = {
   draft: "bg-fg-subtle/20 text-fg-subtle",
@@ -26,20 +30,29 @@ const EVIDENCE_KIND_KEY: Record<WorkItemEvidenceEntry["kind"], string> = {
   risk: "evidenceRisk",
   ci: "evidenceCi",
   review_feedback: "evidenceReview",
+  screenshot: "evidence",
+  recording: "evidence",
+  playwright: "evidence",
+  command_output: "evidence",
+  test_result: "evidence",
 };
 
 export interface ParentReviewPacketProps {
   report?: WorkItemReport;
+  project?: string;
 }
 
-export function ParentReviewPacket({ report }: ParentReviewPacketProps) {
+export function ParentReviewPacket({ report, project }: ParentReviewPacketProps) {
   const t = useTranslations("workItem.parentReviewPacket");
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
     if (!report) return;
-    const md = renderMarkdown(report);
     try {
+      const md = await getWorkItemReportMarkdown(
+        report.workItemId,
+        project ? { project } : {},
+      );
       // navigator.clipboard may not exist in jsdom; fall back to document.execCommand
       if (typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(md);
@@ -59,7 +72,7 @@ export function ParentReviewPacket({ report }: ParentReviewPacketProps) {
     } catch {
       // best-effort copy; ignore failures
     }
-  }, [report]);
+  }, [project, report]);
 
   if (!report) {
     return (
@@ -116,6 +129,10 @@ export function ParentReviewPacket({ report }: ParentReviewPacketProps) {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
+        {report.humanReviewChecklist.length > 0 ? (
+          <HumanReviewChecklist items={report.humanReviewChecklist} />
+        ) : null}
+
         <Section title={t("validation")}>
           <p className="whitespace-pre-line text-sm text-fg">
             {report.validationSummary || "—"}
@@ -185,6 +202,7 @@ export function ParentReviewPacket({ report }: ParentReviewPacketProps) {
                       — {entry.text}
                     </span>
                   ) : null}
+                  <ConfidencePill confidence={entry.confidence} />
                 </li>
               ))}
             </ul>
@@ -291,52 +309,4 @@ function TaskCard({
       ) : null}
     </li>
   );
-}
-
-/**
- * Render the report as Markdown for the "Copy as Markdown" affordance
- * — same layout as the GitLab handoff note we generate from the
- * orchestrator side, but rendered client-side so operators can paste
- * elsewhere even when offline.
- */
-function renderMarkdown(report: WorkItemReport): string {
-  const lines: string[] = [];
-  lines.push(`# Parent Review Packet`);
-  lines.push(``);
-  lines.push(`**Status:** ${report.overallStatus}`);
-  lines.push(`**Generated at:** ${report.generatedAt}`);
-  lines.push(``);
-  if (report.validationSummary) {
-    lines.push(`## Validation`);
-    lines.push(report.validationSummary);
-    lines.push(``);
-  }
-  if (report.riskSummary) {
-    lines.push(`## Risks`);
-    lines.push(report.riskSummary);
-    lines.push(``);
-  }
-  if (report.taskSummaries.length > 0) {
-    lines.push(`## Tasks`);
-    for (const task of report.taskSummaries) {
-      lines.push(`### ${task.title} (${task.taskId})`);
-      lines.push(`- Status: ${task.taskStatus}`);
-      if (task.diffSummary) lines.push(`- Diff: ${task.diffSummary}`);
-      if (task.mergeRequestUrl) lines.push(`- MR: ${task.mergeRequestUrl}`);
-      if (task.ciStatus) lines.push(`- CI: ${task.ciStatus}`);
-      if (task.nextAction) lines.push(`- Next: ${task.nextAction}`);
-      lines.push(``);
-    }
-  }
-  if (report.openQuestions.length > 0) {
-    lines.push(`## Open questions`);
-    for (const q of report.openQuestions) lines.push(`- ${q}`);
-    lines.push(``);
-  }
-  if (report.recommendedNextActions.length > 0) {
-    lines.push(`## Recommended next actions`);
-    for (const a of report.recommendedNextActions) lines.push(`- ${a}`);
-    lines.push(``);
-  }
-  return lines.join("\n").trimEnd() + "\n";
 }

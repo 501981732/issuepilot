@@ -1408,6 +1408,10 @@ export async function startDaemon(
           archiveRun(input, operatorActionDeps()),
       },
       reports: reportStore,
+      quality: {
+        reports: reportStore,
+        workItems: workItemStore,
+      },
     },
     { host, port },
   );

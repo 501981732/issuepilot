@@ -665,6 +665,16 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`;
   implementation plan:
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`.
+- **Workflow / Skills Improvement Loop** — *in V4.5 design*. V4.5 turns
+  V4.4 failure patterns, drill-down items, missing evidence, review rework,
+  and CI failures into auditable `ImprovementRecommendation` records. Each
+  recommendation carries evidence refs, a target kind, confidence, risk, and
+  action status. The first version lives in a Recommendations section on
+  `/reports`; operators can `accept`, `reject`, or `defer`. `accept` only
+  creates a patch preview for workflow front matter, prompt templates, project
+  rules, or skill instructions. It does not silently edit files, auto-commit, or
+  change the label state machine. Design spec:
+  `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.

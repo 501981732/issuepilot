@@ -1,266 +1,231 @@
 # IssuePilot
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.en.md) | [简体中文](README.md)
 
-> Engineering project management today still means babysitting coding agents:
-> tracking task progress, chasing PRs, checking CI, and manually shepherding
-> validation back and forth — coordination is sliced up across "what is the
-> agent doing right now?".
+> 开发项目管理常常需要监督编码代理：盯任务进度、催 PR、查 CI 状态、来回手动
+> 协调验收，效率被切碎在一次次"代理报告进度"上。
 >
-> **IssuePilot turns project work into isolated, autonomous implementation
-> runs, so teams can manage the work instead of supervising the coding
-> agent.** Every GitLab issue becomes a bounded run: its own worktree, its
-> own prompt, its own event stream, and an auditable trail of work — handed
-> back as a merge request for human review instead of asking engineers to sit
-> in every agent turn.
+> **IssuePilot 把项目工作转化为隔离的自主实现 run，让团队回到管理工作本身，
+> 而不是监督编码代理。** 每个 GitLab Issue 都会被转成一次有边界的 run：独立
+> worktree、独立 prompt、独立事件流、可审计的工作证明，最终以 Merge Request
+> 的形式交付给人工 Review，而不是让工程师在每一轮 agent 对话里轮值。
 
-IssuePilot is an open-source local orchestrator for GitLab issue driven AI
-engineering work.
+IssuePilot 是一个开源的本地 AI 工程调度器，用 GitLab Issue 驱动 Codex
+实现工作。
 
-It watches GitLab issues, claims work through labels, creates isolated git
-worktrees, runs Codex through the app-server protocol, records an auditable event
-trail, hands the result back as a merge request for human review, and closes the
-issue after that MR is manually merged.
+它会监听 GitLab Issue，通过 label 认领任务，创建隔离的 git worktree，
+通过 app-server 协议运行 Codex，记录可审计事件轨迹，并把结果以 Merge
+Request 的形式交给人工 Review；人工 merge 该 MR 后，IssuePilot 会自动关闭
+对应的 GitLab Issue。
 
-## Product Positioning
+## 产品定位
 
-IssuePilot is designed as a workflow layer that complements Harness Engineer.
-When a project already has a Harness Engineer layer, Harness Engineer should keep
-owning the repository's engineering rules, code constraints, validation matrix,
-implementation discipline, and local execution quality. IssuePilot focuses on
-the cross-issue and multi-run control plane: task orchestration, state
-management, reports, evidence, review feedback, and continuous improvement.
+IssuePilot 的定位是和 Harness Engineer 互补的研发流程层。有 Harness Engineer
+的项目里，Harness Engineer 继续负责仓库内的工程规则、代码约束、验证矩阵、
+实现纪律和局部执行质量；IssuePilot 负责跨 Issue / 多 run 的流程编排、状态
+管理、报告、证据、review feedback 和持续改进闭环。
 
-Projects can also use IssuePilot without Harness Engineer. In that mode,
-`issuepilot-config/`, the workflow profile, repo-local rules, and skills form
-the minimum engineering constraint layer, while IssuePilot still provides task
-decomposition, orchestration, Review Packets, and auditable evidence.
+没有 Harness Engineer 的项目也可以直接使用 IssuePilot。此时
+`issuepilot-config/`、workflow profile、repo-local rules 和 skills 构成最小
+工程约束层，IssuePilot 仍然提供任务拆解、编排、Review Packet 和可审计证据。
 
-### Highlights
+### 核心亮点
 
-- **Issue-driven work claim** — watches a GitLab issue board and auto-claims
-  issues labelled `ai-ready` into isolated runs, instead of hand-dispatching
-  tasks to agents.
-- **Full proof of work** — every run produces a CI status, an MR description
-  with review links, a reconciliation event trail, a JSONL event store, and a
-  live dashboard timeline.
-- **Trustworthy handoff boundary** — failures and blocks fall back to
-  `ai-failed` / `ai-blocked` while the workspace and logs are preserved for
-  forensics; secrets never leak into logs, events, API responses, or prompts.
-- **Human review closure** — IssuePilot does not auto-merge code, but after a
-  human merges the generated MR, the daemon writes a final note, removes
-  `human-review`, and closes the GitLab issue.
-- **Zero hand-rolled token management** — built-in `issuepilot auth login`
-  runs the GitLab OAuth 2.0 Device Flow, persists the token at
-  `~/.issuepilot/credentials` (mode `0600`), and auto-refreshes it; on a 401
-  the daemon silently rotates and retries once. PAT / Group Token via
-  `tracker.token_env` still works for CI / shared envs.
-- **Local single-machine loop** — `~/.issuepilot` keeps the worktrees, JSONL
-  event store, and run records on disk; the daemon recovers reconciliation on
-  restart without requiring an external database.
-- **Complements harness engineering** — works with mature repos that already
-  have Harness Engineer, while still remaining usable as a direct local workflow
-  platform for repos that do not.
-- **Open SPEC + reference implementation** — `SPEC.md` and the Symphony Elixir
-  reference implementation remain in the repository, so teams can build their
-  own variants in other languages from the same contract.
+- **Issue 驱动的工作认领**：监听 GitLab Issue 看板，自动认领带 `ai-ready`
+  label 的 Issue 并生成隔离 run，工程师无需逐条派发。
+- **完整的工作证明**：每次 run 输出 CI 状态、MR 描述与 review 链接、reconciliation
+  事件流、JSONL event store 与 dashboard timeline，关键节点可追溯、可回放。
+- **可信交付边界**：失败 / 阻塞自动落到 `ai-failed` / `ai-blocked`，workspace
+  与日志原地保留供取证；secret 不会泄露到日志、事件、API 响应或 prompt。
+- **人工 Review 后自动收尾**：IssuePilot 不自动 merge 代码；人类 merge 生成的
+  MR 后，daemon 会写 final note、移除 `human-review`，并关闭 GitLab Issue。
+- **零手工 token 维护**：内置 `issuepilot auth login` 走 GitLab OAuth 2.0
+  Device Flow，token 加密存放在 `~/.issuepilot/credentials`（`0600`）并自动
+  refresh；遇到 401 daemon 静默换发新 token 并重试一次。仍兼容 PAT/Group Token
+  via `tracker.token_env` 的环境变量路径。
+- **本地单机闭环**:`~/.issuepilot` 下落盘的 worktree + JSONL + run record，
+  daemon 重启可恢复 reconciliation，不依赖外部数据库。
+- **与 Harness Engineer 互补**：既能和已有 Harness Engineer 的成熟项目配合，
+  也能作为没有 Harness Engineer 项目的本地流程平台直接使用。
+- **公开 SPEC + 参考实现**:`SPEC.md` 与 Symphony Elixir 参考实现保留在仓库
+  内，便于团队按需要自建其他语言版本。
 
-The project started as a fork of OpenAI Symphony. The current product direction
-is TypeScript-first and GitLab-first; the original Symphony spec and Elixir
-implementation remain in this repository as reference material.
+本项目起源于 OpenAI Symphony 的 fork。当前产品方向是 TypeScript 优先、
+GitLab 优先；原 Symphony spec 和 Elixir 实现仍保留在仓库中，作为参考材料。
 
 > [!WARNING]
-> IssuePilot has closed the P0 local loop, locked the V1 local tarball, and
-> merged V2 Phases 1-5 (team mode, dashboard actions, CI flip-back, review
-> feedback sweep, workspace retention). Release tags, archived smoke evidence,
-> and the stable local API/CLI compatibility window are still being locked down;
-> the V2 team daemon does not auto-run the workspace cleanup loop yet — see the
-> V2 roadmap entry below for the Phase 5 follow-up.
+> IssuePilot 已闭合 P0 本地闭环、锁定 V1 本地 tarball，并将 V2 Phase 1–5
+> （团队模式、dashboard retry/stop/archive、CI 自动回流、review feedback
+> sweep、workspace retention）全部合入 `main`。release tag、真实 smoke
+> evidence 归档以及本地 API / CLI 的稳定兼容窗口仍在锁定中；V2 team
+> daemon 暂未自动开启 workspace cleanup loop——具体见下文 V2 路线图中
+> 的 Phase 5 follow-up。
 
-## Why IssuePilot?
+## 为什么需要 IssuePilot？
 
-Coding agents are most useful when they can work from the same units of work
-that engineers already manage. IssuePilot treats an issue tracker as the control
-plane:
+Coding agent 最适合从工程师已经在管理的工作单元开始执行。IssuePilot 把
+Issue Tracker 当作控制平面：
 
-- Engineers describe work in GitLab issues.
-- Labels express state: ready, running, review, rework, failed, or blocked.
-- Each run happens in its own worktree under `~/.issuepilot`.
-- Codex receives a scoped prompt and a restricted workspace.
-- The orchestrator writes events, logs, issue notes, branches, and merge
-  requests.
-- Humans review the MR instead of supervising every agent turn.
-- After the MR is manually merged, IssuePilot reconciles the GitLab issue to a
-  closed terminal state.
+- 工程师在 GitLab Issue 中描述工作。
+- label 表达状态：ready、running、review、rework、failed、blocked。
+- 每次运行都发生在 `~/.issuepilot` 下独立的 worktree 中。
+- Codex 收到有边界的 prompt，并被限制在当前 workspace 内。
+- orchestrator 写入事件、日志、Issue note、分支和 Merge Request。
+- 人类 Review MR，而不是盯着每一轮 agent 会话。
+- MR 被人工 merge 后，IssuePilot 会把 GitLab Issue reconcile 到 closed 终态。
 
-The P0 goal is a local single-machine loop, not a hosted multi-tenant service.
+P0 的目标是跑通本地单机闭环，不是提供托管的多租户服务。
 
-## How IssuePilot Compares to OpenAI Symphony
+## 与 OpenAI Symphony 的异同
 
-IssuePilot started as a fork of OpenAI Symphony, so the **overall architecture
-is shared lineage**: both treat the issue tracker as the control plane, isolate
-each agent run in a per-issue workspace, drive Codex through the app-server
-protocol, version the workflow policy as a repo-owned file, and recover on
-restart through tracker + filesystem signals instead of an external database.
+IssuePilot 起源于 OpenAI Symphony 的 fork，因此 **整体架构思路是一脉相承
+的**：都把 Issue Tracker 当作控制平面、都用 per-issue workspace 隔离 agent、
+都通过 Codex app-server 协议执行实现工作、都把工作流策略以仓库内文件的形式
+做版本化、都通过 ticket / 文件系统驱动重启恢复，而不是依赖外部数据库。
 
-The differences live in **what we are optimizing for** and **how we implement
-it**:
+差异主要发生在**目标场景**与**实现选择**：
 
-| Dimension       | OpenAI Symphony (reference, Elixir)                             | IssuePilot (the direction in this repo)                                                            |
-| --------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Positioning     | Public prototype; recommended to fork and harden internally     | Internal P0 product direction; targeting day-to-day use by an engineering team                     |
-| Issue tracker   | Linear                                                          | GitLab (SaaS and self-managed, Group Access Token or Personal Token)                               |
-| State machine   | Linear issue **status** (state-based)                           | GitLab **labels** (`ai-ready` / `ai-running` / `human-review` / …)                                 |
-| Workflow file   | `WORKFLOW.md` at the repo root                                  | `WORKFLOW.md` (YAML front matter + Markdown prompt)                                        |
-| Language        | Elixir / OTP                                                    | TypeScript / Node.js 22 LTS                                                                        |
-| Runtime         | Single Elixir service + optional status surface                 | Orchestrator daemon (Fastify) + read-only Next.js dashboard (Tailwind/shadcn)                      |
-| Workspace       | Per-issue workspace                                             | Bare mirror + git worktree under `~/.issuepilot/{repos,workspaces,state}`                          |
-| Events / logs   | Structured logs + optional status surface                       | JSONL event store + atomic run records + SSE live stream + pino structured logging                 |
-| MR / PR writes  | Performed by the agent through workflow-defined tools           | Hybrid: Codex can use narrow GitLab dynamic tools, while the orchestrator owns claim, reconciliation, and fallback MR / note / label writes |
-| Restart recovery | Tracker + filesystem driven                                    | Driven by labels + handoff note marker (`<!-- issuepilot:run:<runId> -->`)                         |
-| Security stance | Each implementation declares its own trust posture              | Rejects `danger-full-access` sandboxes, redacts tokens end-to-end, pins Codex cwd to the worktree  |
-| Open SPEC       | `SPEC.md` v1 (language-agnostic)                                | `SPEC.md` retained as reference; product spec lives in `docs/superpowers/specs/`                   |
-| Status          | Evaluation-only prototype; harden before production use         | V1 local pilot usable; release lock still pending evidence/tag archival                            |
+| 维度          | OpenAI Symphony（参考实现，Elixir）              | IssuePilot（本仓库的产品方向）                                                                                         |
+| ------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| 定位          | 公开的 prototype，鼓励 fork 自建加固版           | 公司内部的 P0 生产方向，目标是落地到内部工程团队日常使用                                                               |
+| Issue Tracker | Linear                                           | GitLab（Group Access Token / Personal Token，本地 SaaS / Self-managed 都支持）                                         |
+| 状态机表达    | 基于 Linear issue **status**（state-based）      | 基于 GitLab **label**（`ai-ready` / `ai-running` / `human-review` / …）                                                |
+| 工作流契约    | `WORKFLOW.md`（仓库根）                          | `WORKFLOW.md`（YAML front matter + Markdown prompt）                                                                   |
+| 实现语言      | Elixir / OTP                                     | TypeScript / Node.js 22 LTS                                                                                            |
+| 运行形态      | 单进程 Elixir 服务 + 可选 status surface         | orchestrator（Fastify daemon）+ 只读 Next.js dashboard（Tailwind/shadcn）                                              |
+| 工作区策略    | 每 Issue 独立 workspace                          | bare mirror + git worktree（`~/.issuepilot/{repos,workspaces,state}`）                                                 |
+| 事件 / 日志   | 结构化日志 + 可选 status surface                 | JSONL event store + 原子 run record + SSE 实时流 + pino structured logging                                             |
+| MR/PR 处理    | 由 agent 通过 workflow 内的 tools 自行 push / 写 | 混合模型：Codex 可调用窄范围 GitLab dynamic tools，orchestrator 负责认领、reconciliation 和 MR / note / label 兜底写入 |
+| 重启恢复      | tracker + 文件系统驱动                           | label 状态 + handoff note marker（`<!-- issuepilot:run:<runId> -->`）驱动                                              |
+| 安全姿态      | 实现自行声明 trust posture                       | 拒绝 `danger-full-access` sandbox、token 全链路 redact、Codex cwd 限定 worktree                                        |
+| 公开 SPEC     | `SPEC.md` v1 (language-agnostic)                 | `SPEC.md` 保留为参考；产品 spec 见 `docs/superpowers/specs/`                                                           |
+| 当前状态      | 评估用 prototype，建议自行加固后使用             | V1 本地试点可用，release lock 仍待 evidence / tag 归档                                                                 |
 
-If you want the Linear + Elixir reference implementation, jump straight to
-[`elixir/`](elixir/README.md) and [`SPEC.md`](SPEC.md). If you want the
-GitLab + TypeScript variant and plan to pilot it inside a team, the IssuePilot
-implementation at the root of this repository is the version you're looking
-for.
+如果你需要的是 Linear + Elixir 路线的参考实现，请直接看
+[`elixir/`](elixir/README.md) 与 [`SPEC.md`](SPEC.md)。如果你需要的是
+GitLab + TypeScript 路线、并打算在内部团队范围内试运行，那么本仓库根目录
+的 IssuePilot 实现就是你要的版本。
 
-## Current Status
+## 当前状态
 
-Implemented in this repository:
+本仓库已经实现：
 
-- TypeScript monorepo with pnpm, Turborepo, Vitest, ESLint, and Prettier.
-- Workflow parsing, validation, defaulting, env checks, and prompt rendering.
-- GitLab adapter boundaries for issues, labels, notes, merge requests, and
-  pipelines.
-- Git workspace management using real `git` commands through `execa`.
-- Codex app-server JSON-RPC client pieces and dynamic GitLab tool contracts.
-- Observability primitives: redaction, event bus, event store, run store, and
-  logger.
-- Orchestrator modules for claim, dispatch, retry, reconcile, runtime state,
-  HTTP API, SSE, and CLI scaffolding.
-- Human-review reconciliation: open MRs stay in review, merged MRs close the
-  issue, and closed-unmerged MRs return to the configured rework label.
-- Read-only dashboard with overview and run detail views, SSE refresh, timeline,
-  tool calls, and log tail rendering.
-- V2.5 Command Center: Linear-style List / Board home page, Review Packet
-  (handoff + checks + merge readiness) on each run detail, and a `/reports`
-  page summarising local report artifacts.
-- V2.6 shell + layout refresh: the persistent left sidebar was replaced with
-  a sticky **top navigation bar** (logo + primary nav + locale / theme /
-  mode tag tools, plus a `Skip to main content` link), giving the kanban
-  view back its full 6-column width on 1280–1440px laptops. The Command
-  Center now uses a **hybrid inspector** — list view keeps a split-pane
-  Review Packet that only takes space when a run is selected; board view
-  surfaces the Review Packet in an on-demand right-side **Sheet** drawer
-  (Esc / scrim / ✕ to close, focus restored on dismiss, `prefers-reduced-motion`
-  aware). The five-status summary collapses from five large kpi cards into
-  a single compact card with a horizontal **stacked health bar** plus a
-  chip row of exact counts.
-- Swiss Modernism 2.0 design system: HSL design tokens for light + dark,
-  Fira Sans / Fira Code typography, top-bar shell with theme toggle,
-  semantic `StatusDot` / `StatusPill` indicators (colour + text + dot),
-  and zero-dep SVG sparkline / mini-bar / donut charts on the reports page.
-- Dashboard i18n (English / 简体中文) powered by `next-intl` with a
-  cookie-driven locale (`issuepilot-locale`), an EN / 中 toggle in the
-  top-bar tools cluster, and message catalogs that intentionally keep technical tokens
-  (status labels, readiness, `ai-*` labels, `IssuePilot` / `Codex` /
-  `GitLab` / `MR` / `Workflow` / `Workspace`, run ids, branches, paths)
-  in English while translating descriptive UI copy. Both server pages
-  (`getTranslations`) and client components (`useTranslations`) are
-  wired, and the locale toggle forces a full reload so SSR always
-  observes the new cookie.
-- End-to-end test harness (`tests/e2e`) with a stateful fake GitLab + scriptable
-  fake Codex app-server, covering the happy path, retry path
-  (`turn/timeout` → ai-failed after `max_attempts`), failure path
-  (`turn/failed` → ai-failed + structured failure note),
-  permission/escalation path (claim 401/403 → ai-blocked + structured blocked
-  note + `claim_failed` event), and approval auto-approve path. The happy path
-  also covers manual MR merge followed by a structured closing note and
-  automatic issue closure.
-- Real GitLab smoke runbook + `pnpm smoke` wrapper that boots the orchestrator,
-  polls `/api/state` until ready, prints API + dashboard URLs, and forwards
-  SIGINT/SIGTERM with a hard 5s SIGKILL escalation.
+- 基于 pnpm、Turborepo、Vitest、ESLint、Prettier 的 TypeScript monorepo。
+- workflow 解析、校验、默认值、环境变量检查和 prompt 渲染。
+- GitLab issue、label、note、Merge Request、pipeline adapter 边界。
+- 通过 `execa` 调用真实 `git` 命令的 workspace 管理。
+- Codex app-server JSON-RPC client 组件和动态 GitLab tool 契约。
+- observability 基础能力：redaction、event bus、event store、run store、logger。
+- orchestrator 模块：claim、dispatch、retry、reconcile、runtime state、HTTP API、
+  SSE、CLI scaffold。
+- human-review reconciliation：MR 仍 open 时保持 Review，MR merged 后关闭
+  Issue，MR closed 但未 merge 时回流到配置的 rework label。
+- 只读 dashboard：overview、run detail、SSE 刷新、timeline、tool calls 和 log tail
+  展示。
+- V2.5 Command Center：Linear 风格的 List / Board 首页，运行详情页的 Review
+  Packet（handoff + checks + merge readiness），以及 `/reports` 聚合页用
+  来呈现本地报告产物。
+- V2.6 dashboard shell + 布局重构：把常驻的左侧 sidebar 换成 sticky
+  **顶部水平导航栏**（logo + 主导航 + locale / theme / mode tag 工具区，
+  并提供 `跳到主内容` 跳转链接），让 1280–1440px 笔记本上的 board 视图
+  6 栏不再被压成 x-overflow。Command Center 改用 **混合 inspector**：list
+  视图保留 split-pane Review Packet，但只在选中 run 时才占位；board 视图
+  把 Review Packet 收成按需弹出的右侧 **Sheet** 抽屉（Esc / 点遮罩 /
+  ✕ 关闭，关闭后焦点恢复，自动遵循 `prefers-reduced-motion`）。原本 5
+  张大 KPI 卡片折叠成单卡的 **横向 stacked health bar** + 5 列紧凑数字 chip。
+- Swiss Modernism 2.0 设计系统：light + dark 两套 HSL design tokens、
+  Fira Sans / Fira Code 字体、顶部导航壳 + 主题切换、语义化
+  `StatusDot` / `StatusPill`（颜色 + 文字 + 圆点），以及 reports 页用
+  纯 SVG 渲染的 sparkline / mini-bar / donut 图表（零图表库依赖）。
+- dashboard 中英双语 i18n：`next-intl` 驱动，cookie `issuepilot-locale`
+  控制 locale，顶部工具区提供 EN / 中 toggle，message catalog
+  （`apps/dashboard/i18n/messages/{en,zh}.json`）按 surface 分 namespace。
+  状态码与产品名按 IssuePilot AGENTS 规则保持英文 —
+  `running` / `retrying` / `completed` / `failed` / `blocked` /
+  `human-review` / `ai-ready` / `ai-running` / `ai-rework` / `ai-failed` /
+  `ai-blocked` / `ready` / `not-ready` / `unknown` / `success` 与
+  `IssuePilot` / `Codex` / `GitLab` / `MR` / `Workflow` / `Workspace` /
+  `Review Packet` / run id / branch / path / cmd 等技术名词都不翻译，
+  其它描述性 UI 文案在两种语言间切换。服务端 (`getTranslations`) 与
+  客户端 (`useTranslations`) 都已接入，locale toggle 通过
+  `window.location.reload()` 触发完整刷新，确保 SSR 立即读到新的
+  cookie。
+- 端到端测试 harness（`tests/e2e`）：内置带状态的 fake GitLab + 可脚本化的 fake
+  Codex app-server，覆盖 happy path、retry 路径（`turn/timeout` → ai-failed
+  耗尽 `max_attempts`）、failure 路径（`turn/failed` → ai-failed + 结构化
+  failure note）、permission/escalation 路径（claim 401/403 → ai-blocked +
+  结构化 blocked note + `claim_failed` 事件）和 approval 自动批准路径。
+  happy path 同时覆盖人工 merge MR 后写入结构化 closing note 并自动关闭 Issue。
+- 真实 GitLab smoke runbook + `pnpm smoke` wrapper：拉起 orchestrator、轮询
+  `/api/state` 至 ready、打印 API + dashboard URL、转发 SIGINT/SIGTERM 并在 5s
+  内升级 SIGKILL 兜底。
 
-Current V1 progress:
+当前 V1 进度：
 
-- V1 local CLI packaging is available through `pnpm release:pack`; the generated
-  tarball installs an `issuepilot` executable for local pilots.
-- `pnpm release:check` has passed, covering format, lint, typecheck, build, unit
-  tests, fake E2E, installed smoke, the smoke runner, and `git diff --check`.
-- Installed `issuepilot --version`, `issuepilot doctor`, `issuepilot validate`,
-  `issuepilot run`, and `issuepilot dashboard` have been verified locally.
-- The operator has confirmed the real GitLab smoke passed; Issue / MR /
-  dashboard evidence links still need to be archived.
-- The package is still a local tarball release, not a published npm registry
-  package.
+- V1 本地 CLI 打包已经可通过 `pnpm release:pack` 生成；生成的 tarball 会安装
+  `issuepilot` 可执行命令，供本地试点使用。
+- `pnpm release:check` 已通过，覆盖 format、lint、typecheck、build、unit
+  tests、fake E2E、安装态 smoke、smoke runner 和 `git diff --check`。
+- 安装态 `issuepilot --version`、`issuepilot doctor`、`issuepilot validate`、
+  `issuepilot run` 与 `issuepilot dashboard` 已完成本机验证。
+- 真实 GitLab smoke 已由操作者确认通过；Issue / MR / dashboard evidence 链接待归档。
+- 当前仍是本地 tarball release，还不是发布到 npm registry 的公开包。
 
-## How It Works
+## 工作方式
 
 ```text
-GitLab issue has ai-ready label
-  -> IssuePilot claims it with ai-running
-  -> IssuePilot creates or reuses an isolated worktree
-  -> Codex app-server runs inside that worktree
-  -> Code is committed and pushed to a branch
-  -> A GitLab merge request is created or updated
-  -> The issue receives a handoff note
-  -> Labels move to human-review, ai-failed, or ai-blocked
-  -> Human reviews and manually merges the MR
-  -> IssuePilot writes a closing note, removes human-review, and closes the issue
+GitLab issue 带 ai-ready label
+  -> IssuePilot 用 ai-running 认领
+  -> IssuePilot 创建或复用隔离 worktree
+  -> Codex app-server 在该 worktree 内运行
+  -> 代码被 commit 并 push 到分支
+  -> GitLab Merge Request 被创建或更新
+  -> Issue 收到 handoff note
+  -> label 切换到 human-review、ai-failed 或 ai-blocked
+  -> 人工 Review 并手动 merge MR
+  -> IssuePilot 写 closing note，移除 human-review，并关闭 Issue
 ```
 
-P0 labels:
+P0 labels：
 
-| Label | Meaning |
-| --- | --- |
-| `ai-ready` | Candidate issue that IssuePilot can pick up. |
-| `ai-running` | Claimed issue with an active run. |
-| `human-review` | MR is ready for human review. |
-| `ai-rework` | Human requested another AI pass after review, or the MR was closed without merge. |
-| `ai-failed` | Run failed and needs human intervention. |
-| `ai-blocked` | Missing information, permission, or secret. |
+| Label          | 含义                                                     |
+| -------------- | -------------------------------------------------------- |
+| `ai-ready`     | IssuePilot 可以拾取的候选 Issue。                        |
+| `ai-running`   | 已认领，并且有活跃 run。                                 |
+| `human-review` | MR 已准备好等待人工 Review。                             |
+| `ai-rework`    | 人工 Review 后要求 AI 再跑一轮，或 MR 被关闭但未 merge。 |
+| `ai-failed`    | 运行失败，需要人工介入。                                 |
+| `ai-blocked`   | 缺少信息、权限或 secret。                                |
 
-## Repository Layout
+## 仓库结构
 
 ```text
 apps/
-  orchestrator/                  Local daemon, CLI, HTTP API, and run loop
-  dashboard/                     Read-only Next.js dashboard
+  orchestrator/                  本地 daemon、CLI、HTTP API 和 run loop
+  dashboard/                     只读 Next.js dashboard
 
 packages/
-  core/                          Shared domain primitives
-  workflow/                      WORKFLOW.md parser and renderer
-  tracker-gitlab/                GitLab issue, label, note, MR, pipeline adapter
-  workspace/                     Mirror, worktree, branch, hook, and cleanup logic
-  runner-codex-app-server/       Codex app-server JSON-RPC integration
-  observability/                 Redaction, events, run store, and logging
-  shared-contracts/              Types shared by orchestrator and dashboard
+  core/                          共享领域基础类型
+  workflow/                      WORKFLOW.md parser 和 renderer
+  tracker-gitlab/                GitLab issue、label、note、MR、pipeline adapter
+  workspace/                     mirror、worktree、branch、hook、cleanup 逻辑
+  runner-codex-app-server/       Codex app-server JSON-RPC 集成
+  observability/                 redaction、events、run store、logging
+  shared-contracts/              orchestrator 和 dashboard 共享类型
 
 docs/superpowers/
-  specs/                         Product and architecture specs
-  plans/                         Implementation plans
+  specs/                         产品和架构 spec
+  plans/                         实现计划
 
-elixir/                          Original Symphony reference implementation
-SPEC.md                          Original language-agnostic Symphony spec
+elixir/                          原 Symphony 参考实现
+SPEC.md                          原 Symphony 语言无关 spec
 ```
 
-## Requirements
+## 快速开始
 
-- Node.js `>=22 <23`
-- pnpm `10.x`
-- Git
-- A GitLab project and token for real runs
-- Codex with app-server support for real runs
+> 详细步骤见 **[使用指南（中文）](USAGE.zh-CN.md)**，以下是最短路径。
 
-The root `.npmrc` enables strict engine checks.
-
-## Installable Local Release
-
-Build and install the local V1 package:
+**第一步：构建并安装本地 V1 包**
 
 ```bash
 corepack enable
@@ -269,25 +234,50 @@ pnpm release:pack
 npm install -g ./dist/release/issuepilot-0.1.0.tgz
 ```
 
-Then run IssuePilot from any directory:
+**第二步：检查本机环境**
 
 ```bash
-issuepilot --version
 issuepilot doctor
+```
+
+期望全部 `[OK]`：Node.js ≥22、git、codex app-server、`~/.issuepilot/state` 可写。
+
+**第三步：在目标项目里创建 `WORKFLOW.md`**
+
+拷贝 [`.agents/workflow.example.md`](.agents/workflow.example.md) 到目标项目的 `WORKFLOW.md`，把 `gitlab.example.com`、`group/project` 等占位符替换成实际值，并 commit 推送。
+
+**第四步：验证 workflow 配置**
+
+```bash
+export GITLAB_TOKEN="<your-token>"
 issuepilot validate --workflow /path/to/target-project/WORKFLOW.md
+```
+
+**第五步：启动 daemon + dashboard**
+
+```bash
+# 终端 A — 启动 orchestrator（自动等 ready 后打印 API / Dashboard URL）
 issuepilot run --workflow /path/to/target-project/WORKFLOW.md
+
+# 终端 B — 启动 dashboard
 issuepilot dashboard
 ```
 
-The dashboard command starts the packaged Next.js dashboard and points at
-`http://127.0.0.1:4738` by default. Use `--api-url` if the orchestrator runs on
-a different port:
+打开 `http://localhost:3000`，给目标项目的某个 Issue 打上 `ai-ready` label，IssuePilot 即自动接管。
 
-```bash
-issuepilot dashboard --port 3000 --api-url http://127.0.0.1:4738
-```
+---
 
-## Development Setup
+## 环境要求
+
+- Node.js `>=22 <23`
+- pnpm `10.x`
+- Git
+- 真实运行需要 GitLab project 和 token
+- 真实运行需要支持 app-server 的 Codex
+
+根目录 `.npmrc` 开启了严格 engine 检查。
+
+## 开发设置
 
 ```bash
 corepack enable
@@ -296,7 +286,7 @@ pnpm typecheck
 pnpm test
 ```
 
-Useful commands:
+常用命令：
 
 ```bash
 pnpm build
@@ -307,8 +297,7 @@ pnpm --filter @issuepilot/workflow test
 pnpm --filter @issuepilot/orchestrator test
 ```
 
-For contributor workflows, the CLI can still be exercised from the workspace
-root:
+贡献者开发时，也可以继续从 workspace 根目录运行 CLI：
 
 ```bash
 pnpm build
@@ -316,18 +305,18 @@ pnpm exec issuepilot doctor
 pnpm exec issuepilot validate --workflow path/to/workflow.md
 ```
 
-## Workflow File
+## Workflow 文件
 
-IssuePilot expects each target repository to provide an agent contract file:
+IssuePilot 期望每个目标仓库提供一个 agent 契约文件：
 
 ```text
 WORKFLOW.md
 ```
 
-The file contains YAML front matter for machine-readable configuration and a
-Markdown body used as the agent prompt.
+该文件由两部分组成：YAML front matter 作为机器可读配置，Markdown body
+作为传给 agent 的 prompt。
 
-Minimal shape:
+最小结构：
 
 ```md
 ---
@@ -379,365 +368,316 @@ URL: {{ issue.url }}
 {{ issue.description }}
 ```
 
-Secrets are read from the environment variable named by `tracker.token_env`.
-They must not be committed into workflow files.
+secret 从 `tracker.token_env` 指定的环境变量读取，不能提交到 workflow 文件中。
 
-## Security Model
+## 安全模型
 
-IssuePilot is designed for trusted local development environments.
+IssuePilot 面向可信本地开发环境。
 
-Important P0 boundaries:
+P0 的重要边界：
 
-- GitLab tokens are read from environment variables.
-- Token-like values are redacted before being written to logs, events, stores,
-  or API responses.
-- Codex runs with a workflow-defined sandbox, but workflow files cannot request
-  `danger-full-access` or `dangerFullAccess`.
-- The Codex working directory is limited to the current issue worktree.
-- Failed runs preserve workspace data and event logs for debugging.
+- GitLab token 从环境变量读取。
+- 类 token 值在写入日志、事件、store 或 API response 前会被 redacted。
+- Codex 使用 workflow 定义的 sandbox，但 workflow 文件不能请求
+  `danger-full-access` 或 `dangerFullAccess`。
+- Codex 的工作目录限制在当前 Issue worktree 内。
+- 失败 run 会保留 workspace 数据和 event logs，便于排障。
 
-Review generated code before merging it. IssuePilot creates reviewable merge
-requests; it does not replace code review.
+合并前仍然需要 Review 生成的代码。IssuePilot 创建的是可 Review 的 Merge
+Request，不替代代码审查。
 
 ## Roadmap
 
-The IssuePilot roadmap lives in
+下面是 IssuePilot 的版本路线图。完整内容以
 [`docs/superpowers/specs/2026-05-11-issuepilot-design.md`](docs/superpowers/specs/2026-05-11-issuepilot-design.md)
-§20 — the section below is a summary so you can quickly see what's usable today
-and where the project is heading.
+§20 为准；本节只做摘要，便于先快速判断"现在能用到什么、未来会扩到哪里"。
 
-Current roadmap principle: **make the local / shared-team edition complete
-enough for the full engineering workflow before building the production-ready
-platform**. Login, permissions, budgets, production deployment, centralized
-storage, audit, and observability stay in V3; V4 first completes workflow
-intelligence and product experience on the existing V2.x runtime.
+当前路线原则：**先把本地版 / 团队机器版的研发流程能力打磨到足够完备，再做生产可用版本**。
+登录、权限、预算、生产部署、集中存储、审计和观测等生产环境因素统一后置到 V3；
+V4 优先在现有 V2.x runtime 上补齐流程智能和体验闭环。
 
-### P0 — Local single-machine loop (closed)
+### P0 — 本地单机闭环（已闭合）
 
-The local single-machine loop is complete:
+已完成本地单机闭环：
 
-- ✅ Local daemon (orchestrator) with a Fastify HTTP API + SSE.
-- ✅ GitLab issue label state machine (`ai-ready` → `ai-running` →
-  `human-review` / `ai-failed` / `ai-blocked` / `ai-rework`).
-- ✅ Codex app-server runner (thread/turn lifecycle + 14 normalized event
-  types).
-- ✅ Bare mirror + git worktree workspace; failed runs preserved in place.
-- ✅ Automatic MR create/update + structured handoff note with marker-based
-  recovery.
-- ✅ Structured failure / blocked notes with status, run, branch, reason, and
-  next action.
-- ✅ Human-review closure: manually merged MRs close the GitLab issue; closed
-  unmerged MRs return to the configured rework label.
-- ✅ Structured closing note when IssuePilot removes `human-review` and closes
-  the issue.
-- ✅ Read-only Next.js dashboard (overview + run detail + SSE timeline).
-- ✅ Fake GitLab + fake Codex end-to-end harness + real GitLab smoke runbook.
-- ✅ Installable local CLI tarball with installed `issuepilot run` and
-  `issuepilot dashboard` startup paths.
-- ✅ Release evidence gate via `pnpm release:check`.
-- ✅ Real GitLab smoke has been confirmed by the operator; fixed evidence links
-  still need to be archived.
-- ✅ Source-checkout usage remains available for contributors and rollback.
+- ✅ 本地 daemon（orchestrator）+ Fastify HTTP API + SSE。
+- ✅ GitLab Issue label 驱动的状态机（`ai-ready` → `ai-running` →
+  `human-review` / `ai-failed` / `ai-blocked` / `ai-rework`）。
+- ✅ Codex app-server runner（thread/turn 生命周期 + 14 类标准化事件）。
+- ✅ bare mirror + git worktree workspace，失败 run 现场保留。
+- ✅ MR 自动创建/更新 + 带 marker 的结构化 handoff note 恢复机制。
+- ✅ 结构化 failure / blocked note：包含状态、run、branch、原因和下一步动作。
+- ✅ human-review 自动收尾：人工 merge MR 后关闭 GitLab Issue；MR closed 但
+  未 merge 时回流到配置的 rework label。
+- ✅ 结构化 closing note：IssuePilot 移除 `human-review` 并关闭 Issue 时写入。
+- ✅ 只读 Next.js dashboard（overview + run detail + SSE timeline）。
+- ✅ fake GitLab + fake Codex 全闭环 E2E + 真实 GitLab smoke runbook。
+- ✅ 可安装本地 CLI tarball，支持安装态 `issuepilot run` 与
+  `issuepilot dashboard` 启动路径。
+- ✅ `pnpm release:check` 作为 release evidence 门禁。
+- ✅ 真实 GitLab smoke 已由操作者确认通过，固定 evidence 链接待归档。
+- ✅ source-checkout 方式继续作为贡献者开发和紧急回滚路径保留。
 
-### V1 — Stable local release
+### V1 — 稳定本地发布
 
-Goal: make the current single-machine loop installable, repeatable, and safe for
-internal pilot teams without changing the core execution model.
+目标：不改变单机执行模型，把当前闭环变成可安装、可重复、适合内部试点团队使用
+的稳定版本。
 
-- ✅ Installable CLI distribution through npm-compatible package tooling, with
-  `issuepilot` as the executable command.
-- ✅ Installed startup path for the local loop: `issuepilot run --workflow ...`
-  for daemon/API and an installed dashboard start command for the local UI.
-- ✅ Release gate that combines unit tests, fake E2E, smoke wrapper, installed
-  CLI smoke, and `git diff --check`.
-- ✅ Installed daemon / dashboard startup paths and real GitLab smoke have passed
-  local pilot verification.
-- ✅ Operational docs for install, startup, auth, log redaction, and failed /
-  blocked run debugging.
-- 🚧 Versioned tags with release notes, rollback notes, and compatibility
-  expectations for the local loop.
-- 🚧 Stable workflow schema, event contract, CLI commands, and dashboard API for
-  the local loop.
-- ✅ Source-checkout remains supported for contributors and emergency rollback.
+- ✅ 通过 npm-compatible package tooling 提供可安装 CLI 分发，安装后暴露
+  `issuepilot` 可执行命令。
+- ✅ 安装后的本地启动路径：`issuepilot run --workflow ...` 启动 daemon/API，并提供
+  已安装的 dashboard 启动命令。
+- ✅ release gate 组合单测、fake E2E、smoke wrapper、安装态 CLI smoke 和
+  `git diff --check`。
+- ✅ 安装态 daemon / dashboard 启动路径和真实 GitLab smoke 已通过本地试点验证。
+- ✅ auth refresh、token rotation、日志脱敏、failed / blocked run 排障的运维文档。
+- 🚧 版本化 tag，包含 release notes、回滚说明和本地闭环兼容性预期。
+- 🚧 本地闭环所需的 workflow schema、event contract、CLI 命令和 dashboard API
+  稳定下来。
+- ✅ source-checkout 继续作为贡献者开发和紧急回滚路径保留。
 
-### V2 — Team-operable release
+### V2 — 团队可运营版本
 
-Goal: graduate from "single machine" to "shared team machine" so a team can
-run IssuePilot on its day-to-day work.
+目标：从"个人单机"升级到"团队共享"，能在内网或团队机器上跑日常工作。
 
-Status: **all five V2 phases are merged into `main`.** A team can run a single
-daemon against multiple GitLab projects, observe and act on runs via the
-dashboard, and let the orchestrator handle CI flip-back / review feedback /
-workspace cleanup. Visual versions:
+状态：**V2 Phase 1–5 已全部合入 `main`。** 一台 daemon 可以同时管理多个
+GitLab 项目，dashboard 提供 retry / stop / archive，orchestrator 自动处理
+CI 回流、review feedback 与 workspace 清理。视觉版本：
 
-- Architecture: [`docs/superpowers/diagrams/v2-architecture.svg`](docs/superpowers/diagrams/v2-architecture.svg)
-- End-to-end lifecycle: [`docs/superpowers/diagrams/v2-flow.svg`](docs/superpowers/diagrams/v2-flow.svg)
-- V2 master spec + per-phase progress: [`docs/superpowers/specs/2026-05-15-issuepilot-v2-team-operable-design.md`](docs/superpowers/specs/2026-05-15-issuepilot-v2-team-operable-design.md)
-- Team-mode walkthrough: [`USAGE.md` — Part 5](USAGE.md#part-5--v2-team-mode-shared-machine--multiple-projects)
+- 架构图：[`docs/superpowers/diagrams/v2-architecture.svg`](docs/superpowers/diagrams/v2-architecture.svg)
+- 端到端流程图：[`docs/superpowers/diagrams/v2-flow.svg`](docs/superpowers/diagrams/v2-flow.svg)
+- V2 总设计与逐 Phase 进度：[`docs/superpowers/specs/2026-05-15-issuepilot-v2-team-operable-design.md`](docs/superpowers/specs/2026-05-15-issuepilot-v2-team-operable-design.md)
+- 团队模式上手：[`USAGE.zh-CN.md` — Part 5](USAGE.zh-CN.md#part-5--v2-团队模式共享机器--多项目)
 
-- ✅ Phase 1 — Team Runtime Foundation: `issuepilot run --config
-  /path/to/issuepilot.team.yaml` team mode for multi-project loading,
-  lease-backed scheduling, and project-aware dashboard state.
-- ✅ Single daemon manages multiple projects on a shared box; concurrency
-  is configurable from 1 to 5 with global + per-project lease slots.
-- ✅ Dashboard gains `retry`, `stop`, and `archive run` actions (V2 Phase 2).
-- ✅ CI status ingestion + automatic flip of CI failures back to `ai-rework`
-  (V2 Phase 3; opt-in via `ci.enabled: true` in `WORKFLOW.md`). Note: the
-  scanner is wired into the orchestrator loop only at daemon startup —
-  toggling `ci.enabled` requires restarting `issuepilot run` for the change
-  to take effect.
-- ✅ Review feedback sweep (V2 Phase 4): the orchestrator polls human
-  comments on the human-review MR, persists them as a `ReviewFeedbackSummary`
-  on the run record, and — when the issue is recycled to `ai-rework` — the
-  carried-forward summary is prepended to the next agent prompt as a
-  standardised `## Review feedback` block. Always-on; no workflow toggle.
-  The dashboard run detail view shows a `Latest review feedback` panel
-  with deep-links back to each MR note.
-- ✅ Workspace retention (V2 Phase 5): the orchestrator periodically
-  sweeps `~/.issuepilot/workspaces`, deleting expired successful runs
-  (default 7d), preserving failure forensics within the retention window
-  (default 30d), and never touching active runs even under capacity
-  pressure. Configure via the `retention` block in `issuepilot.team.yaml`
-  or workflow front matter. Operators can preview a sweep with
-  `issuepilot doctor --workspace --workflow <path>`; the dashboard service
-  header surfaces `Workspace usage` + `Next cleanup`; every sweep emits
-  `workspace_cleanup_planned` / `_completed` / `_failed` events. See
-  `docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md` for the
-  operator runbook.
-  - **Limitation**: the V2 team daemon parses the `retention` schema but
-    does not run the cleanup loop yet. For automatic cleanup today,
-    launch each project through the V1 entrypoint
-    (`issuepilot run --workflow ...`); team-mode wiring is tracked as a
-    Phase 5 follow-up.
+- ✅ Phase 1 — Team Runtime Foundation：`issuepilot run --config
+/path/to/issuepilot.team.yaml` team mode，用于多项目加载、lease-backed
+  调度和 project-aware dashboard state。
+- ✅ 单 daemon 支持多项目；并发可在 1–5 之间配置，配套全局 + per-project
+  租约槽位。
+- ✅ dashboard 基础操作 `retry` / `stop` / `archive run` 已交付（V2 Phase 2，
+  stop 走真实 Codex `turn/interrupt`）。
+- ✅ CI 状态读取 + CI 失败自动回流到 `ai-rework`（V2 Phase 3；通过 `WORKFLOW.md`
+  的 `ci.enabled: true` 显式开启）。注意：scanner 只在 daemon 启动时按 `ci.enabled`
+  决定是否注入 loop，运行中修改 `ci.enabled` 需要重启 `issuepilot run` 才会生效。
+- ✅ Review feedback sweep（V2 Phase 4）：orchestrator 持续轮询 `human-review`
+  MR 上的人工评论，将其结构化为 `ReviewFeedbackSummary` 写入 run 记录；当
+  issue 被打回 `ai-rework` 时，新一轮 run 会自动继承上一轮的 summary，并以
+  统一的 `## Review feedback` markdown 区段拼接到 agent prompt 之前。该 sweep
+  始终开启，无需 workflow 开关。dashboard 的 run 详情页面新增 `Latest review
+feedback` 面板，可直接跳转到 MR 上的每条评论。
+- ✅ Workspace retention（V2 Phase 5）：orchestrator 按 `retention.cleanup_interval_ms`
+  周期清理 `~/.issuepilot/workspaces`，成功 run 默认 7 天到期、失败 run 默认
+  保留 30 天供取证，active run 永远不删；总容量超出 `max_workspace_gb` 时
+  也只允许从已过期的 terminal run 里挑，保留期内的 failure 现场不会被强删。
+  配置通过 `issuepilot.team.yaml` 或 workflow front matter 的 `retention`
+  块覆盖。操作员可用 `issuepilot doctor --workspace --workflow <path>`
+  做 dry-run 预览；dashboard service header 新增 `Workspace usage` /
+  `Next cleanup` 两列；每次 sweep emit `workspace_cleanup_planned` /
+  `_completed` / `_failed` 事件，详细 SOP 见
+  `docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md`。
+  - **限制**：V2 team daemon 目前只会解析 `retention` schema，**不会自动跑
+    cleanup loop**。团队场景需要自动清理，目前的做法是用 V1 入口
+    `issuepilot run --workflow ...` 逐项目启动 daemon；team-mode wiring 列在
+    Phase 5 follow-up。
 
-Items deferred beyond V2 (not blocking V2):
+延后到 V2 之后处理（不阻塞 V2）：
 
-- Optional automated merge policy after CI/approval checks moves to V3, where
-  it can be gated by production permissions, approvals, audit, and rollback
-  controls. The P0/V2 default remains human-controlled merge.
+- 可选自动 merge 策略下沉到 V3，在生产权限、approval、audit 和回滚控制下
+  设计；P0 / V2 默认仍由人类控制 merge。
 
 ### V2.5 — Command Center
 
-Goal: collapse "Overview + Run detail" into a Linear-style Command Center so
-operators get a single screen for triage, review, and quality metrics, while
-GitLab notes and dashboard share one fact source.
+目标：把"概览页 + 运行详情页"合并成 Linear 风格的 Command Center，让运维人员
+在一个屏幕里完成 triage、review 和质量观察；GitLab notes 与 dashboard
+共用同一份事实。
 
-- ✅ `RunReportArtifact` is persisted under `~/.issuepilot/.../reports/<runId>.json`
-  alongside the JSONL event store, captured at claim time and updated through
-  reconcile, CI scan, review sweep, and failure paths.
-- ✅ Command Center home page supports **List view** and **Board view**
-  (grouped by workflow label) with an inline Review Packet inspector.
-- ✅ **Review Packet** on the run detail page surfaces the structured handoff
-  summary, validation, risks, follow-ups, checks (CI / approvals / review
-  feedback / risks), and merge-readiness verdict directly from the report.
-- ✅ **Reports page** (`/reports`) aggregates per-run quality and timing
-  metrics (ready-to-merge / blocked / failed counters, list of report
-  summaries) from the local report artifacts.
-- ✅ **Merge readiness** is a **dry-run** evaluator only: it reports whether
-  CI, approvals, review feedback, and risks suggest the MR is ready to
-  merge. IssuePilot still does not call any GitLab merge API; true
-  auto-merge remains out of scope.
-- ✅ Handoff / failure / closing GitLab notes render from the same
-  `RunReportArtifact`, so dashboard, notes, and any future Markdown export
-  stay aligned.
+- ✅ `RunReportArtifact` 持久化在 `~/.issuepilot/.../reports/<runId>.json`，
+  与 JSONL 事件存储并排，claim 时初始化，并在 reconcile、CI 扫描、review
+  扫描、failure 路径上更新。
+- ✅ Command Center 首页支持 **List 视图** 与 **Board 视图**（按 workflow
+  label 分栏），并提供内联 Review Packet 检查器。
+- ✅ 运行详情页的 **Review Packet** 直接从报告渲染结构化 handoff summary、
+  validation、risks、follow-ups、checks（CI / approvals / review
+  feedback / risks）以及 merge-readiness 判定结果。
+- ✅ **Reports 页面** (`/reports`) 聚合本地报告产物的质量与耗时指标
+  （ready-to-merge / blocked / failed 计数器，以及 report summary 列表）。
+- ✅ **Merge readiness 仅做 dry-run**：评估 CI、approval、review feedback
+  和 risks 是否就绪，**不会调用** GitLab 的 merge API；真正的自动 merge
+  仍在范围之外。
+- ✅ Handoff / failure / closing 等 GitLab notes 都从同一个
+  `RunReportArtifact` 渲染，保证 dashboard、notes 以及未来的 Markdown
+  导出保持一致。
 
-### V2.6 — Dashboard shell + layout refresh
+### V2.6 — Dashboard shell + 布局重构
 
-Goal: tighten the Command Center information density after the V2.5
-content build-out — guided by a `ui-ux-pro-max` system review.
+目标：在 V2.5 内容堆完之后，借助 `ui-ux-pro-max` 系统化评估，给 Command
+Center 减负、把信息密度调到合理区间。
 
-Wave 2 follow-ups (post user dog-food):
+第二轮抛光（用户 dog-food 之后）：
 
-- ✅ All three pages (Command Center / Reports / Run Detail) share
-  `max-w-[1440px]` so the topbar feels stable across navigation.
-- ✅ The board-view inspector Sheet is a **GitLab-style non-modal
-  overlay**: no scrim, no body-scroll lock, `role="complementary"`
-  instead of `dialog`. The sheet floats over the right edge of the
-  kanban; the page container itself **does not reflow** (no
-  `lg:pr-[440px]` squeeze) — the board keeps its natural
-  `min-w-[1080px]` / `minmax(180px, 1fr)` columns and the covered
-  columns stay reachable via horizontal scroll, exactly like
-  GitLab's issue board side panel. Clicks outside the sheet still
-  hit the kanban so operators swap the inspected run by clicking
-  another card without dismissing first.
-- ✅ Board cards get a subtle press-on / hover-up motion
-  (`-translate-y-0.5` + `shadow-2`) and drop the verbose runId line
-  (still in `title=` / `aria-label`); titles `line-clamp-2`.
-- ✅ ServiceHeader collapses its forensic metadata (`Last config
-  reload` / `Workspace usage` / `Next cleanup`) behind a
-  `More details` disclosure so the strip stays compact.
-- ✅ All four Reports counters (`Total` / `Ready` / `Blocked` /
-  `Median duration`) now carry a 7-day inline sparkline driven by a
-  reused `bucketByDay` predicate + a new `medianDurationByDay` helper.
+- ✅ Command Center / Reports / Run Detail 三页 `max-w` 统一为 1440px，
+  在 topbar 下切换页面时主容器宽度不再抖动。
+- ✅ board 视图的 inspector Sheet 改成 **GitLab 风纯 overlay**：去遮罩、
+  不锁 body 滚动、`role` 从 `dialog` 改成 `complementary`；sheet 是 fixed
+  positioned 浮在看板右侧上方，**主内容布局完全不让位**（没有
+  `lg:pr-[440px]` "把页面挤回去"），board 保持原始的 `min-w-[1080px]` /
+  `minmax(180px, 1fr)` 列宽，被覆盖的两栏可以横向滚动看——和 GitLab issue
+  看板的右侧详情面板观感一致。**点 sheet 之外的卡片直接换 inspector
+  内容，不用先 Esc**。
+- ✅ board 卡片去掉冗长的 runId 行（仍走 `title=` 和 `aria-label`），
+  hover / 选中加 `-translate-y-0.5` + `shadow-2` 微动效，标题 `line-clamp-2`
+  避免高度爆炸。
+- ✅ ServiceHeader 把 `Last config reload` / `Workspace usage` /
+  `Next cleanup` 收进 "更多详情" disclosure，默认折叠，service strip 更
+  紧凑。
+- ✅ Reports 4 张 Counter（Total / Ready / Blocked / Median duration）全部
+  接上 7 日 inline sparkline，复用同一个 `bucketByDay` predicate + 新增
+  `medianDurationByDay` helper。
 
-Wave 1 (the original layout refresh):
+首轮（顶部导航 + 抽屉化 + 健康条）：
 
-- ✅ **Top-bar shell** replaces the 232px left sidebar. Primary nav and the
-  locale / theme / mode-tag tools collapse into a sticky horizontal strip
-  (`max-w-[1440px]`, `bg-surface/95 backdrop-blur`); a `Skip to main
-  content` link is the first focusable element. The change frees ~232px of
-  horizontal space — enough for the kanban view to render its six lifecycle
-  columns without x-overflow on 1280px laptops.
-- ✅ **Hybrid Review Packet inspector**. List view keeps the split-pane
-  inspector but only mounts the right column when a row is selected (320–
-  420px); board view promotes the inspector into an on-demand right-side
-  **Sheet** drawer so the kanban stays full-width. The drawer follows
-  Apple HIG / Material modal-escape rules: Esc closes, scrim click closes,
-  ✕ button closes, body scroll is locked while open, focus is restored on
-  dismiss, and `prefers-reduced-motion` is honoured globally via
-  `globals.css`.
-- ✅ **Stacked health bar**. The five large per-status kpi cards collapse
-  into a single Card showing total + a 2px-tall horizontal stacked bar
-  (running / retrying / human-review / failed / blocked) plus a chip row
-  with exact counts. Operators read "is the queue healthy" in one glance
-  instead of summing five numbers.
-- ✅ **Workflow path repair**. The `service` strip now truncates long
-  paths from the head (`bdo` + `dir="rtl"`) so the file name stays visible,
-  with the full path exposed via the native `title=` tooltip.
-- ✅ **Section header de-noising**. Mid-page `text-[11px] uppercase
-  tracking-[0.18em]` micro-labels were rolled back to plain
-  `text-base font-semibold`; the `font-mono` micro-label treatment is
-  reserved for page-level overhead labels and `dt` metadata, where it
-  reads as a kicker rather than visual noise.
+- ✅ **顶部水平导航壳**替换 232px 左侧 sidebar。主导航 + locale / theme /
+  mode tag 工具区收成 sticky 的横向条（`max-w-[1440px]`、
+  `bg-surface/95 backdrop-blur`），首焦点是 `跳到主内容`。这一步让出
+  ~232px 横向空间，board 视图 6 栏在 1280px 笔记本上不再 x-overflow。
+- ✅ **混合 Review Packet inspector**。list 视图保留 split-pane，但只在
+  选中 run 时才把右侧 320–420px 列展开；board 视图把 inspector 收成按需
+  滑入的 **右侧 Sheet 抽屉**，让 kanban 保持全宽。Sheet 严格遵循 Apple HIG
+  和 Material 的 modal escape 规则：Esc 关闭、点遮罩关闭、✕ 关闭、
+  打开期间锁 `body.overflow:hidden`、关闭后焦点恢复，并通过 `globals.css`
+  的全局规则尊重 `prefers-reduced-motion`。
+- ✅ **横向 stacked health bar**。5 张大 KPI 卡（running / retrying /
+  human-review / failed / blocked）合并成单卡：标题 + 共 N 条 + 一根 2px
+  高的横向堆叠条 + 一行 chip 数字。运维一眼就能判断"队列是否健康"，不再
+  需要心算 5 个独立数字。
+- ✅ **Workflow 长路径修复**。service strip 用 `bdo` + `dir="rtl"`
+  组合实现"从头截断"，文件名（`WORKFLOW.md`）始终可见，完整路径走原生
+  `title=` tooltip。
+- ✅ **Section header 减负**。原本满屏的 `text-[11px] uppercase
+tracking-[0.18em]` micro-label 改回普通 `text-base font-semibold`；
+  `font-mono` micro-label 风格只保留给页面级 overhead label 和 `dt`
+  metadata 标签 —— 它们才是真正的 kicker，在那里读起来自然。
 
-Execution order after V2.6: **build the V4 intelligent engineering workbench
-first, then productionize it through V3**. V3 / V4 are capability domains, not
-a required numeric delivery order; the current product bet is to validate
-workflow intelligence first and platformize the proven capabilities afterward.
+后续执行顺序：**先做 V4 智能研发工作台，再做 V3 生产化执行平台**。这里的
+V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断是先验证研发流程智能
+是否真正提升交付质量，再把已经验证的能力平台化。
 
-### V4 — Intelligent engineering workbench
+### V4 — 智能研发工作台
 
-Goal: run on the existing V2.x local/shared-team runtime first and go beyond
-"one issue, one run" to become a workbench that understands, decomposes,
-orchestrates, and improves engineering work. V4 does not own deployment,
-permissions, budgets, or observability; it owns workflow intelligence. V3 later
-productionizes the capabilities that prove valuable here.
+目标：先在现有 V2.x 本地 / 团队 runtime 上，超越"单 Issue 单 run"模型，
+成为能理解、拆解、编排和改进研发流程的智能工作台。V4 不负责部署、权限、
+预算这些平台底座，而是专注研发流程智能；等能力验证清楚后，再由 V3 把这些
+能力生产化。
 
-- **Work Items / Parent Review Packet for large issues** — *landed in V4.1*.
-  An IssuePilot operator can plan a GitLab Issue from the Command Center,
-  accept / edit / regenerate the LLM-drafted task plan in
-  `/work-items/<id>`, watch every synthetic task run land its own MR, and
-  read a Parent Review Packet (validation, risks, evidence index, MR links)
-  before the parent Issue auto-flips to `human-review`. Spec:
-  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`;
-  implementation plan:
-  `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`.
-- **Task Graph + dependency execution + branch chaining** — *landed in
-  V4.2*. The `/work-items/<id>` page now toggles between the grouped task
-  list and an SVG Task Graph (topology layout, critical-path highlight).
-  Orchestration honours `dependsOn`: when a downstream task has a single
-  upstream that is `completed` but whose MR is still `opened`, the daemon
-  dispatches the downstream task on `origin/<upstream-branch>` so a linear
-  refactor chain can land without waiting for every MR to merge. Operators
-  can replan a single task (new plan version, non-replanned tasks inherit
-  status / runIds), mark a completed task back to `needs_rework`, and
-  un-skip a previously-skipped task — all routed through the same
-  aggregator path that drives parent Issue labels, never bypassing it.
-  Team-mode `apps/orchestrator/src/team/daemon.ts` now wires per-project
-  `WorkItemService` instances; every dashboard work-item API call sends
-  `x-issuepilot-project` so two projects never see each other's WorkItems.
-  Implementation plan:
-  `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`.
-- **Review Packet + Evidence** — *landed in V4.3*. WorkItem reports now
-  index reviewer evidence from task worktrees (`screenshot`, `recording`,
-  `playwright`, `command_output`, `test_result`) and keep AI/system claims
-  separate from human-confirmed evidence. The parent Review Packet derives
-  checklist items, CI/test summaries, risks, and evidence links from one
-  renderer shared by GitLab handoff notes and dashboard Markdown export.
-  `/work-items/<id>?view=evidence` adds a kind-filtered Evidence view with
-  per-entry confirmation, while `Copy as Markdown` reads
-  `/api/work-items/<id>/report.md` from the orchestrator. Implementation
-  plan:
-  `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`.
-- **Large-issue decomposition and orchestration**: split large issues into
-  executable sub-tasks with ordering, parallelism, shared context, and rollback
-  boundaries.
-- **Cross-issue dependency analysis**: detect blockers, duplicated work,
-  upstream/downstream dependencies, and mergeable tasks, then surface them as
-  an engineering work graph.
-- **Multi-agent collaboration**: coding agent, reviewer agent, and
-  test/evidence agent roles that can collaborate per sub-task and summarize
-  their results.
-- **Intelligent review workflow**: summarize MR risks, classify review
-  comments, generate rework plans, and turn review feedback into structured
-  input for the next run.
-- **Acceptance evidence generation**: screenshots, recordings, Playwright
-  walkthrough videos, test evidence, risk lists, and MR / Issue-ready
-  acceptance reports.
-- **Quality and process analytics**: success rate, rework rate, CI pass rate,
-  review hit rate, duration bottlenecks, and high-risk workflow detection.
-- **Workflow / skills continuous improvement**: recommend workflow, skill,
-  prompt, and project-rule changes from repeated failure patterns, with an
-  auditable improvement loop.
-- **Runner ecosystem**: Claude Code, internal coding agents, and other runner
-  adapters managed through the same report and audit model.
+- **大 Issue 工作单元 / Parent Review Packet** — _V4.1 已落地_。
+  Operator 可以从 Command Center 选中一个 GitLab 大 Issue，「Plan work item」
+  让 LLM 起草 2–5 个子任务，在 `/work-items/<id>` 接受 / 编辑 / 重新生成
+  plan，每个子任务跑独立的 synthetic task run 并产出独立 MR；
+  Parent Review Packet 把 validation、风险、evidence index、MR 链接、
+  recommended next actions 汇总到一处，所有任务完成后父 Issue 自动切到
+  `human-review` 并写一条带 `<!-- issuepilot:work-item:<id> -->` marker 的
+  handoff note。设计 spec：
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`。
+- **Task Graph 视图 + 依赖图执行 + branch chaining** — _V4.2 已落地_。
+  `/work-items/<id>` 现在可以在分组列表和 SVG Task Graph
+  （topology 布局 + critical path 高亮）之间切换；orchestration 真正
+  遵守 `dependsOn`：单上游依赖、上游 `completed` 且 MR 仍 `opened` 时，
+  下游 task 在 dispatch 时基于 `origin/<上游分支>` 开 worktree，使线性
+  重构链不需要等上游 MR merge 才能继续推进；operator 可以对单 task
+  做 replan（生成新 plan version，未 replan 的 task 继承 status /
+  runIds）、把已完成 task 反弹回 `needs_rework`、对 skipped task
+  做 unskip，所有这些动作都走 aggregator + `reconcileWorkItem`，不绕过
+  父 Issue label 状态机。team daemon
+  `apps/orchestrator/src/team/daemon.ts` 装配 per-project
+  `WorkItemService`，dashboard 顶栏新增 Project Switcher，所有
+  work-item API 自动带 `x-issuepilot-project` header；两个 project
+  的 WorkItem 完全互不可见。实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`。
+- **Review Packet + Evidence** — _V4.3 已落地_。WorkItem report 现在会从
+  task worktree 索引 reviewer evidence（`screenshot` / `recording` /
+  `playwright` / `command_output` / `test_result`），并把 AI / system claim
+  与 human-confirmed evidence 明确分开。Parent Review Packet 从同一个
+  renderer 生成 checklist、CI/test summary、风险和 evidence 链接，GitLab
+  handoff note 与 dashboard Markdown export 共用这份事实源。
+  `/work-items/<id>?view=evidence` 新增按 kind 过滤的 Evidence 视图，
+  支持单条 evidence 人工确认；`Copy as Markdown` 直接读取 orchestrator 的
+  `/api/work-items/<id>/report.md`。实施计划：
+  `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`。
+- **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
+  并行度、共享上下文和回滚边界。
+- **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，
+  在 dashboard 中形成研发工作图谱。
+- **多 agent 协作**：实现 coding agent、reviewer agent、test/evidence
+  agent 等角色分工，支持子任务级协作和汇总。
+- **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
+  并把 review 反馈转成下一轮 agent 的结构化输入。
+- **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、
+  测试证据、风险清单和可直接贴到 MR / Issue 的验收报告。
+- **质量与过程分析**：分析成功率、返工率、CI 通过率、review 命中率、耗时
+  瓶颈和高风险 workflow。
+- **workflow / skills 持续改进**：根据失败模式推荐 workflow、skills、prompt
+  和项目规则调整，形成可审计的改进闭环。
+- **多执行器生态**：支持 Claude Code、内部 coding agent 或其他 runner
+  adapter，并用统一报告和审计模型管理其输出。
 
-### V3 — Productionized execution platform
+### V3 — 生产化执行平台
 
-Goal: turn the V2.x local/shared-machine product, plus the V4 workflow
-intelligence that has been validated in practice, into an internal AI
-engineering execution platform that can be deployed, governed, audited, and
-scaled in production. V3 is not about reinventing smarter workflows; it is about
-making proven capabilities controllable, observable, and recoverable.
+目标：把 V2.x 的本地/团队机器能力，以及 V4 已验证的研发流程智能，升级成可正式
+部署、治理、审计和扩容的内部 AI 工程执行平台。V3 不追求重新发明更聪明的工作流，
+而是让已经验证的能力在生产环境可控、可观测、可恢复。
 
-- **Deployment shape**: Docker / Compose / Kubernetes paths with explicit
-  process boundaries for API server, dashboard, workers, and storage.
-- **Multi-worker execution**: local / SSH / container workers with heartbeat,
-  capacity reporting, task dispatch, failure recovery, and queue reclamation.
-- **Production sandboxing**: Docker / Kubernetes sandboxes replace the
-  single-host sandbox model, with per-project filesystem, network, and secret
-  injection policies.
-- **Identity and permissions**: login/session support plus project, team, and
-  admin scopes; every dashboard action and automated action is written to an
-  operator-aware audit log.
-- **Budgets and quotas**: project/team limits for tokens, runtime, concurrency,
-  cost, and retry count, with explainable blocked / approval flows on breach.
-- **Persistent storage**: Postgres for production run history, reports, leases,
-  audit, and configuration state; SQLite / JSONL remain for local development
-  or single-machine mode.
-- **Webhook + poll scheduling**: GitLab webhooks for low-latency triggers,
-  with polling retained as a recovery path.
-- **GitLab audit and secret governance**: centralized credential store, token
-  rotation, least-privilege access, end-to-end redaction, and leak regression
-  tests.
-- **Production merge policy**: optional approval-, CI-, permission-, and
-  audit-gated auto-merge built on top of the V2.5 merge-readiness dry run.
-- **Observability and operations**: OpenTelemetry, structured logs, metrics,
-  traces, Grafana / Loki or an internal observability stack, plus backup /
-  restore, migration, upgrade, and rollback runbooks.
+- **部署形态**：提供 Docker / Compose / Kubernetes 部署路径，明确 API server、
+  dashboard、worker、storage 的进程边界和升级方式。
+- **多 worker 执行**：支持 local / SSH / container worker，带 worker
+  heartbeat、容量上报、任务派发、失败恢复和队列回收。
+- **生产 sandbox**：用 Docker / Kubernetes sandbox 替代单机 sandbox 模型，
+  为不同项目提供隔离的 filesystem、network 和 secret 注入策略。
+- **身份与权限**：接入登录态，建立项目级、团队级、管理员级权限；所有
+  dashboard 操作和自动动作都写入带操作者身份的 audit log。
+- **预算与配额**：按项目 / 团队限制 token、运行时长、并发、成本和重试次数，
+  超限时进入可解释的 blocked / approval 流程。
+- **持久化存储**：Postgres 作为生产 run history、reports、leases、audit
+  和配置状态存储；SQLite / JSONL 仅保留为本地开发或单机模式。
+- **Webhook + poll 混合调度**：GitLab webhook 用于实时触发，poll 作为兜底，
+  减少延迟同时保留可恢复性。
+- **GitLab 审计与 secret 治理**：集中 credential store、token rotation、
+  最小权限访问、全链路 redaction 和敏感字段泄漏测试。
+- **生产合并策略**：在 V2.5 merge-readiness dry run 基础上，增加带权限、
+  approval、CI 和 audit 约束的可选自动 merge。
+- **观测与运维**：OpenTelemetry、结构化日志、metrics、trace、Grafana /
+  Loki 或内部观测平台集成；提供 backup / restore、migration、升级 / 回滚
+  runbook。
 
-> The roadmap evolves with the project. Every meaningful change is reflected
-> in the design spec and `CHANGELOG.md` in the same PR — treat the design
-> spec as the source of truth.
+> Roadmap 内容会随实际进展调整，每次较大变更都会同步更新 design spec 和
+> `CHANGELOG.md`，请以 spec 为准。
 
-## Documentation
+## 文档
 
-- **[User Guide — English](USAGE.md)** — First time running IssuePilot? Start here. Walks you from install to first end-to-end run in ~30 minutes. Part 5 covers V2 team mode.
-- [使用指南（中文）](USAGE.zh-CN.md) — Chinese user guide (mirrors `USAGE.md`).
-- **[V2 architecture diagram](docs/superpowers/diagrams/v2-architecture.svg)** — Visual map of the V2 team-operable runtime (config → registry → scheduler → loop → adapters → events → dashboard).
-- **[V2 end-to-end flow diagram](docs/superpowers/diagrams/v2-flow.svg)** — Issue lifecycle from `ai-ready` through CI flip-back / review feedback / workspace cleanup.
-- [Diagram source files](docs/superpowers/diagrams/) — Mermaid sources and render instructions.
-- [IssuePilot V2 roadmap and document map](docs/superpowers/specs/2026-05-15-issuepilot-v2-team-operable-design.md) — V2 phase order, progress, and spec/plan mapping (Phases 1-5 merged).
-- [Workspace cleanup runbook](docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md) — Operator SOP for V2 Phase 5 retention.
-- [IssuePilot real GitLab smoke runbook](docs/superpowers/plans/2026-05-11-issuepilot-smoke-runbook.md) — Real GitLab + Codex end-to-end acceptance checklist.
-- [IssuePilot design spec](docs/superpowers/specs/2026-05-11-issuepilot-design.md) — Architecture, protocols, state machine.
-- [IssuePilot implementation plan](docs/superpowers/plans/2026-05-11-issuepilot-implementation-plan.md) — The 8-phase implementation plan and task breakdown.
+- **[使用指南（中文）](USAGE.zh-CN.md)** — 第一次跑 IssuePilot？从这里开始。30 分钟内跑通你第一个 ai-ready Issue 的端到端流程；Part 5 是 V2 团队模式。
+- [User Guide — English](USAGE.md) — 英文版使用手册（与 `USAGE.zh-CN.md` 同步）。
+- **[V2 架构图](docs/superpowers/diagrams/v2-architecture.svg)** — V2 团队可运营 runtime 的可视化（config → registry → scheduler → loop → adapters → events → dashboard）。
+- **[V2 端到端流程图](docs/superpowers/diagrams/v2-flow.svg)** — Issue 从 `ai-ready` 走到关闭/失败/打回的完整生命周期，覆盖 CI 回流 / review feedback / workspace cleanup。
+- [图源文件](docs/superpowers/diagrams/) — Mermaid 源与渲染命令说明。
+- [IssuePilot V2 路线图和文档矩阵](docs/superpowers/specs/2026-05-15-issuepilot-v2-team-operable-design.md) — V2 当前阶段、执行顺序、spec/plan 对应关系（Phase 1–5 已合入）。
+- [Workspace cleanup runbook](docs/superpowers/runbooks/2026-05-15-workspace-cleanup.md) — V2 Phase 5 retention 操作员 SOP。
+- [IssuePilot 真实 Smoke Runbook](docs/superpowers/plans/2026-05-11-issuepilot-smoke-runbook.md) — 真实 GitLab + Codex 的端到端验证清单。
+- [IssuePilot design spec](docs/superpowers/specs/2026-05-11-issuepilot-design.md) — 架构、协议、状态机细节。
+- [IssuePilot implementation plan](docs/superpowers/plans/2026-05-11-issuepilot-implementation-plan.md) — 8 Phase 实施计划与 Task 清单。
 - [Original Symphony spec](SPEC.md)
 - [Elixir reference implementation](elixir/README.md)
 
-## Contributing
+## 贡献
 
-Contributions are welcome while the project is still early. The most useful
-contributions right now are:
+项目仍处于早期，欢迎贡献。当前最有价值的贡献包括：
 
-- Bug reports with exact commands, logs, and environment details.
-- Tests that tighten workflow, GitLab, workspace, runner, or orchestrator
-  contracts.
-- Documentation fixes that make local setup easier to reproduce.
-- Focused PRs that keep TypeScript implementation work separate from design
-  spec updates.
+- 带有明确命令、日志和环境信息的 bug report。
+- 收紧 workflow、GitLab、workspace、runner 或 orchestrator 契约的测试。
+- 让本地设置更容易复现的文档修正。
+- 聚焦的 PR，并且将 TypeScript 实现改动和设计 spec 更新保持清晰边界。
 
-Before opening a PR, run the checks relevant to your change:
+提交 PR 前，请运行与变更相关的检查：
 
 ```bash
 pnpm typecheck
@@ -746,9 +686,9 @@ pnpm lint
 pnpm format:check
 ```
 
-For changes that affect product behavior, architecture, workflow labels, runner
-behavior, or roadmap scope, update the IssuePilot design spec in the same PR.
+如果变更影响产品行为、架构、workflow labels、runner 行为或 roadmap 范围，
+请在同一个 PR 中更新 IssuePilot design spec。
 
 ## License
 
-IssuePilot is licensed under the [Apache License 2.0](LICENSE).
+IssuePilot 使用 [Apache License 2.0](LICENSE) 授权。

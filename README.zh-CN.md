@@ -1,6 +1,6 @@
 # IssuePilot
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.en.md) | [简体中文](README.md)
 
 > 开发项目管理常常需要监督编码代理：盯任务进度、催 PR、查 CI 状态、来回手动
 > 协调验收，效率被切碎在一次次"代理报告进度"上。

@@ -448,6 +448,31 @@ merge-readiness verdict from the run's persisted report. The Reports
 aggregator lives at `http://127.0.0.1:3000/reports` and summarises
 ready-to-merge, blocked, and failed counters from local report artifacts.
 
+The Reports page also includes the **Quality Analytics** section (V4.4).
+It aggregates from the same local `ReportStore`, `WorkItemStore`,
+`RunReportArtifact`, `WorkItemReport`, `TaskPlan`, and `TaskRunLink` stores
+and exposes:
+
+- **Summary strip** — success rate, failure rate, rework rate, CI pass
+  rate, review hit rate, missing-evidence rate, and median run duration,
+  each with the previous-window delta.
+- **Trend panel** — a Sparkline that follows the selected metric across
+  the active window.
+- **Failure patterns** — a rule-based list (`permission-issue`,
+  `environment-issue`, `unclear-requirements`, `review-rework`,
+  `ci-failure`, `missing-tests`, `missing-evidence`); selecting a pattern
+  filters the drill-down table and updates the URL `pattern` query so the
+  view is shareable.
+- **Drill-down table** — links back to the specific run, work item, task,
+  or evidence entry behind each signal.
+
+The underlying API is `GET /api/quality/summary`, with optional
+`window` / `from` / `to` / `workflow` / `taskType` / `status` /
+`pattern` filters. In team mode the dashboard forwards
+`x-issuepilot-project`; a request that omits it is rejected with
+`project_required`. V4.4 is observe-only: it never auto-modifies
+workflow, skills, or prompt files.
+
 The dashboard is bilingual: use the **EN / 中** toggle in the sidebar to
 switch between English and 简体中文. The choice is stored in the
 `issuepilot-locale` cookie and applies to every page (Command Center,

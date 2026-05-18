@@ -605,6 +605,20 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   支持单条 evidence 人工确认；`Copy as Markdown` 直接读取 orchestrator 的
   `/api/work-items/<id>/report.md`。实施计划：
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`。
+- **Quality Analytics（成功率 / 失败模式 / 下钻）** — _V4.4 已落地_。
+  `/reports` 新增 Quality Analytics section：从本地 `ReportStore`、
+  `WorkItemStore`、`RunReportArtifact`、`WorkItemReport`、`TaskPlan` 和
+  `TaskRunLink` 聚合 success / failure / rework / CI / review / missing-evidence
+  和 median duration 指标，含按指标切换的 Sparkline 趋势、按规则分类的
+  Failure Pattern 列表（`permission-issue` / `environment-issue` /
+  `unclear-requirements` / `review-rework` / `ci-failure` /
+  `missing-tests` / `missing-evidence`）以及可下钻到 run / work-item / task /
+  evidence 的明细表；新增 `GET /api/quality/summary` 支持 `window`、`from`、
+  `to`、`workflow`、`taskType`、`status`、`pattern` 过滤，team 模式继续走
+  `x-issuepilot-project` header。设计 spec：
+  `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，

@@ -1,9 +1,12 @@
 import type {
   AcceptWorkItemPlanRequest,
   ConfirmEvidenceResponse,
+  FailurePatternId,
   IssuePilotEvent,
   MarkTaskReworkRequest,
   OrchestratorStateSnapshot,
+  QualityStatusFilter,
+  QualitySummaryResponse,
   ReplanTaskRequest,
   ReportsListResponse,
   RunDetailResponse,
@@ -222,6 +225,40 @@ export function listReports(
   opts: ApiGetOptions = {},
 ): Promise<ReportsListResponse> {
   return apiGet<ReportsListResponse>("/api/reports", opts);
+}
+
+/**
+ * V4.4 Quality Analytics: fetch the aggregated quality summary the
+ * `/reports` page renders. `params.window` defaults to 7d at the server,
+ * so callers can omit it for the standard view. The function forwards the
+ * active project header via {@link resolveProjectHeader} so team mode
+ * routes the request through `x-issuepilot-project`.
+ */
+export interface GetQualitySummaryParams {
+  workflow?: string;
+  taskType?: string;
+  from?: string;
+  to?: string;
+  window?: "7d" | "30d";
+  pattern?: FailurePatternId;
+  status?: QualityStatusFilter;
+}
+
+export function getQualitySummary(
+  params: GetQualitySummaryParams = {},
+  opts: ApiGetOptions = {},
+): Promise<QualitySummaryResponse> {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value.length > 0) {
+      search.set(key, value);
+    }
+  }
+  const query = search.toString();
+  return apiGet<QualitySummaryResponse>(
+    `/api/quality/summary${query ? `?${query}` : ""}`,
+    opts,
+  );
 }
 
 export function getRunDetail(

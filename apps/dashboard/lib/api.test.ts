@@ -6,6 +6,7 @@ import {
   archiveRun,
   buildEvidenceFileUrl,
   confirmWorkItemTaskEvidence,
+  getQualitySummary,
   getRunDetail,
   getState,
   getWorkItem,
@@ -197,6 +198,56 @@ describe("listReports", () => {
     expect(result.reports[0]?.runId).toBe("r1");
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       `${FAKE_BASE}/api/reports`,
+    );
+  });
+});
+
+describe("Quality summary client", () => {
+  const stubSummary = {
+    scope: { mode: "single-project" },
+    filters: {
+      from: "2026-05-11T00:00:00.000Z",
+      to: "2026-05-18T00:00:00.000Z",
+      window: "7d",
+    },
+    metrics: [],
+    trends: [],
+    failurePatterns: [],
+    drilldown: [],
+    dimensions: [],
+    diagnostics: { invalidReportCount: 0 },
+  };
+
+  it("getQualitySummary sends query params and parses response", async () => {
+    const fetchMock = mockFetch(stubSummary);
+    await getQualitySummary({
+      window: "30d",
+      status: "run-failed",
+      pattern: "permission-issue",
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `${FAKE_BASE}/api/quality/summary?window=30d&status=run-failed&pattern=permission-issue`,
+    );
+  });
+
+  it("getQualitySummary uses active project header", async () => {
+    setActiveWorkItemsProject("proj-a");
+    try {
+      const fetchMock = mockFetch(stubSummary);
+      await getQualitySummary();
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const headers = init.headers as Record<string, string>;
+      expect(headers["x-issuepilot-project"]).toBe("proj-a");
+    } finally {
+      setActiveWorkItemsProject(null);
+    }
+  });
+
+  it("getQualitySummary omits empty params", async () => {
+    const fetchMock = mockFetch(stubSummary);
+    await getQualitySummary();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `${FAKE_BASE}/api/quality/summary`,
     );
   });
 });

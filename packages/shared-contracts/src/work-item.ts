@@ -141,6 +141,11 @@ export interface TaskNode {
   nonGoals?: string[];
   dependsOn: string[];
   suggestedValidation: string[];
+  /**
+   * Optional V4.4 quality analytics grouping. Older plans omit it and are
+   * bucketed as `unknown`.
+   */
+  taskType?: string;
   status: TaskNodeStatus;
   runIds: string[];
   riskLevel: RiskLevel;

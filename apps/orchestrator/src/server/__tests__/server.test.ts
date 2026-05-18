@@ -6,8 +6,13 @@ import { createEventBus } from "@issuepilot/observability";
 import {
   RUN_REPORT_VERSION,
   type ProjectSummary,
+  type QualitySummaryResponse,
   type RunReportArtifact,
+  type TaskPlan,
+  type TaskRunLink,
   type TeamRuntimeSummary,
+  type WorkItem,
+  type WorkItemReport,
 } from "@issuepilot/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -44,6 +49,8 @@ async function buildTestApp(
     reportsByProject?: ServerDeps["reportsByProject"];
     workItems?: ServerDeps["workItems"];
     workItemsByProject?: ServerDeps["workItemsByProject"];
+    quality?: ServerDeps["quality"];
+    qualityByProject?: ServerDeps["qualityByProject"];
   } = {},
 ) {
   const state = createRuntimeState();
@@ -70,6 +77,10 @@ async function buildTestApp(
       ...(overrides.workItems ? { workItems: overrides.workItems } : {}),
       ...(overrides.workItemsByProject
         ? { workItemsByProject: overrides.workItemsByProject }
+        : {}),
+      ...(overrides.quality ? { quality: overrides.quality } : {}),
+      ...(overrides.qualityByProject
+        ? { qualityByProject: overrides.qualityByProject }
         : {}),
     },
     { port: 0 },
@@ -181,19 +192,17 @@ describe("Orchestrator HTTP API", () => {
         projectCount: 1,
       }),
     );
-    const projectsGetter = vi.fn(
-      (): ProjectSummary[] => [
-        {
-          id: "platform-web",
-          name: "Platform Web",
-          workflowPath: "/srv/platform-web/WORKFLOW.md",
-          gitlabProject: "group/platform-web",
-          enabled: true,
-          activeRuns,
-          lastPollAt: null,
-        },
-      ],
-    );
+    const projectsGetter = vi.fn((): ProjectSummary[] => [
+      {
+        id: "platform-web",
+        name: "Platform Web",
+        workflowPath: "/srv/platform-web/WORKFLOW.md",
+        gitlabProject: "group/platform-web",
+        enabled: true,
+        activeRuns,
+        lastPollAt: null,
+      },
+    ]);
     const setup = await buildTestApp(async () => [], {
       runtime: runtimeGetter,
       projects: projectsGetter,
@@ -900,6 +909,8 @@ describe("run reports", () => {
       summary: (runId: string) =>
         runId === report.runId ? summary : undefined,
       allSummaries: () => [summary],
+      all: async () => [report],
+      invalidReportCount: () => 0,
     };
   }
 
@@ -976,6 +987,58 @@ describe("run reports", () => {
       await app.close();
     }
   });
+
+  it("GET /api/reports routes to the selected team project", async () => {
+    const projectAReport = {
+      ...fixtureReport(),
+      runId: "run-a",
+      issue: { ...fixtureReport().issue, projectId: "proj-a" },
+    };
+    const projectBReport = {
+      ...fixtureReport(),
+      runId: "run-b",
+      issue: { ...fixtureReport().issue, projectId: "proj-b" },
+    };
+    const { app } = await buildTestApp(async () => [], {
+      reportsByProject: new Map([
+        ["proj-a", buildReportStore(projectAReport)],
+        ["proj-b", buildReportStore(projectBReport)],
+      ]),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/reports",
+        headers: { "x-issuepilot-project": "proj-b" },
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body) as {
+        reports: Array<{ runId: string }>;
+      };
+      expect(body.reports).toEqual([
+        expect.objectContaining({ runId: "run-b" }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/reports requires project header in team mode", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      reportsByProject: new Map([
+        ["proj-a", buildReportStore(fixtureReport())],
+      ]),
+    });
+    try {
+      const resp = await app.inject({ method: "GET", url: "/api/reports" });
+      expect(resp.statusCode).toBe(400);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        code: "project_required",
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("V4.1 work item routes", () => {
@@ -983,7 +1046,9 @@ describe("V4.1 work item routes", () => {
 
   afterEach(async () => {
     await Promise.all(
-      tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+      tempDirs
+        .splice(0)
+        .map((dir) => rm(dir, { recursive: true, force: true })),
     );
   });
 
@@ -1023,54 +1088,63 @@ describe("V4.1 work item routes", () => {
     over: Partial<NonNullable<ServerDeps["workItems"]>> = {},
   ): NonNullable<ServerDeps["workItems"]> {
     return {
-      planFromIssue: over.planFromIssue ??
+      planFromIssue:
+        over.planFromIssue ??
         (async () => ({
           workItem: workItemFixture(),
           plan: planFixture(),
         })),
       list: over.list ?? (async () => [workItemFixture()]),
-      detail: over.detail ??
+      detail:
+        over.detail ??
         (async () => ({
           workItem: workItemFixture(),
           plan: { current: planFixture(), history: [] },
           tasks: [],
           runLinks: [],
         })),
-      acceptPlan: over.acceptPlan ??
+      acceptPlan:
+        over.acceptPlan ??
         (async () => ({
           workItem: workItemFixture({ status: "ready" }),
           plan: planFixture(),
         })),
-      regeneratePlan: over.regeneratePlan ??
+      regeneratePlan:
+        over.regeneratePlan ??
         (async () => ({
           workItem: workItemFixture({ status: "planning" }),
           plan: { ...planFixture(), version: 2, status: "draft" as const },
         })),
       skipTask: over.skipTask ?? (async () => ({ ok: true as const })),
       retryTask: over.retryTask ?? (async () => ({ ok: true as const })),
-      replanTask: over.replanTask ??
+      replanTask:
+        over.replanTask ??
         (async () => ({
           workItem: workItemFixture({ status: "ready" }),
           plan: { ...planFixture(), version: 2, status: "draft" as const },
         })),
-      markNeedsRework: over.markNeedsRework ?? (async () => ({ ok: true as const })),
+      markNeedsRework:
+        over.markNeedsRework ?? (async () => ({ ok: true as const })),
       unskipTask: over.unskipTask ?? (async () => ({ ok: true as const })),
-      graph: over.graph ??
+      graph:
+        over.graph ??
         (async () => ({
           levels: [["t1"], ["t2"]],
           edges: [{ from: "t1", to: "t2" }],
           criticalPathTaskIds: ["t1", "t2"],
         })),
       report: over.report ?? (async () => undefined),
-      getReportMarkdown: over.getReportMarkdown ??
-        (async () => "# Work item report\n"),
-      getEvidence: over.getEvidence ??
+      getReportMarkdown:
+        over.getReportMarkdown ?? (async () => "# Work item report\n"),
+      getEvidence:
+        over.getEvidence ??
         (async () => ({
           index: [],
           byTask: {},
           missing: [],
         })),
-      confirmTaskEvidence: over.confirmTaskEvidence ??
+      confirmTaskEvidence:
+        over.confirmTaskEvidence ??
         (async (_workItemId, _taskId, evidenceId) => ({
           evidenceId,
           confirmedAt: "2026-05-17T00:20:00.000Z",
@@ -1174,6 +1248,8 @@ describe("V4.1 work item routes", () => {
         return report ? buildRunReportSummary(report) : undefined;
       },
       allSummaries: () => [...byRun.values()].map(buildRunReportSummary),
+      all: async () => [...byRun.values()],
+      invalidReportCount: () => 0,
     };
   }
 
@@ -1190,9 +1266,7 @@ describe("V4.1 work item routes", () => {
       "screenshots",
     );
     await mkdir(evidenceDir, { recursive: true });
-    const png = Buffer.from([
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ]);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await writeFile(path.join(evidenceDir, "login.png"), png);
     return { taskWorktreePath, png };
   }
@@ -1215,15 +1289,17 @@ describe("V4.1 work item routes", () => {
   });
 
   it("POST /api/issues/:iid/plan returns work item and plan", async () => {
-    const planFromIssue = vi.fn(async (input: {
-      iid: number;
-      regenerate?: boolean;
-      operator: string;
-    }) => ({
-      workItem: workItemFixture(),
-      plan: planFixture(),
-      _captured: input,
-    }));
+    const planFromIssue = vi.fn(
+      async (input: {
+        iid: number;
+        regenerate?: boolean;
+        operator: string;
+      }) => ({
+        workItem: workItemFixture(),
+        plan: planFixture(),
+        _captured: input,
+      }),
+    );
     const { app } = await buildTestApp(async () => [], {
       workItems: buildWorkItemsService({
         planFromIssue: planFromIssue as never,
@@ -1377,7 +1453,9 @@ describe("V4.1 work item routes", () => {
       plan: { ...planFixture(), version: 2, status: "draft" as const },
     }));
     const { app } = await buildTestApp(async () => [], {
-      workItems: buildWorkItemsService({ regeneratePlan: regeneratePlan as never }),
+      workItems: buildWorkItemsService({
+        regeneratePlan: regeneratePlan as never,
+      }),
     });
     try {
       const resp = await app.inject({
@@ -1799,7 +1877,10 @@ describe("V4.1 work item routes", () => {
       run: { ...runReportFixture().run, workspacePath: taskWorktreePath },
     });
     const projectBReport = runReportFixture({
-      run: { ...runReportFixture().run, workspacePath: projectB.taskWorktreePath },
+      run: {
+        ...runReportFixture().run,
+        workspacePath: projectB.taskWorktreePath,
+      },
     });
     const getEvidenceA = vi.fn(async () => evidenceResponseFixture());
     const getEvidenceB = vi.fn(async () => ({
@@ -1836,7 +1917,10 @@ describe("V4.1 work item routes", () => {
             getEvidence: getEvidenceA as never,
           }),
         ],
-        ["proj-b", buildWorkItemsService({ getEvidence: getEvidenceB as never })],
+        [
+          "proj-b",
+          buildWorkItemsService({ getEvidence: getEvidenceB as never }),
+        ],
       ]) as never,
     });
     try {
@@ -2159,5 +2243,396 @@ describe("V4.1 work item routes", () => {
     } finally {
       await app.close();
     }
+  });
+
+  describe("V4.4 quality summary route", () => {
+    function fixtureRunReport(over: {
+      runId: string;
+      projectId?: string;
+      status?: "completed" | "failed" | "blocked";
+      ciStatus?: "success" | "failed";
+    }): RunReportArtifact {
+      return {
+        version: RUN_REPORT_VERSION,
+        runId: over.runId,
+        issue: {
+          projectId: over.projectId ?? "proj-a",
+          iid: 1,
+          title: "Issue",
+          url: "https://gitlab.example/1",
+          labels: ["human-review"],
+        },
+        run: {
+          status: over.status ?? "completed",
+          attempt: 1,
+          branch: "issuepilot/1",
+          workspacePath: "/tmp/ws",
+          startedAt: "2026-05-18T00:00:00.000Z",
+          endedAt: "2026-05-18T00:05:00.000Z",
+          durations: { totalMs: 300_000 },
+        },
+        handoff: {
+          summary: "ok",
+          validation: [],
+          risks: [],
+          followUps: [],
+          nextAction: "review",
+        },
+        diff: { summary: "", filesChanged: 0, notableFiles: [] },
+        checks: [{ name: "unit", status: "passed" }],
+        mergeReadiness: {
+          mode: "dry-run",
+          status: "unknown",
+          reasons: [],
+          evaluatedAt: "2026-05-18T00:05:00.000Z",
+        },
+        notes: {},
+        ...(over.ciStatus
+          ? {
+              ci: {
+                status: over.ciStatus,
+                checkedAt: "2026-05-18T00:05:00.000Z",
+              },
+            }
+          : {}),
+      };
+    }
+
+    function reportStoreWith(reports: RunReportArtifact[]) {
+      return {
+        save: async () => {},
+        get: async (runId: string) => reports.find((r) => r.runId === runId),
+        summary: () => undefined,
+        allSummaries: () => [],
+        all: async () => reports,
+        invalidReportCount: () => 0,
+      };
+    }
+
+    it("GET /api/quality/summary returns quality summary", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        reports: reportStoreWith([
+          fixtureRunReport({ runId: "ok", status: "completed" }),
+          fixtureRunReport({ runId: "bad", status: "failed" }),
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?window=7d",
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body);
+        expect(body.metrics).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: "success-rate" }),
+          ]),
+        );
+        expect(body.scope).toEqual({ mode: "single-project" });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("rejects project query to avoid scope ambiguity", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        reports: reportStoreWith([]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?project=proj-a",
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "project_query_unsupported",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("rejects unsupported status", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        reports: reportStoreWith([]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?status=failed",
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "invalid_status",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("requires x-issuepilot-project in team mode", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        qualityByProject: new Map([
+          ["proj-a", { reports: reportStoreWith([]) }],
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+        });
+        expect(resp.statusCode).toBe(400);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "project_required",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("rejects unknown project id in team mode", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        qualityByProject: new Map([
+          ["proj-a", { reports: reportStoreWith([]) }],
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+          headers: { "x-issuepilot-project": "missing" },
+        });
+        expect(resp.statusCode).toBe(404);
+        expect(JSON.parse(resp.body)).toMatchObject({
+          code: "project_not_found",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("routes team quality summary to the selected project", async () => {
+      const { app } = await buildTestApp(async () => [], {
+        qualityByProject: new Map([
+          [
+            "proj-a",
+            {
+              reports: reportStoreWith([
+                fixtureRunReport({ runId: "a", projectId: "proj-a" }),
+              ]),
+            },
+          ],
+          [
+            "proj-b",
+            {
+              reports: reportStoreWith([
+                fixtureRunReport({ runId: "b", projectId: "proj-b" }),
+              ]),
+            },
+          ],
+        ]),
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+          headers: { "x-issuepilot-project": "proj-b" },
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body);
+        expect(body.scope).toEqual({
+          mode: "team-project",
+          projectId: "proj-b",
+        });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("returns stable empty response when stores are absent", async () => {
+      const { app } = await buildTestApp(async () => [], {});
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary",
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body);
+        expect(body.metrics.length).toBeGreaterThan(0);
+        expect(body.drilldown).toEqual([]);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("V4.4 summarizes quality from reports and work items", async () => {
+      const okRun: RunReportArtifact = {
+        ...fixtureRunReport({
+          runId: "ok",
+          projectId: "proj-a",
+          status: "completed",
+          ciStatus: "success",
+        }),
+      };
+      const badRun: RunReportArtifact = {
+        ...fixtureRunReport({
+          runId: "bad",
+          projectId: "proj-a",
+          status: "failed",
+          ciStatus: "failed",
+        }),
+        run: {
+          status: "failed",
+          attempt: 1,
+          branch: "issuepilot/bad",
+          workspacePath: "/tmp/ws",
+          startedAt: "2026-05-18T00:00:00.000Z",
+          endedAt: "2026-05-18T00:05:00.000Z",
+          durations: { totalMs: 300_000 },
+          lastError: {
+            classification: "auth",
+            code: "401",
+            message: "401 unauthorized while pushing branch",
+          },
+        },
+      };
+
+      const workItem: WorkItem = {
+        workItemId: "wi-1",
+        sourceIssue: {
+          projectId: "proj-a",
+          iid: 7,
+          url: "https://gl/-/issues/7",
+          title: "Big",
+        },
+        title: "Big",
+        goal: "g",
+        acceptanceCriteria: [],
+        status: "running",
+        taskIds: ["t1", "t2"],
+        createdAt: "2026-05-18T00:00:00.000Z",
+        updatedAt: "2026-05-18T00:10:00.000Z",
+      };
+      const plan: TaskPlan = {
+        planId: "tp_1",
+        workItemId: "wi-1",
+        version: 1,
+        tasks: [
+          {
+            taskId: "t1",
+            title: "Task 1",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            status: "completed",
+            runIds: ["run-t1"],
+            riskLevel: "low",
+          },
+          {
+            taskId: "t2",
+            title: "Task 2",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            status: "needs_rework",
+            runIds: ["run-t2"],
+            riskLevel: "low",
+            needsReworkReason: "Reviewer requested broader test coverage",
+          },
+        ],
+        dependencies: [],
+        operatorEdits: [],
+        status: "accepted",
+        acceptedAt: "2026-05-18T00:00:00.000Z",
+      };
+      const links: TaskRunLink[] = [
+        {
+          taskId: "t1",
+          runId: "run-t1",
+          attempt: 1,
+          status: "completed",
+          branch: "issuepilot/t1",
+          startedAt: "2026-05-18T00:00:00.000Z",
+          completedAt: "2026-05-18T00:01:00.000Z",
+        },
+        {
+          taskId: "t2",
+          runId: "run-t2",
+          attempt: 1,
+          status: "completed",
+          branch: "issuepilot/t2",
+          startedAt: "2026-05-18T00:02:00.000Z",
+          completedAt: "2026-05-18T00:03:00.000Z",
+        },
+      ];
+      const workItemReport: WorkItemReport = {
+        workItemId: "wi-1",
+        overallStatus: "partial",
+        taskSummaries: [],
+        validationSummary: "",
+        riskSummary: "",
+        evidence: { index: [], byTask: {} },
+        openQuestions: [],
+        recommendedNextActions: [],
+        humanReviewChecklist: [
+          {
+            itemId: "h1",
+            taskId: "t1",
+            label: "Evidence missing for Task 1",
+            reason: "missing-evidence",
+            confirmed: false,
+          },
+        ],
+        generatedAt: "2026-05-18T00:10:00.000Z",
+      };
+      const workItems = {
+        listWorkItems: async () => [workItem],
+        getCurrentPlan: async (id: string) =>
+          id === "wi-1" ? plan : undefined,
+        listAllTaskRunLinks: async (id: string) => (id === "wi-1" ? links : []),
+        getReport: async (id: string) =>
+          id === "wi-1" ? workItemReport : undefined,
+      };
+
+      const { app } = await buildTestApp(async () => [], {
+        quality: {
+          reports: reportStoreWith([okRun, badRun]),
+          workItems,
+        },
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?window=7d",
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body) as QualitySummaryResponse;
+        const successRate = body.metrics.find((m) => m.id === "success-rate");
+        expect(successRate).toMatchObject({ numerator: 1, denominator: 2 });
+        const patternIds = body.failurePatterns.map((p) => p.patternId);
+        expect(patternIds).toEqual(
+          expect.arrayContaining([
+            "permission-issue",
+            "ci-failure",
+            "review-rework",
+            "missing-evidence",
+          ]),
+        );
+        expect(body.drilldown).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              target: {
+                kind: "evidence",
+                href: "/work-items/wi-1?view=evidence",
+              },
+            }),
+          ]),
+        );
+      } finally {
+        await app.close();
+      }
+    });
   });
 });

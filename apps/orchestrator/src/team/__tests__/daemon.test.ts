@@ -35,8 +35,7 @@ const baseConfig = (): TeamConfig => ({
       id: "platform-web",
       name: "Platform Web",
       projectPath: "/srv/issuepilot-config/projects/platform-web.yaml",
-      workflowProfilePath:
-        "/srv/issuepilot-config/workflows/default-web.md",
+      workflowProfilePath: "/srv/issuepilot-config/workflows/default-web.md",
       enabled: true,
       ci: null,
     },
@@ -136,7 +135,11 @@ describe("startTeamDaemon", () => {
     });
 
     const handle = await startTeamDaemon(
-      { configPath: "/srv/issuepilot.team.yaml", host: "127.0.0.1", port: 4738 },
+      {
+        configPath: "/srv/issuepilot.team.yaml",
+        host: "127.0.0.1",
+        port: 4738,
+      },
       {
         loadTeamConfig,
         createProjectRegistry,
@@ -171,7 +174,11 @@ describe("startTeamDaemon", () => {
 
     cachedActive = 1;
     summariesValue = [
-      { ...summaries[0]!, activeRuns: 1, lastPollAt: "2026-05-15T01:00:00.000Z" },
+      {
+        ...summaries[0]!,
+        activeRuns: 1,
+        lastPollAt: "2026-05-15T01:00:00.000Z",
+      },
       summaries[1]!,
     ];
     expect(runtimeGetter().activeLeases).toBe(1);
@@ -219,7 +226,11 @@ describe("startTeamDaemon", () => {
     });
 
     const handle = await startTeamDaemon(
-      { configPath: "/srv/issuepilot.team.yaml", host: "127.0.0.1", port: 4738 },
+      {
+        configPath: "/srv/issuepilot.team.yaml",
+        host: "127.0.0.1",
+        port: 4738,
+      },
       {
         loadTeamConfig,
         createProjectRegistry,
@@ -230,6 +241,133 @@ describe("startTeamDaemon", () => {
 
     try {
       expect(createdDeps?.operatorActions).toBeUndefined();
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it("wires V4.4 quality deps per project in team daemon", async () => {
+    const loadTeamConfig = vi.fn(async () => baseConfig());
+    const enabledProjects = [
+      {
+        id: "project-a",
+        name: "Project A",
+        projectPath: "/srv/issuepilot-config/projects/project-a.yaml",
+        workflowProfilePath: "/srv/issuepilot-config/workflows/a.md",
+        effectiveWorkflowPath: "/tmp/a.workflow.md",
+        enabled: true as const,
+        workflow: {
+          source: {
+            path: "/tmp/a.workflow.md",
+            sha256: "sha",
+            loadedAt: new Date(0).toISOString(),
+          },
+          tracker: {
+            kind: "gitlab",
+            baseUrl: "https://gitlab.example",
+            projectId: "group/project-a",
+            handoffLabel: "human-review",
+          },
+          agent: {
+            command: "codex",
+            args: [],
+            timeoutMs: 60_000,
+            maxConcurrentAgents: 1,
+            cwd: null,
+            envAllow: [],
+            stdinPrompt: false,
+          },
+          retry: { maxAttempts: 1, backoffMs: 1000 },
+          workspace: { root: "/tmp/issuepilot-test-a" },
+        },
+        lastPollAt: null,
+        activeRuns: 0,
+      },
+      {
+        id: "project-b",
+        name: "Project B",
+        projectPath: "/srv/issuepilot-config/projects/project-b.yaml",
+        workflowProfilePath: "/srv/issuepilot-config/workflows/b.md",
+        effectiveWorkflowPath: "/tmp/b.workflow.md",
+        enabled: true as const,
+        workflow: {
+          source: {
+            path: "/tmp/b.workflow.md",
+            sha256: "sha",
+            loadedAt: new Date(0).toISOString(),
+          },
+          tracker: {
+            kind: "gitlab",
+            baseUrl: "https://gitlab.example",
+            projectId: "group/project-b",
+            handoffLabel: "human-review",
+          },
+          agent: {
+            command: "codex",
+            args: [],
+            timeoutMs: 60_000,
+            maxConcurrentAgents: 1,
+            cwd: null,
+            envAllow: [],
+            stdinPrompt: false,
+          },
+          retry: { maxAttempts: 1, backoffMs: 1000 },
+          workspace: { root: "/tmp/issuepilot-test-b" },
+        },
+        lastPollAt: null,
+        activeRuns: 0,
+      },
+    ] as never;
+    const registry: ProjectRegistry = {
+      enabledProjects: () => enabledProjects,
+      project: () => undefined,
+      summaries: () => summaries,
+      updateProjectPoll: () => {},
+      updateProjectActiveRuns: () => {},
+    };
+    const createProjectRegistry = vi.fn(async () => registry);
+    const leaseStore: LeaseStore = {
+      acquire: vi.fn(async () => null),
+      release: vi.fn(async () => undefined),
+      heartbeat: vi.fn(async () => null),
+      expireStale: vi.fn(async () => []),
+      active: vi.fn(async () => []),
+      activeCount: () => 0,
+    };
+    const createLeaseStore = vi.fn(() => leaseStore);
+    const createServer = vi.fn(async (deps: ServerDeps) => {
+      createdDeps = deps;
+      const close = vi.fn(async () => {});
+      const fake: FakeServer = {
+        listening: true,
+        close,
+        server: { address: () => ({ port: 4738 }) },
+      };
+      createdApp = fake;
+      return fake as never;
+    });
+
+    const handle = await startTeamDaemon(
+      {
+        configPath: "/srv/issuepilot.team.yaml",
+        host: "127.0.0.1",
+        port: 4738,
+      },
+      {
+        loadTeamConfig,
+        createProjectRegistry,
+        createServer,
+        createLeaseStore,
+      },
+    );
+
+    try {
+      expect(createdDeps?.qualityByProject?.has("project-a")).toBe(true);
+      expect(createdDeps?.qualityByProject?.has("project-b")).toBe(true);
+      const projectA = createdDeps?.qualityByProject?.get("project-a");
+      expect(projectA?.metadata?.workflow).toBe("a");
+      expect(projectA?.reports).toBeDefined();
+      expect(projectA?.workItems).toBeDefined();
     } finally {
       await handle.stop();
     }

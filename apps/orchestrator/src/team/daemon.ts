@@ -4,18 +4,13 @@ import * as path from "node:path";
 import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
-import {
-  createReportStore,
-  type ReportStore,
-} from "../reports/store.js";
+import type { QualityCollectorDeps } from "../quality/collect.js";
+import { createReportStore, type ReportStore } from "../reports/store.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
 } from "../runtime/leases.js";
-import {
-  createRuntimeState,
-  type RuntimeState,
-} from "../runtime/state.js";
+import { createRuntimeState, type RuntimeState } from "../runtime/state.js";
 import { createServer, type WorkItemService } from "../server/index.js";
 import {
   createWorkItemPlanner,
@@ -54,9 +49,7 @@ export interface StartTeamDaemonOptions {
 }
 
 export interface StartTeamDaemonDeps {
-  loadTeamConfig?:
-    | ((configPath: string) => Promise<TeamConfig>)
-    | undefined;
+  loadTeamConfig?: ((configPath: string) => Promise<TeamConfig>) | undefined;
   createProjectRegistry?:
     | ((
         config: TeamConfig,
@@ -124,7 +117,7 @@ function buildProjectWorkItemService(
   project: RegisteredProject,
   eventBus: EventBus<TeamEvent>,
   reportStore: ReportStore,
-): WorkItemService {
+): { service: WorkItemService; store: ReturnType<typeof createWorkItemStore> } {
   const store = createWorkItemStore({
     rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
   });
@@ -135,7 +128,7 @@ function buildProjectWorkItemService(
       );
     },
   });
-  return createWorkItemService({
+  const service = createWorkItemService({
     store,
     planner,
     fetchIssue: async () => {
@@ -157,6 +150,7 @@ function buildProjectWorkItemService(
       } as unknown as TeamEvent);
     },
   });
+  return { service, store };
 }
 
 /**
@@ -183,8 +177,7 @@ export async function startTeamDaemon(
   const createRegistry =
     deps.createProjectRegistry ?? defaultCreateProjectRegistry;
   const createServerImpl = deps.createServer ?? createServer;
-  const createLeaseStoreImpl =
-    deps.createLeaseStore ?? defaultCreateLeaseStore;
+  const createLeaseStoreImpl = deps.createLeaseStore ?? defaultCreateLeaseStore;
 
   const config = await loadConfig(configPath);
   const registry = await createRegistry(
@@ -226,15 +219,25 @@ export async function startTeamDaemon(
   // and §17 of the design spec).
   const workItemsByProject = new Map<string, WorkItemService>();
   const reportsByProject = new Map<string, ReportStore>();
+  const qualityByProject = new Map<string, QualityCollectorDeps>();
   for (const project of registry.enabledProjects()) {
     const reportStore = createReportStore({
       rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
     });
     reportsByProject.set(project.id, reportStore);
-    workItemsByProject.set(
-      project.id,
-      buildProjectWorkItemService(project, eventBus, reportStore),
-    );
+    const { service: workItemService, store: workItemStore } =
+      buildProjectWorkItemService(project, eventBus, reportStore);
+    workItemsByProject.set(project.id, workItemService);
+    qualityByProject.set(project.id, {
+      metadata: {
+        workflow: path.basename(
+          project.workflowProfilePath,
+          path.extname(project.workflowProfilePath),
+        ),
+      },
+      reports: reportStore,
+      workItems: workItemStore,
+    });
   }
 
   const app = await createServerImpl(
@@ -260,6 +263,7 @@ export async function startTeamDaemon(
       readLogsTail: async () => [],
       workItemsByProject,
       reportsByProject,
+      qualityByProject,
     },
     { host, port },
   );

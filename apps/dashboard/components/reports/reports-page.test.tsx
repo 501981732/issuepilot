@@ -1,10 +1,35 @@
 // @vitest-environment jsdom
+import type { QualitySummaryResponse } from "@issuepilot/shared-contracts";
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { renderWithIntl as render } from "../../test/intl";
 
 import { ReportsPage } from "./reports-page";
+
+vi.mock("./quality-analytics", () => ({
+  QualityAnalytics: () => <section aria-label="Quality analytics" />,
+}));
+
+function qualitySummaryFixture(
+  over: Partial<QualitySummaryResponse> = {},
+): QualitySummaryResponse {
+  return {
+    scope: { mode: "single-project" },
+    filters: {
+      from: "2026-05-11T00:00:00.000Z",
+      to: "2026-05-18T00:00:00.000Z",
+      window: "7d",
+    },
+    metrics: [],
+    trends: [],
+    failurePatterns: [],
+    drilldown: [],
+    dimensions: [],
+    diagnostics: { invalidReportCount: 0 },
+    ...over,
+  };
+}
 
 describe("ReportsPage", () => {
   it("renders counters and table rows", () => {
@@ -37,6 +62,7 @@ describe("ReportsPage", () => {
             updatedAt: "2026-05-16T00:01:00.000Z",
           },
         ]}
+        quality={qualitySummaryFixture()}
       />,
     );
 
@@ -45,20 +71,37 @@ describe("ReportsPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Fix checkout")).toBeInTheDocument();
     expect(screen.getByText("Refactor login")).toBeInTheDocument();
-    // V2.5 Swiss Modernism redesign added a donut legend that also
-    // renders the readiness vocabulary, so the same word appears
-    // multiple times on the page. Asserting "at least one" keeps
-    // the contract honest (the table cell must still display the
-    // status) without coupling the test to the exact DOM layout.
     expect(screen.getAllByText("ready").length).toBeGreaterThan(0);
     expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
-    // "1m" now appears both in the median-duration counter and the
-    // per-run table row, so we assert at least one instead of exactly one.
     expect(screen.getAllByText("1m").length).toBeGreaterThan(0);
   });
 
+  it("renders the quality analytics section", () => {
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture({
+          metrics: [
+            {
+              id: "success-rate",
+              label: "Success rate",
+              value: 50,
+              unit: "percent",
+              numerator: 1,
+              denominator: 2,
+              direction: "unknown",
+            },
+          ],
+        })}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: /Quality analytics/i }),
+    ).toBeInTheDocument();
+  });
+
   it("renders an empty state when no reports exist", () => {
-    render(<ReportsPage reports={[]} />);
+    render(<ReportsPage reports={[]} quality={qualitySummaryFixture()} />);
     expect(screen.getByText(/No reports yet/i)).toBeInTheDocument();
   });
 });

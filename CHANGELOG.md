@@ -2,6 +2,66 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.4 Quality Analytics
+
+### Added
+
+- 2026-05-18 — **V4.4 Quality Analytics**：以 `/reports` 为入口的本地
+  质量分析能力。设计源头：
+  `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`。
+  - **共享 contract**（`@issuepilot/shared-contracts`）：新增
+    `QualitySummaryResponse` 及 `QualityMetricId` / `QualityStatusFilter` /
+    `FailurePatternId` 枚举与 type guard，从 `api.ts` 重新导出。
+  - **orchestrator**：新增 `apps/orchestrator/src/quality/`
+    （`collect.ts` / `filters.ts` / `patterns.ts` / `aggregate.ts`），
+    通过 `ReportStore.all()` 与 `WorkItemStore` 直接读现有持久化文件，
+    无 LLM、无 Postgres、无后台 job；新增
+    `GET /api/quality/summary` 路由，支持 `window` / `from` / `to` /
+    `workflow` / `taskType` / `status` / `pattern` 过滤；team 模式继续
+    走 `x-issuepilot-project` header，缺失时返回
+    `project_required`；显式拒绝 `project` query 以避免和 header
+    重叠。
+  - **daemon wiring**：`apps/orchestrator/src/daemon.ts` 与
+    `apps/orchestrator/src/team/daemon.ts` 把 `reportStore` /
+    `workItemStore` 注入 `createServer({ quality, qualityByProject })`，
+    team 模式按 project 维护独立的 `QualityCollectorDeps`。
+  - **dashboard**：`apps/dashboard/lib/api.ts` 新增
+    `getQualitySummary`；`/reports` 页面并行拉取
+    `listReports()` 与 `getQualitySummary()`；新增
+    `apps/dashboard/components/reports/quality-analytics.tsx`
+    渲染 SummaryStrip、TrendPanel、PatternList、DrilldownTable，使用
+    既有 `Card` / `Badge` / `StatusDot` / `Sparkline` shadcn-style 组件，
+    并把选中的 pattern 写回 URL，方便分享视图；中英 i18n
+    （`apps/dashboard/i18n/messages/en.json`,
+    `apps/dashboard/i18n/messages/zh.json`）补齐
+    `reportsPage.quality.*`。
+  - **deterministic 分类**：失败模式按规则识别，包括
+    `permission-issue` / `environment-issue` /
+    `unclear-requirements` / `review-rework` / `ci-failure` /
+    `missing-tests` / `missing-evidence`，全部基于现有
+    `lastError` / `checks` / `ci` / `reviewFeedback` /
+    `humanReviewChecklist` / `evidence.byTask` 字段，不引入 LLM。
+  - **不变量保持**：不修改 `RunStatus` / `PipelineStatus` 枚举，不创建
+    新的持久化目录，不修改 work-item label 状态机；V4.4 只读，不会
+    自动改写 workflow / skills / prompt。
+
+### Tests
+
+- 2026-05-18 — **V4.4 Quality Analytics 测试覆盖**：新增
+  `packages/shared-contracts/src/__tests__/quality.test.ts`、
+  `apps/orchestrator/src/quality/__tests__/`
+  （`collect.test.ts` / `filters.test.ts` / `patterns.test.ts` /
+  `aggregate.test.ts`）、
+  `apps/orchestrator/src/server/__tests__/server.test.ts` 中新增的
+  `V4.4 quality summary route` describe 块（含失败模式与
+  evidence drill-down 集成断言），以及
+  `apps/dashboard/lib/api.test.ts`、
+  `apps/dashboard/components/reports/quality-analytics.test.tsx`、
+  `apps/dashboard/components/reports/reports-page.test.tsx`
+  对客户端、UI、reports 页面装配的覆盖。
+
 ## [Unreleased] V4.3 Review Packet + Evidence
 
 ### Added

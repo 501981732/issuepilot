@@ -435,6 +435,26 @@ readiness 判定结果。聚合页地址是
 `http://127.0.0.1:3000/reports`，会用本地报告产物汇总 ready-to-merge /
 blocked / failed 计数器，并列出每个 run 的报告摘要。
 
+Reports 页同时挂载 **Quality Analytics** section（V4.4）。它从同一份
+本地 `ReportStore`、`WorkItemStore`、`RunReportArtifact`、
+`WorkItemReport`、`TaskPlan` 与 `TaskRunLink` 派生：
+
+- **Summary strip**：success rate、failure rate、rework rate、CI pass
+  rate、review hit rate、missing-evidence rate、中位执行时长，附带与上一窗口
+  的 delta。
+- **Trend panel**：按选中指标渲染一条 Sparkline。
+- **Failure patterns**：基于规则的失败模式列表（`permission-issue` /
+  `environment-issue` / `unclear-requirements` / `review-rework` /
+  `ci-failure` / `missing-tests` / `missing-evidence`），点选即可过滤下钻
+  明细，并同步到 URL 上的 `pattern` 参数，方便分享视图。
+- **Drilldown 明细**：每行回链到具体 run、work item、task 或 evidence。
+
+底层 API 是 `GET /api/quality/summary`，可选过滤参数包括 `window`、
+`from`、`to`、`workflow`、`taskType`、`status`、`pattern`。team 模式
+下 dashboard 会带上 `x-issuepilot-project` header；缺失时 API 直接返回
+`project_required`。V4.4 只读：不会自动改写 workflow / skills /
+prompt 文件。
+
 > **Merge readiness 仅做 dry-run**：只是告诉你 CI、approval、review
 > feedback 和 risks 是否看起来已经就绪，IssuePilot 不会调用任何 GitLab
 > merge API；真正的 merge 决策仍由人类掌握。

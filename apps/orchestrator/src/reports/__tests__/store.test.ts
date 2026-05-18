@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,6 +37,49 @@ describe("report store", () => {
 
       const body = await readFile(join(root, "reports", "run-1.json"), "utf8");
       expect(JSON.parse(body).runId).toBe("run-1");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lists full report artifacts from memory and disk", async () => {
+    const root = await mkdtemp(join(tmpdir(), "issuepilot-report-"));
+    try {
+      const store = createReportStore({ rootDir: root });
+      const report = createInitialReport({
+        runId: "run-3",
+        issue: {
+          iid: 1,
+          title: "Issue",
+          url: "https://gitlab.example/1",
+          projectId: "proj-a",
+          labels: ["human-review"],
+        },
+        status: "completed",
+        attempt: 1,
+        branch: "issuepilot/1",
+        workspacePath: root,
+        startedAt: "2026-05-18T00:00:00.000Z",
+      });
+      await store.save(report);
+
+      await expect(store.all()).resolves.toEqual([report]);
+      const fresh = createReportStore({ rootDir: root });
+      await expect(fresh.all()).resolves.toEqual([report]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts invalid report JSON files skipped during full artifact load", async () => {
+    const root = await mkdtemp(join(tmpdir(), "issuepilot-report-"));
+    try {
+      const store = createReportStore({ rootDir: root });
+      await mkdir(join(root, "reports"), { recursive: true });
+      await writeFile(join(root, "reports", "broken.json"), "{", "utf8");
+
+      await expect(store.all()).resolves.toEqual([]);
+      expect(store.invalidReportCount()).toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

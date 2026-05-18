@@ -1408,6 +1408,11 @@ export async function startDaemon(
           archiveRun(input, operatorActionDeps()),
       },
       reports: reportStore,
+      quality: {
+        metadata: { workflow: path.basename(workflowPath) },
+        reports: reportStore,
+        workItems: workItemStore,
+      },
     },
     { host, port },
   );

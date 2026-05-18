@@ -649,6 +649,22 @@ productionizes the capabilities that prove valuable here.
   `/api/work-items/<id>/report.md` from the orchestrator. Implementation
   plan:
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`.
+- **Quality Analytics (success rate / failure patterns / drill-down)** —
+  *landed in V4.4*. `/reports` gains a Quality Analytics section that
+  aggregates success, failure, rework, CI, review, missing-evidence, and
+  median-duration metrics from the local `ReportStore`, `WorkItemStore`,
+  `RunReportArtifact`, `WorkItemReport`, `TaskPlan`, and `TaskRunLink`
+  stores. It surfaces a Sparkline trend per metric, a rule-based Failure
+  Pattern list (`permission-issue` / `environment-issue` /
+  `unclear-requirements` / `review-rework` / `ci-failure` /
+  `missing-tests` / `missing-evidence`), and a drill-down table that links
+  back to the originating run / work item / task / evidence. A new
+  `GET /api/quality/summary` endpoint accepts `window`, `from`, `to`,
+  `workflow`, `taskType`, `status`, and `pattern` filters; team mode still
+  scopes by `x-issuepilot-project`. Design spec:
+  `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`;
+  implementation plan:
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.

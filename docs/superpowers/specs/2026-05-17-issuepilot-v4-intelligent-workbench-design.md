@@ -19,6 +19,9 @@
   （已落地，覆盖 §7 V4.2 + §12.3 + §12.4 + §14.2 + branch chaining）。
 - V4.3 Review Packet + Evidence：`docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`
   （已落地，覆盖 §7 V4.3 + §14.3 + §14.4 + §15）。
+- V4.4 Quality Analytics：
+  `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`
+  （已完成设计，下一步进入实施计划）。
 
 ## 1. Roadmap 决策
 

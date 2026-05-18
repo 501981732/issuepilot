@@ -1,6 +1,9 @@
 "use client";
 
-import type { RunReportSummary } from "@issuepilot/shared-contracts";
+import type {
+  QualitySummaryResponse,
+  RunReportSummary,
+} from "@issuepilot/shared-contracts";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
@@ -15,8 +18,11 @@ import {
   StatusDot,
 } from "../ui/status";
 
+import { QualityAnalytics } from "./quality-analytics";
+
 interface ReportsPageProps {
   reports: RunReportSummary[];
+  quality: QualitySummaryResponse;
 }
 
 type SortKey = "updatedAt" | "runId" | "status" | "readiness" | "duration";
@@ -100,7 +106,7 @@ function medianDurationByDay(reports: RunReportSummary[]): number[] {
   return out;
 }
 
-export function ReportsPage({ reports }: ReportsPageProps) {
+export function ReportsPage({ reports, quality }: ReportsPageProps) {
   const t = useTranslations("reportsPage");
   const tCommon = useTranslations("common");
   const dash = tCommon("dash");
@@ -275,6 +281,8 @@ export function ReportsPage({ reports }: ReportsPageProps) {
           trendLabel={t("trendLabel", { label: t("medianDuration") })}
         />
       </section>
+
+      <QualityAnalytics summary={quality} />
 
       <section className="grid gap-3 lg:grid-cols-3">
         <Card className="lg:col-span-2">

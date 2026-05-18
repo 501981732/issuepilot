@@ -1018,6 +1018,52 @@ describe("startDaemon human-review event publishing", () => {
     }
   });
 
+  it("wires V4.4 quality summary deps in single daemon", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-daemon-quality-"),
+    );
+    const workflow = createWorkflow(root);
+    let serverDeps: ServerDeps | undefined;
+    const createServer = vi.fn(async (deps: ServerDeps) => {
+      serverDeps = deps;
+      return createFakeServer();
+    });
+
+    const daemon = await startDaemon(
+      { workflowPath: workflow.source.path },
+      {
+        workflowLoader: {
+          loadOnce: vi.fn(async () => workflow),
+          start: vi.fn(async () => ({
+            stop: vi.fn(async () => {}),
+          })),
+          render: vi.fn(() => "prompt"),
+        },
+        createGitLab: vi.fn(async () =>
+          createGitLabForHumanReviewScanPollution(),
+        ),
+        createServer,
+        startLoop: vi.fn(() => ({
+          tick: vi.fn(async () => {}),
+          stop: vi.fn(async () => {}),
+        })),
+        state: createRuntimeState(),
+      },
+    );
+
+    try {
+      expect(serverDeps).toBeDefined();
+      expect(serverDeps?.quality?.metadata?.workflow).toBe(
+        path.basename(workflow.source.path),
+      );
+      expect(serverDeps?.quality?.reports).toBeDefined();
+      expect(serverDeps?.quality?.workItems).toBeDefined();
+    } finally {
+      await daemon.stop();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("patches the task report with scanned evidence after dispatch", async () => {
     const workspacePath = await fs.mkdtemp(
       path.join(os.tmpdir(), "issuepilot-task-worktree-"),

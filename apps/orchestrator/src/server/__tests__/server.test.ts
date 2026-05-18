@@ -6,8 +6,13 @@ import { createEventBus } from "@issuepilot/observability";
 import {
   RUN_REPORT_VERSION,
   type ProjectSummary,
+  type QualitySummaryResponse,
   type RunReportArtifact,
+  type TaskPlan,
+  type TaskRunLink,
   type TeamRuntimeSummary,
+  type WorkItem,
+  type WorkItemReport,
 } from "@issuepilot/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -2376,6 +2381,177 @@ describe("V4.1 work item routes", () => {
         const body = JSON.parse(resp.body);
         expect(body.metrics.length).toBeGreaterThan(0);
         expect(body.drilldown).toEqual([]);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("V4.4 summarizes quality from reports and work items", async () => {
+      const okRun: RunReportArtifact = {
+        ...fixtureRunReport({
+          runId: "ok",
+          projectId: "proj-a",
+          status: "completed",
+          ciStatus: "success",
+        }),
+      };
+      const badRun: RunReportArtifact = {
+        ...fixtureRunReport({
+          runId: "bad",
+          projectId: "proj-a",
+          status: "failed",
+          ciStatus: "failed",
+        }),
+        run: {
+          status: "failed",
+          attempt: 1,
+          branch: "issuepilot/bad",
+          workspacePath: "/tmp/ws",
+          startedAt: "2026-05-18T00:00:00.000Z",
+          endedAt: "2026-05-18T00:05:00.000Z",
+          durations: { totalMs: 300_000 },
+          lastError: {
+            classification: "auth",
+            code: "401",
+            message: "401 unauthorized while pushing branch",
+          },
+        },
+      };
+
+      const workItem: WorkItem = {
+        workItemId: "wi-1",
+        sourceIssue: {
+          projectId: "proj-a",
+          iid: 7,
+          url: "https://gl/-/issues/7",
+          title: "Big",
+        },
+        title: "Big",
+        goal: "g",
+        acceptanceCriteria: [],
+        status: "running",
+        taskIds: ["t1", "t2"],
+        createdAt: "2026-05-18T00:00:00.000Z",
+        updatedAt: "2026-05-18T00:10:00.000Z",
+      };
+      const plan: TaskPlan = {
+        planId: "tp_1",
+        workItemId: "wi-1",
+        version: 1,
+        tasks: [
+          {
+            taskId: "t1",
+            title: "Task 1",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            status: "completed",
+            runIds: ["run-t1"],
+            riskLevel: "low",
+          },
+          {
+            taskId: "t2",
+            title: "Task 2",
+            goal: "g",
+            scope: "s",
+            dependsOn: [],
+            suggestedValidation: [],
+            status: "needs_rework",
+            runIds: ["run-t2"],
+            riskLevel: "low",
+            needsReworkReason: "Reviewer requested broader test coverage",
+          },
+        ],
+        dependencies: [],
+        operatorEdits: [],
+        status: "accepted",
+        acceptedAt: "2026-05-18T00:00:00.000Z",
+      };
+      const links: TaskRunLink[] = [
+        {
+          taskId: "t1",
+          runId: "run-t1",
+          attempt: 1,
+          status: "completed",
+          branch: "issuepilot/t1",
+          startedAt: "2026-05-18T00:00:00.000Z",
+          completedAt: "2026-05-18T00:01:00.000Z",
+        },
+        {
+          taskId: "t2",
+          runId: "run-t2",
+          attempt: 1,
+          status: "completed",
+          branch: "issuepilot/t2",
+          startedAt: "2026-05-18T00:02:00.000Z",
+          completedAt: "2026-05-18T00:03:00.000Z",
+        },
+      ];
+      const workItemReport: WorkItemReport = {
+        workItemId: "wi-1",
+        overallStatus: "partial",
+        taskSummaries: [],
+        validationSummary: "",
+        riskSummary: "",
+        evidence: { index: [], byTask: {} },
+        openQuestions: [],
+        recommendedNextActions: [],
+        humanReviewChecklist: [
+          {
+            itemId: "h1",
+            taskId: "t1",
+            label: "Evidence missing for Task 1",
+            reason: "missing-evidence",
+            confirmed: false,
+          },
+        ],
+        generatedAt: "2026-05-18T00:10:00.000Z",
+      };
+      const workItems = {
+        listWorkItems: async () => [workItem],
+        getCurrentPlan: async (id: string) =>
+          id === "wi-1" ? plan : undefined,
+        listAllTaskRunLinks: async (id: string) =>
+          id === "wi-1" ? links : [],
+        getReport: async (id: string) =>
+          id === "wi-1" ? workItemReport : undefined,
+      };
+
+      const { app } = await buildTestApp(async () => [], {
+        quality: {
+          reports: reportStoreWith([okRun, badRun]),
+          workItems,
+        },
+      });
+      try {
+        const resp = await app.inject({
+          method: "GET",
+          url: "/api/quality/summary?window=7d",
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = JSON.parse(resp.body) as QualitySummaryResponse;
+        const successRate = body.metrics.find((m) => m.id === "success-rate");
+        expect(successRate).toMatchObject({ numerator: 1, denominator: 2 });
+        const patternIds = body.failurePatterns.map((p) => p.patternId);
+        expect(patternIds).toEqual(
+          expect.arrayContaining([
+            "permission-issue",
+            "ci-failure",
+            "review-rework",
+            "missing-evidence",
+          ]),
+        );
+        expect(body.drilldown).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              target: {
+                kind: "evidence",
+                href: "/work-items/wi-1?view=evidence",
+              },
+            }),
+          ]),
+        );
       } finally {
         await app.close();
       }

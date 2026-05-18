@@ -10,6 +10,11 @@
 - `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`
 - `README.md`
 
+## 实施计划
+
+- V4.5 Workflow / Skills Improvement Loop：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
+
 ## 1. 背景
 
 V4.1-V4.3 已经把大 Issue 拆解、Task Graph、Parent Review Packet 和 Evidence

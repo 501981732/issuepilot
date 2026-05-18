@@ -43,10 +43,7 @@ function seedReviewRun(
     workspacePath: "/tmp/run",
     startedAt: "2026-05-15T00:00:00.000Z",
     updatedAt: "2026-05-15T00:00:01.000Z",
-    issue: makeIssue(
-      overrides.iid ?? 1,
-      overrides.labels ?? ["human-review"],
-    ),
+    issue: makeIssue(overrides.iid ?? 1, overrides.labels ?? ["human-review"]),
     ...(overrides.archivedAt ? { archivedAt: overrides.archivedAt } : {}),
     ...(overrides.endedAt ? { endedAt: overrides.endedAt } : {}),
     ...(overrides.lastDiscussionCursor
@@ -76,12 +73,14 @@ type ListedNote = {
   resolved?: boolean;
 };
 
-function createDeps(opts: {
-  mr?: MrShape;
-  notes?: ListedNote[];
-  throwListNotes?: Error;
-  botAccountName?: string;
-} = {}) {
+function createDeps(
+  opts: {
+    mr?: MrShape;
+    notes?: ListedNote[];
+    throwListNotes?: Error;
+    botAccountName?: string;
+  } = {},
+) {
   const events: IssuePilotInternalEvent[] = [];
   const eventBus = createEventBus<IssuePilotInternalEvent>();
   eventBus.subscribe((e) => events.push(e));
@@ -110,9 +109,7 @@ function createDeps(opts: {
   const workflow = {
     tracker: {
       handoffLabel: "human-review",
-      ...(opts.botAccountName
-        ? { botAccountName: opts.botAccountName }
-        : {}),
+      ...(opts.botAccountName ? { botAccountName: opts.botAccountName } : {}),
     },
   };
 
@@ -441,8 +438,14 @@ describe("sweepReviewFeedbackOnce", () => {
 
   it("ignores archived / ended runs and runs that have not reached human-review", async () => {
     const ctx = createDeps({});
-    seedReviewRun(ctx.state, { runId: "archived-1", archivedAt: "2026-05-15T00:00:00.000Z" });
-    seedReviewRun(ctx.state, { runId: "ended-1", endedAt: "2026-05-15T00:01:00.000Z" });
+    seedReviewRun(ctx.state, {
+      runId: "archived-1",
+      archivedAt: "2026-05-15T00:00:00.000Z",
+    });
+    seedReviewRun(ctx.state, {
+      runId: "ended-1",
+      endedAt: "2026-05-15T00:01:00.000Z",
+    });
     seedReviewRun(ctx.state, { runId: "running-1", status: "running" });
 
     await sweepReviewFeedbackOnce(ctx.deps);
@@ -510,6 +513,8 @@ describe("sweepReviewFeedbackOnce", () => {
         get: vi.fn(async (id: string) => reports.get(id)),
         summary: () => undefined,
         allSummaries: () => [],
+        all: async () => [...reports.values()],
+        invalidReportCount: () => 0,
       },
     });
 

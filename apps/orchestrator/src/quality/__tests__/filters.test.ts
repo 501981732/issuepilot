@@ -5,15 +5,14 @@ import type {
   QualitySummaryFilters,
 } from "@issuepilot/shared-contracts";
 
-import {
-  applyQualityFilters,
-  parseQualityQuery,
-} from "../filters.js";
+import { applyQualityFilters, parseQualityQuery } from "../filters.js";
 import type { QualitySourceItem } from "../types.js";
 
 const NOW = "2026-05-18T12:00:00.000Z";
 
-function runSource(over: Partial<Extract<QualitySourceItem, { kind: "run" }>>): QualitySourceItem {
+function runSource(
+  over: Partial<Extract<QualitySourceItem, { kind: "run" }>>,
+): QualitySourceItem {
   return {
     kind: "run",
     projectId: "proj-a",
@@ -35,7 +34,9 @@ function runSource(over: Partial<Extract<QualitySourceItem, { kind: "run" }>>): 
   } as QualitySourceItem;
 }
 
-function taskSource(over: Partial<Extract<QualitySourceItem, { kind: "task" }>>): QualitySourceItem {
+function taskSource(
+  over: Partial<Extract<QualitySourceItem, { kind: "task" }>>,
+): QualitySourceItem {
   return {
     kind: "task",
     projectId: "proj-a",
@@ -48,6 +49,9 @@ function taskSource(over: Partial<Extract<QualitySourceItem, { kind: "task" }>>)
     taskStatus: "completed",
     checklistReasons: [],
     evidenceCount: 1,
+    validationEvidenceCount: 1,
+    trustedValidationEvidenceCount: 1,
+    aiClaimValidationEvidenceCount: 0,
     updatedAt: "2026-05-18T00:00:00.000Z",
     ...over,
   } as QualitySourceItem;
@@ -190,10 +194,7 @@ describe("applyQualityFilters", () => {
       ["run:b", ["ci-failure"]],
     ]);
     const items = applyQualityFilters(
-      [
-        runSource({ runId: "a" }),
-        runSource({ runId: "b" }),
-      ],
+      [runSource({ runId: "a" }), runSource({ runId: "b" })],
       { ...baseFilters, pattern: "permission-issue" },
       { patternIdsByItemId: map },
     );

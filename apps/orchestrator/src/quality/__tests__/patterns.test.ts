@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { classifyQualityPatterns } from "../patterns.js";
 import type { QualitySourceItem } from "../types.js";
 
-function runSource(over: Partial<Extract<QualitySourceItem, { kind: "run" }>>): QualitySourceItem {
+function runSource(
+  over: Partial<Extract<QualitySourceItem, { kind: "run" }>>,
+): QualitySourceItem {
   return {
     kind: "run",
     projectId: "proj-a",
@@ -25,7 +27,9 @@ function runSource(over: Partial<Extract<QualitySourceItem, { kind: "run" }>>): 
   } as QualitySourceItem;
 }
 
-function taskSource(over: Partial<Extract<QualitySourceItem, { kind: "task" }>>): QualitySourceItem {
+function taskSource(
+  over: Partial<Extract<QualitySourceItem, { kind: "task" }>>,
+): QualitySourceItem {
   return {
     kind: "task",
     projectId: "proj-a",
@@ -38,6 +42,9 @@ function taskSource(over: Partial<Extract<QualitySourceItem, { kind: "task" }>>)
     taskStatus: "completed",
     checklistReasons: [],
     evidenceCount: 1,
+    validationEvidenceCount: 1,
+    trustedValidationEvidenceCount: 1,
+    aiClaimValidationEvidenceCount: 0,
     updatedAt: "2026-05-18T00:00:00.000Z",
     ...over,
   } as QualitySourceItem;
@@ -75,9 +82,28 @@ describe("classifyQualityPatterns", () => {
   it("classifies missing tests when task has no evidence", () => {
     expect(
       classifyQualityPatterns(
-        taskSource({ taskStatus: "completed", evidenceCount: 0 }),
+        taskSource({
+          taskStatus: "completed",
+          evidenceCount: 1,
+          validationEvidenceCount: 0,
+          trustedValidationEvidenceCount: 0,
+        }),
       ).map((p) => p.patternId),
     ).toContain("missing-tests");
+  });
+
+  it("classifies AI-claim-only validation as missing tests but not missing evidence", () => {
+    const ids = classifyQualityPatterns(
+      taskSource({
+        evidenceCount: 1,
+        validationEvidenceCount: 1,
+        trustedValidationEvidenceCount: 0,
+        aiClaimValidationEvidenceCount: 1,
+      }),
+    ).map((p) => p.patternId);
+
+    expect(ids).toContain("missing-tests");
+    expect(ids).not.toContain("missing-evidence");
   });
 
   it("classifies review rework", () => {
@@ -154,9 +180,9 @@ describe("classifyQualityPatterns", () => {
 
   it("classifies missing evidence when report is incomplete", () => {
     expect(
-      classifyQualityPatterns(
-        taskSource({ reportStatus: "incomplete" }),
-      ).map((p) => p.patternId),
+      classifyQualityPatterns(taskSource({ reportStatus: "incomplete" })).map(
+        (p) => p.patternId,
+      ),
     ).toContain("missing-evidence");
   });
 
@@ -172,7 +198,9 @@ describe("classifyQualityPatterns", () => {
       }),
     );
     const ids = patterns.map((p) => p.patternId);
-    expect(ids).toEqual(expect.arrayContaining(["permission-issue", "ci-failure"]));
+    expect(ids).toEqual(
+      expect.arrayContaining(["permission-issue", "ci-failure"]),
+    );
   });
 
   it("does not classify completed runs with checks as missing-tests", () => {
@@ -180,9 +208,7 @@ describe("classifyQualityPatterns", () => {
       classifyQualityPatterns(
         runSource({
           runStatus: "completed",
-          checks: [
-            { name: "unit", status: "passed" },
-          ],
+          checks: [{ name: "unit", status: "passed" }],
         }),
       ).map((p) => p.patternId),
     ).not.toContain("missing-tests");

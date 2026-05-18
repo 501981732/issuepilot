@@ -9,7 +9,9 @@ import type {
 import { buildQualitySummary } from "../aggregate.js";
 import type { QualitySourceItem } from "../types.js";
 
-function runSource(over: Partial<Extract<QualitySourceItem, { kind: "run" }>>): QualitySourceItem {
+function runSource(
+  over: Partial<Extract<QualitySourceItem, { kind: "run" }>>,
+): QualitySourceItem {
   return {
     kind: "run",
     projectId: "proj-a",
@@ -31,7 +33,9 @@ function runSource(over: Partial<Extract<QualitySourceItem, { kind: "run" }>>): 
   } as QualitySourceItem;
 }
 
-function taskSource(over: Partial<Extract<QualitySourceItem, { kind: "task" }>>): QualitySourceItem {
+function taskSource(
+  over: Partial<Extract<QualitySourceItem, { kind: "task" }>>,
+): QualitySourceItem {
   return {
     kind: "task",
     projectId: "proj-a",
@@ -44,6 +48,9 @@ function taskSource(over: Partial<Extract<QualitySourceItem, { kind: "task" }>>)
     taskStatus: "completed",
     checklistReasons: [],
     evidenceCount: 1,
+    validationEvidenceCount: 1,
+    trustedValidationEvidenceCount: 1,
+    aiClaimValidationEvidenceCount: 0,
     updatedAt: "2026-05-18T00:00:00.000Z",
     ...over,
   } as QualitySourceItem;
@@ -55,10 +62,7 @@ const baseFilters: QualitySummaryFilters = {
   window: "7d",
 };
 
-function metric(
-  result: QualitySummaryResponse,
-  id: QualityMetricId,
-) {
+function metric(result: QualitySummaryResponse, id: QualityMetricId) {
   return result.metrics.find((m) => m.id === id);
 }
 
@@ -99,7 +103,9 @@ describe("buildQualitySummary", () => {
       unknownCount: 1,
     });
     expect(metric(result, "rework-rate")?.numerator).toBe(1);
-    expect(metric(result, "missing-evidence-rate")?.numerator).toBeGreaterThan(0);
+    expect(metric(result, "missing-evidence-rate")?.numerator).toBeGreaterThan(
+      0,
+    );
   });
 
   it("returns stable empty response when no items", () => {
@@ -198,6 +204,40 @@ describe("buildQualitySummary", () => {
       diagnostics: { invalidReportCount: 0 },
     });
     expect(result.drilldown.map((d) => d.itemId)).toEqual(["run:fail"]);
+  });
+
+  it("applies the active filters to previous-window deltas", () => {
+    const result = buildQualitySummary({
+      items: [
+        runSource({
+          runId: "current",
+          workflow: "workflow-a",
+          runStatus: "completed",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+        }),
+        runSource({
+          runId: "previous-same-workflow",
+          workflow: "workflow-a",
+          runStatus: "failed",
+          updatedAt: "2026-05-10T00:00:00.000Z",
+        }),
+        runSource({
+          runId: "previous-other-workflow",
+          workflow: "workflow-b",
+          runStatus: "completed",
+          updatedAt: "2026-05-10T00:00:00.000Z",
+        }),
+      ],
+      filters: { ...baseFilters, workflow: "workflow-a" },
+      scope: { mode: "single-project" },
+      diagnostics: { invalidReportCount: 0 },
+    });
+
+    expect(metric(result, "success-rate")).toMatchObject({
+      value: 100,
+      previousValue: 0,
+      delta: 100,
+    });
   });
 
   it("filters by pattern when provided", () => {

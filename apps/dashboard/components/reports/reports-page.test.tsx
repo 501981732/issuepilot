@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 import type { QualitySummaryResponse } from "@issuepilot/shared-contracts";
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { renderWithIntl as render } from "../../test/intl";
 
 import { ReportsPage } from "./reports-page";
+
+vi.mock("./quality-analytics", () => ({
+  QualityAnalytics: () => <section aria-label="Quality analytics" />,
+}));
 
 function qualitySummaryFixture(
   over: Partial<QualitySummaryResponse> = {},
@@ -92,9 +96,8 @@ describe("ReportsPage", () => {
       />,
     );
     expect(
-      screen.getByRole("heading", { name: /Quality Analytics/i }),
+      screen.getByRole("region", { name: /Quality analytics/i }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText(/Success rate/i).length).toBeGreaterThan(0);
   });
 
   it("renders an empty state when no reports exist", () => {

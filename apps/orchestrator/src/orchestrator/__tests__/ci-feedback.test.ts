@@ -43,10 +43,7 @@ function seedReviewRun(
     workspacePath: "/tmp/run",
     startedAt: "2026-05-15T00:00:00.000Z",
     updatedAt: "2026-05-15T00:00:01.000Z",
-    issue: makeIssue(
-      overrides.iid ?? 1,
-      overrides.labels ?? ["human-review"],
-    ),
+    issue: makeIssue(overrides.iid ?? 1, overrides.labels ?? ["human-review"]),
     ...(overrides.archivedAt ? { archivedAt: overrides.archivedAt } : {}),
     ...(overrides.endedAt ? { endedAt: overrides.endedAt } : {}),
   });
@@ -56,16 +53,14 @@ function seedReviewRun(
 function createDeps(opts: {
   status?: PipelineStatus;
   throwLookup?: Error;
-  mr?:
-    | {
-        iid: number;
-        webUrl: string;
-        state: string;
-        sourceBranch: string;
-        title: string;
-        description: string;
-      }
-    | null;
+  mr?: {
+    iid: number;
+    webUrl: string;
+    state: string;
+    sourceBranch: string;
+    title: string;
+    description: string;
+  } | null;
   pipelineWebUrl?: string;
   ci?: {
     enabled?: boolean;
@@ -79,18 +74,17 @@ function createDeps(opts: {
   const state = createRuntimeState();
 
   const gitlab = {
-    findMergeRequestBySourceBranch: vi.fn(
-      async (_: string) =>
-        opts.mr === undefined
-          ? {
-              iid: 17,
-              webUrl: "https://gitlab.example.com/g/p/-/merge_requests/17",
-              state: "opened",
-              sourceBranch: "ai/1-fix",
-              title: "Fix",
-              description: "",
-            }
-          : opts.mr,
+    findMergeRequestBySourceBranch: vi.fn(async (_: string) =>
+      opts.mr === undefined
+        ? {
+            iid: 17,
+            webUrl: "https://gitlab.example.com/g/p/-/merge_requests/17",
+            state: "opened",
+            sourceBranch: "ai/1-fix",
+            title: "Fix",
+            description: "",
+          }
+        : opts.mr,
     ),
     getPipelineStatus: vi.fn(async (_: string) => {
       if (opts.throwLookup) throw opts.throwLookup;
@@ -472,6 +466,8 @@ describe("scanCiFeedbackOnce", () => {
         get: vi.fn(async (id: string) => reports.get(id)),
         summary: () => undefined,
         allSummaries: () => [],
+        all: async () => [...reports.values()],
+        invalidReportCount: () => 0,
       },
     });
 

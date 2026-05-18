@@ -77,14 +77,16 @@ function classifyRun(item: QualityRunSourceItem): ClassifiedPattern[] {
     if (permissionHit) {
       patterns.push({
         patternId: "permission-issue",
-        reason: item.lastError?.message ?? `permission keyword: ${permissionHit}`,
+        reason:
+          item.lastError?.message ?? `permission keyword: ${permissionHit}`,
       });
     }
     const environmentHit = matchKeyword(errorText, ENVIRONMENT_KEYWORDS);
     if (environmentHit) {
       patterns.push({
         patternId: "environment-issue",
-        reason: item.lastError?.message ?? `environment keyword: ${environmentHit}`,
+        reason:
+          item.lastError?.message ?? `environment keyword: ${environmentHit}`,
       });
     }
     const unclearHit = matchKeyword(errorText, UNCLEAR_KEYWORDS);
@@ -99,7 +101,9 @@ function classifyRun(item: QualityRunSourceItem): ClassifiedPattern[] {
   const checks = item.checks ?? [];
   const allUnknownOrSkipped =
     checks.length > 0 &&
-    checks.every((check) => check.status === "unknown" || check.status === "skipped");
+    checks.every(
+      (check) => check.status === "unknown" || check.status === "skipped",
+    );
   if (checks.length === 0 || allUnknownOrSkipped) {
     patterns.push({
       patternId: "missing-tests",
@@ -139,14 +143,20 @@ function classifyTask(item: QualityTaskSourceItem): ClassifiedPattern[] {
         reason: item.needsReworkReason,
       });
     }
-    const permissionHit = matchKeyword(item.needsReworkReason, PERMISSION_KEYWORDS);
+    const permissionHit = matchKeyword(
+      item.needsReworkReason,
+      PERMISSION_KEYWORDS,
+    );
     if (permissionHit) {
       patterns.push({
         patternId: "permission-issue",
         reason: item.needsReworkReason,
       });
     }
-    const environmentHit = matchKeyword(item.needsReworkReason, ENVIRONMENT_KEYWORDS);
+    const environmentHit = matchKeyword(
+      item.needsReworkReason,
+      ENVIRONMENT_KEYWORDS,
+    );
     if (environmentHit) {
       patterns.push({
         patternId: "environment-issue",
@@ -165,26 +175,28 @@ function classifyTask(item: QualityTaskSourceItem): ClassifiedPattern[] {
     });
   }
 
-  if (item.evidenceCount === 0) {
+  if (item.trustedValidationEvidenceCount === 0) {
     patterns.push({
       patternId: "missing-tests",
-      reason: "no validation/test/screenshot/command evidence",
+      reason:
+        item.aiClaimValidationEvidenceCount > 0
+          ? "validation evidence is only AI-claimed"
+          : "no trusted validation/test/screenshot/command evidence",
     });
   }
 
   if (
     item.checklistReasons.includes("missing-evidence") ||
     item.reportStatus === "incomplete" ||
-    item.evidenceCount === 0
+    item.validationEvidenceCount === 0
   ) {
     patterns.push({
       patternId: "missing-evidence",
-      reason:
-        item.checklistReasons.includes("missing-evidence")
-          ? "human review checklist: missing-evidence"
-          : item.reportStatus === "incomplete"
-            ? "work item report incomplete"
-            : "no evidence recorded for task",
+      reason: item.checklistReasons.includes("missing-evidence")
+        ? "human review checklist: missing-evidence"
+        : item.reportStatus === "incomplete"
+          ? "work item report incomplete"
+          : "no validation/test/screenshot/command evidence recorded for task",
     });
   }
 
@@ -210,7 +222,6 @@ function classifyTask(item: QualityTaskSourceItem): ClassifiedPattern[] {
 export function classifyQualityPatterns(
   item: QualitySourceItem,
 ): ClassifiedPattern[] {
-  const patterns =
-    item.kind === "run" ? classifyRun(item) : classifyTask(item);
+  const patterns = item.kind === "run" ? classifyRun(item) : classifyTask(item);
   return dedupePatterns(patterns);
 }

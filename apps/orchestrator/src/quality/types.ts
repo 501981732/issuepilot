@@ -12,9 +12,7 @@ import type {
  * (see `@issuepilot/shared-contracts`) is. Keep these types free of HTTP-shape
  * concerns so they stay easy to compute from local stores.
  */
-export type QualitySourceItem =
-  | QualityRunSourceItem
-  | QualityTaskSourceItem;
+export type QualitySourceItem = QualityRunSourceItem | QualityTaskSourceItem;
 
 export interface QualityRunSourceItem {
   kind: "run";
@@ -49,6 +47,9 @@ export interface QualityTaskSourceItem {
   /** Reasons drawn from `WorkItemReport.humanReviewChecklist[*].reason`. */
   checklistReasons: string[];
   evidenceCount: number;
+  validationEvidenceCount: number;
+  trustedValidationEvidenceCount: number;
+  aiClaimValidationEvidenceCount: number;
   updatedAt: string;
 }
 

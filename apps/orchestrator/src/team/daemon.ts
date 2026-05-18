@@ -5,18 +5,12 @@ import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
 import type { QualityCollectorDeps } from "../quality/collect.js";
-import {
-  createReportStore,
-  type ReportStore,
-} from "../reports/store.js";
+import { createReportStore, type ReportStore } from "../reports/store.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
 } from "../runtime/leases.js";
-import {
-  createRuntimeState,
-  type RuntimeState,
-} from "../runtime/state.js";
+import { createRuntimeState, type RuntimeState } from "../runtime/state.js";
 import { createServer, type WorkItemService } from "../server/index.js";
 import {
   createWorkItemPlanner,
@@ -55,9 +49,7 @@ export interface StartTeamDaemonOptions {
 }
 
 export interface StartTeamDaemonDeps {
-  loadTeamConfig?:
-    | ((configPath: string) => Promise<TeamConfig>)
-    | undefined;
+  loadTeamConfig?: ((configPath: string) => Promise<TeamConfig>) | undefined;
   createProjectRegistry?:
     | ((
         config: TeamConfig,
@@ -185,8 +177,7 @@ export async function startTeamDaemon(
   const createRegistry =
     deps.createProjectRegistry ?? defaultCreateProjectRegistry;
   const createServerImpl = deps.createServer ?? createServer;
-  const createLeaseStoreImpl =
-    deps.createLeaseStore ?? defaultCreateLeaseStore;
+  const createLeaseStoreImpl = deps.createLeaseStore ?? defaultCreateLeaseStore;
 
   const config = await loadConfig(configPath);
   const registry = await createRegistry(
@@ -238,6 +229,12 @@ export async function startTeamDaemon(
       buildProjectWorkItemService(project, eventBus, reportStore);
     workItemsByProject.set(project.id, workItemService);
     qualityByProject.set(project.id, {
+      metadata: {
+        workflow: path.basename(
+          project.workflowProfilePath,
+          path.extname(project.workflowProfilePath),
+        ),
+      },
       reports: reportStore,
       workItems: workItemStore,
     });

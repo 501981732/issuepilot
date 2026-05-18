@@ -1,6 +1,8 @@
 import {
   effectiveTaskStatus,
+  type TaskNode,
   type RunReportArtifact,
+  type WorkItemEvidenceEntry,
 } from "@issuepilot/shared-contracts";
 
 import type { ReportStore } from "../reports/store.js";
@@ -19,24 +21,37 @@ import type {
  * aggregation is not wired (run-only deployments).
  */
 export interface QualityCollectorDeps {
-  reports?: Pick<ReportStore, "all">;
+  reports?: Pick<ReportStore, "all"> & {
+    invalidReportCount?: () => number;
+  };
+  metadata?: {
+    workflow?: string;
+    taskType?: string;
+  };
   workItems?: Pick<
     WorkItemStore,
-    | "listWorkItems"
-    | "getCurrentPlan"
-    | "listAllTaskRunLinks"
-    | "getReport"
+    "listWorkItems" | "getCurrentPlan" | "listAllTaskRunLinks" | "getReport"
   >;
 }
 
 const UNKNOWN_BUCKET = "unknown";
+const VALIDATION_EVIDENCE_KINDS = new Set<WorkItemEvidenceEntry["kind"]>([
+  "validation",
+  "screenshot",
+  "playwright",
+  "command_output",
+  "test_result",
+]);
 
-function toRunSource(report: RunReportArtifact): QualityRunSourceItem {
+function toRunSource(
+  report: RunReportArtifact,
+  metadata: QualityCollectorDeps["metadata"] | undefined,
+): QualityRunSourceItem {
   return {
     kind: "run",
     projectId: report.issue.projectId,
-    workflow: UNKNOWN_BUCKET,
-    taskType: UNKNOWN_BUCKET,
+    workflow: metadata?.workflow ?? UNKNOWN_BUCKET,
+    taskType: metadata?.taskType ?? UNKNOWN_BUCKET,
     runId: report.runId,
     runStatus: report.run.status,
     issue: report.issue,
@@ -52,6 +67,59 @@ function toRunSource(report: RunReportArtifact): QualityRunSourceItem {
   };
 }
 
+function summarizeEvidence(evidence: WorkItemEvidenceEntry[]): {
+  evidenceCount: number;
+  validationEvidenceCount: number;
+  trustedValidationEvidenceCount: number;
+  aiClaimValidationEvidenceCount: number;
+} {
+  let validationEvidenceCount = 0;
+  let trustedValidationEvidenceCount = 0;
+  let aiClaimValidationEvidenceCount = 0;
+
+  for (const entry of evidence) {
+    if (!VALIDATION_EVIDENCE_KINDS.has(entry.kind)) continue;
+    validationEvidenceCount += 1;
+    if (entry.confidence === "ai-claim") {
+      aiClaimValidationEvidenceCount += 1;
+    } else {
+      trustedValidationEvidenceCount += 1;
+    }
+  }
+
+  return {
+    evidenceCount: evidence.length,
+    validationEvidenceCount,
+    trustedValidationEvidenceCount,
+    aiClaimValidationEvidenceCount,
+  };
+}
+
+function inferTaskType(task: TaskNode): string {
+  if (task.taskType && task.taskType.length > 0) return task.taskType;
+
+  const text = [task.title, task.goal, task.scope, ...task.suggestedValidation]
+    .join(" ")
+    .toLowerCase();
+
+  if (/\b(readme|doc|docs|markdown|copy|文档)\b/.test(text)) return "docs";
+  if (/\b(test|vitest|e2e|playwright|coverage|测试)\b/.test(text)) {
+    return "test";
+  }
+  if (
+    /\b(ui|ux|dashboard|page|component|react|next|tailwind|页面)\b/.test(text)
+  ) {
+    return "frontend";
+  }
+  if (/\b(api|server|route|daemon|orchestrator|fastify|worker)\b/.test(text)) {
+    return "backend";
+  }
+  if (/\b(ci|build|script|config|workflow|deploy|release|lint)\b/.test(text)) {
+    return "infra";
+  }
+  return UNKNOWN_BUCKET;
+}
+
 /**
  * Collects normalized quality source items from the local stores. The function
  * performs no metric math — it only normalizes data so the downstream filters
@@ -62,11 +130,13 @@ export async function collectQualitySources(
   deps: QualityCollectorDeps,
 ): Promise<QualityCollectionResult> {
   const items: QualitySourceItem[] = [];
+  let invalidReportCount = 0;
 
   if (deps.reports) {
     const allReports = await deps.reports.all();
+    invalidReportCount = deps.reports.invalidReportCount?.() ?? 0;
     for (const report of allReports) {
-      items.push(toRunSource(report));
+      items.push(toRunSource(report, deps.metadata));
     }
   }
 
@@ -86,18 +156,23 @@ export async function collectQualitySources(
           b.startedAt.localeCompare(a.startedAt),
         )[0];
         const taskStatus = effectiveTaskStatus(task, latestLink);
+        const taskType = inferTaskType(task);
 
         const checklistReasons = (report?.humanReviewChecklist ?? [])
           .filter((entry) => entry.taskId === task.taskId)
           .map((entry) => entry.reason);
 
         const evidence = report?.evidence.byTask[task.taskId] ?? [];
+        const evidenceSummary = summarizeEvidence(evidence);
 
         const item: QualityTaskSourceItem = {
           kind: "task",
           projectId: workItem.sourceIssue.projectId,
-          workflow: UNKNOWN_BUCKET,
-          taskType: UNKNOWN_BUCKET,
+          workflow: deps.metadata?.workflow ?? UNKNOWN_BUCKET,
+          taskType:
+            taskType !== UNKNOWN_BUCKET
+              ? taskType
+              : (deps.metadata?.taskType ?? UNKNOWN_BUCKET),
           workItemId: workItem.workItemId,
           workItemTitle: workItem.title,
           taskId: task.taskId,
@@ -111,7 +186,7 @@ export async function collectQualitySources(
             ? { needsReworkReason: task.needsReworkReason }
             : {}),
           checklistReasons,
-          evidenceCount: evidence.length,
+          ...evidenceSummary,
           updatedAt:
             latestLink?.completedAt ??
             latestLink?.startedAt ??
@@ -125,6 +200,6 @@ export async function collectQualitySources(
 
   return {
     items,
-    diagnostics: { invalidReportCount: 0 },
+    diagnostics: { invalidReportCount },
   };
 }

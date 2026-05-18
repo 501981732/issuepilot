@@ -104,9 +104,7 @@ export interface WorkItemService {
    * V4.2: layered task graph projection (levels + edges + critical path)
    * for the dashboard graph view.
    */
-  graph(
-    id: string,
-  ): Promise<
+  graph(id: string): Promise<
     | {
         levels: string[][];
         edges: Array<{ from: string; to: string }>;
@@ -441,7 +439,28 @@ export async function createServer(
     },
   );
 
-  app.get("/api/reports", async () => {
+  app.get("/api/reports", async (request, reply) => {
+    if (deps.reportsByProject && deps.reportsByProject.size > 0) {
+      const raw = request.headers["x-issuepilot-project"];
+      const project = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof project !== "string" || project.length === 0) {
+        return reply
+          .code(400)
+          .send(
+            routeError(
+              "project_required",
+              "x-issuepilot-project header is required for reports in team mode",
+            ),
+          );
+      }
+      const store = deps.reportsByProject.get(project);
+      if (!store) {
+        return reply
+          .code(404)
+          .send(routeError("project_not_found", `Unknown project: ${project}`));
+      }
+      return { reports: store.allSummaries() };
+    }
     return { reports: deps.reports?.allSummaries() ?? [] };
   });
 
@@ -722,7 +741,11 @@ export async function createServer(
       if (!Number.isInteger(iidNum) || iidNum <= 0) {
         return reply
           .code(400)
-          .send({ ok: false, code: "invalid_iid", message: "iid must be a positive integer" });
+          .send({
+            ok: false,
+            code: "invalid_iid",
+            message: "iid must be a positive integer",
+          });
       }
       const operator = extractOperator(
         request.headers as Record<string, unknown>,
@@ -768,7 +791,11 @@ export async function createServer(
       if (!detail) {
         return reply
           .code(404)
-          .send({ ok: false, code: "not_found", message: "work item not found" });
+          .send({
+            ok: false,
+            code: "not_found",
+            message: "work item not found",
+          });
       }
       return reply.code(200).send(detail);
     },
@@ -923,35 +950,38 @@ export async function createServer(
   app.post<{
     Params: { id: string; taskId: string };
     Body?: { reason?: string };
-  }>("/api/work-items/:id/tasks/:taskId/mark-rework", async (request, reply) => {
-    const ctx = resolveWorkItemService(
-      request.headers as Record<string, unknown>,
-    );
-    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
-    const reason = (request.body?.reason ?? "").trim();
-    if (reason.length === 0) {
-      return reply.code(422).send({
-        ok: false,
-        code: "validation_failed",
-        message: "reason is required",
+  }>(
+    "/api/work-items/:id/tasks/:taskId/mark-rework",
+    async (request, reply) => {
+      const ctx = resolveWorkItemService(
+        request.headers as Record<string, unknown>,
+      );
+      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+      const reason = (request.body?.reason ?? "").trim();
+      if (reason.length === 0) {
+        return reply.code(422).send({
+          ok: false,
+          code: "validation_failed",
+          message: "reason is required",
+        });
+      }
+      const operator = extractOperator(
+        request.headers as Record<string, unknown>,
+      );
+      const result = await ctx.service.markNeedsRework({
+        workItemId: request.params.id,
+        taskId: request.params.taskId,
+        reason,
+        operator,
       });
-    }
-    const operator = extractOperator(
-      request.headers as Record<string, unknown>,
-    );
-    const result = await ctx.service.markNeedsRework({
-      workItemId: request.params.id,
-      taskId: request.params.taskId,
-      reason,
-      operator,
-    });
-    if ("error" in result) {
-      return reply
-        .code(statusFromWorkItemCode(result.error.code))
-        .send({ ok: false, ...result.error });
-    }
-    return reply.code(200).send(result);
-  });
+      if ("error" in result) {
+        return reply
+          .code(statusFromWorkItemCode(result.error.code))
+          .send({ ok: false, ...result.error });
+      }
+      return reply.code(200).send(result);
+    },
+  );
 
   app.post<{ Params: { id: string; taskId: string } }>(
     "/api/work-items/:id/tasks/:taskId/unskip",
@@ -1147,33 +1177,42 @@ export async function createServer(
       const query = request.query ?? {};
 
       if (query["project"] !== undefined) {
-        return reply.code(400).send(
-          routeError(
-            "project_query_unsupported",
-            "project query is not supported; team mode uses x-issuepilot-project",
-          ),
-        );
+        return reply
+          .code(400)
+          .send(
+            routeError(
+              "project_query_unsupported",
+              "project query is not supported; team mode uses x-issuepilot-project",
+            ),
+          );
       }
 
       let depsForRequest: QualityCollectorDeps | undefined;
-      let scope: { mode: "single-project" | "team-project"; projectId?: string };
+      let scope: {
+        mode: "single-project" | "team-project";
+        projectId?: string;
+      };
 
       if (deps.qualityByProject && deps.qualityByProject.size > 0) {
         const raw = headers["x-issuepilot-project"];
         const project = Array.isArray(raw) ? raw[0] : raw;
         if (typeof project !== "string" || project.length === 0) {
-          return reply.code(400).send(
-            routeError(
-              "project_required",
-              "x-issuepilot-project header is required for quality summary in team mode",
-            ),
-          );
+          return reply
+            .code(400)
+            .send(
+              routeError(
+                "project_required",
+                "x-issuepilot-project header is required for quality summary in team mode",
+              ),
+            );
         }
         const projectDeps = deps.qualityByProject.get(project);
         if (!projectDeps) {
           return reply
             .code(404)
-            .send(routeError("project_not_found", `Unknown project: ${project}`));
+            .send(
+              routeError("project_not_found", `Unknown project: ${project}`),
+            );
         }
         depsForRequest = projectDeps;
         scope = { mode: "team-project", projectId: project };

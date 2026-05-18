@@ -85,7 +85,9 @@ function workItemFixture(over: {
   };
 }
 
-function taskFixture(over: Partial<TaskNode> & Pick<TaskNode, "taskId">): TaskNode {
+function taskFixture(
+  over: Partial<TaskNode> & Pick<TaskNode, "taskId">,
+): TaskNode {
   return {
     taskId: over.taskId,
     title: over.title ?? `Task ${over.taskId}`,
@@ -96,6 +98,7 @@ function taskFixture(over: Partial<TaskNode> & Pick<TaskNode, "taskId">): TaskNo
     status: over.status ?? "completed",
     runIds: [],
     riskLevel: "low",
+    ...(over.taskType ? { taskType: over.taskType } : {}),
     ...(over.needsReworkReason
       ? { needsReworkReason: over.needsReworkReason }
       : {}),
@@ -137,6 +140,7 @@ function linkFixture(over: {
 function workItemReportFixture(over: {
   workItemId: string;
   overallStatus: WorkItemReport["overallStatus"];
+  evidence?: WorkItemReport["evidence"];
 }): WorkItemReport {
   return {
     workItemId: over.workItemId,
@@ -144,7 +148,7 @@ function workItemReportFixture(over: {
     taskSummaries: [],
     validationSummary: "",
     riskSummary: "",
-    evidence: { index: [], byTask: {} },
+    evidence: over.evidence ?? { index: [], byTask: {} },
     openQuestions: [],
     recommendedNextActions: [],
     humanReviewChecklist: [],
@@ -178,6 +182,7 @@ describe("collectQualitySources", () => {
       ciStatus: "success",
     });
     const result = await collectQualitySources({
+      metadata: { workflow: "default-web" },
       reports: { all: async () => [report] },
     });
     expect(result.items).toHaveLength(1);
@@ -187,7 +192,18 @@ describe("collectQualitySources", () => {
       runId: "run-1",
       runStatus: "completed",
       ciStatus: "success",
+      workflow: "default-web",
     });
+  });
+
+  it("propagates invalid report diagnostics from the report store", async () => {
+    const result = await collectQualitySources({
+      reports: {
+        all: async () => [],
+        invalidReportCount: () => 2,
+      },
+    });
+    expect(result.diagnostics).toEqual({ invalidReportCount: 2 });
   });
 
   it("collects work item task sources with effective task status", async () => {
@@ -200,17 +216,37 @@ describe("collectQualitySources", () => {
       tasks: [
         taskFixture({
           taskId: "t1",
+          taskType: "frontend",
           status: "needs_rework",
           needsReworkReason: "Reviewer requested tests",
         }),
       ],
     });
-    const link = linkFixture({ taskId: "t1", runId: "run-1", status: "completed" });
+    const link = linkFixture({
+      taskId: "t1",
+      runId: "run-1",
+      status: "completed",
+    });
     const report = workItemReportFixture({
       workItemId: "wi-1",
       overallStatus: "partial",
+      evidence: {
+        index: [],
+        byTask: {
+          t1: [
+            {
+              taskId: "t1",
+              kind: "test_result",
+              evidenceId: "ev-1",
+              label: "unit tests",
+              confidence: "system-derived",
+            },
+          ],
+        },
+      },
     });
     const result = await collectQualitySources({
+      metadata: { workflow: "default-web" },
       reports: { all: async () => [] },
       workItems: fakeWorkItemStore({ workItem, plan, links: [link], report }),
     });
@@ -220,8 +256,40 @@ describe("collectQualitySources", () => {
         projectId: "proj-a",
         workItemId: "wi-1",
         taskId: "t1",
+        workflow: "default-web",
+        taskType: "frontend",
         taskStatus: "needs_rework",
         needsReworkReason: "Reviewer requested tests",
+        evidenceCount: 1,
+        validationEvidenceCount: 1,
+        trustedValidationEvidenceCount: 1,
+      }),
+    );
+  });
+
+  it("infers task type from task plan text when explicit taskType is absent", async () => {
+    const workItem = workItemFixture({
+      workItemId: "wi-2",
+      projectId: "proj-a",
+    });
+    const plan = planFixture({
+      workItemId: "wi-2",
+      tasks: [
+        taskFixture({
+          taskId: "t-ui",
+          title: "Build dashboard filter component",
+        }),
+      ],
+    });
+    const result = await collectQualitySources({
+      workItems: fakeWorkItemStore({ workItem, plan, links: [] }),
+    });
+
+    expect(result.items).toContainEqual(
+      expect.objectContaining({
+        kind: "task",
+        taskId: "t-ui",
+        taskType: "frontend",
       }),
     );
   });

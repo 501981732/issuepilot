@@ -35,8 +35,7 @@ const baseConfig = (): TeamConfig => ({
       id: "platform-web",
       name: "Platform Web",
       projectPath: "/srv/issuepilot-config/projects/platform-web.yaml",
-      workflowProfilePath:
-        "/srv/issuepilot-config/workflows/default-web.md",
+      workflowProfilePath: "/srv/issuepilot-config/workflows/default-web.md",
       enabled: true,
       ci: null,
     },
@@ -136,7 +135,11 @@ describe("startTeamDaemon", () => {
     });
 
     const handle = await startTeamDaemon(
-      { configPath: "/srv/issuepilot.team.yaml", host: "127.0.0.1", port: 4738 },
+      {
+        configPath: "/srv/issuepilot.team.yaml",
+        host: "127.0.0.1",
+        port: 4738,
+      },
       {
         loadTeamConfig,
         createProjectRegistry,
@@ -171,7 +174,11 @@ describe("startTeamDaemon", () => {
 
     cachedActive = 1;
     summariesValue = [
-      { ...summaries[0]!, activeRuns: 1, lastPollAt: "2026-05-15T01:00:00.000Z" },
+      {
+        ...summaries[0]!,
+        activeRuns: 1,
+        lastPollAt: "2026-05-15T01:00:00.000Z",
+      },
       summaries[1]!,
     ];
     expect(runtimeGetter().activeLeases).toBe(1);
@@ -219,7 +226,11 @@ describe("startTeamDaemon", () => {
     });
 
     const handle = await startTeamDaemon(
-      { configPath: "/srv/issuepilot.team.yaml", host: "127.0.0.1", port: 4738 },
+      {
+        configPath: "/srv/issuepilot.team.yaml",
+        host: "127.0.0.1",
+        port: 4738,
+      },
       {
         loadTeamConfig,
         createProjectRegistry,
@@ -337,7 +348,11 @@ describe("startTeamDaemon", () => {
     });
 
     const handle = await startTeamDaemon(
-      { configPath: "/srv/issuepilot.team.yaml", host: "127.0.0.1", port: 4738 },
+      {
+        configPath: "/srv/issuepilot.team.yaml",
+        host: "127.0.0.1",
+        port: 4738,
+      },
       {
         loadTeamConfig,
         createProjectRegistry,
@@ -350,6 +365,7 @@ describe("startTeamDaemon", () => {
       expect(createdDeps?.qualityByProject?.has("project-a")).toBe(true);
       expect(createdDeps?.qualityByProject?.has("project-b")).toBe(true);
       const projectA = createdDeps?.qualityByProject?.get("project-a");
+      expect(projectA?.metadata?.workflow).toBe("a");
       expect(projectA?.reports).toBeDefined();
       expect(projectA?.workItems).toBeDefined();
     } finally {

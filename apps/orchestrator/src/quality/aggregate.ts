@@ -15,10 +15,7 @@ import {
   type QualityTrendPoint,
 } from "@issuepilot/shared-contracts";
 
-import {
-  applyQualityFilters,
-  qualityItemId,
-} from "./filters.js";
+import { applyQualityFilters, qualityItemId } from "./filters.js";
 import { classifyQualityPatterns, type ClassifiedPattern } from "./patterns.js";
 import type {
   QualityRunSourceItem,
@@ -71,9 +68,7 @@ function isRunTerminal(item: QualitySourceItem): item is QualityRunSourceItem {
   );
 }
 
-function isTaskKind(
-  item: QualitySourceItem,
-): item is QualityTaskSourceItem {
+function isTaskKind(item: QualitySourceItem): item is QualityTaskSourceItem {
   return item.kind === "task";
 }
 
@@ -204,7 +199,7 @@ function computeSlice(items: QualitySourceItem[]): MetricSlice {
       if (
         item.checklistReasons.includes("missing-evidence") ||
         item.reportStatus === "incomplete" ||
-        item.evidenceCount === 0
+        item.validationEvidenceCount === 0
       ) {
         slice.missingEvidenceRate.numerator += 1;
       }
@@ -230,7 +225,11 @@ function buildMetrics(
       },
       previous.ciPassRate,
     ),
-    buildMetric("review-hit-rate", current.reviewHitRate, previous.reviewHitRate),
+    buildMetric(
+      "review-hit-rate",
+      current.reviewHitRate,
+      previous.reviewHitRate,
+    ),
     buildMetric(
       "missing-evidence-rate",
       current.missingEvidenceRate,
@@ -430,7 +429,10 @@ function targetFor(
   return { kind: "work-item", href: `/work-items/${item.workItemId}` };
 }
 
-function reasonFor(item: QualitySourceItem, patterns: ClassifiedPattern[]): string {
+function reasonFor(
+  item: QualitySourceItem,
+  patterns: ClassifiedPattern[],
+): string {
   if (patterns.length > 0) {
     return patterns.map((p) => p.reason).join(" | ");
   }
@@ -481,7 +483,9 @@ function buildDrilldown(
           title: item.workItemTitle,
         },
         task: { taskId: item.taskId, title: item.taskTitle },
-        ...(item.runId ? { run: { runId: item.runId, status: item.taskStatus } } : {}),
+        ...(item.runId
+          ? { run: { runId: item.runId, status: item.taskStatus } }
+          : {}),
         updatedAt: item.updatedAt,
         target: targetFor(item, patternIds),
       });
@@ -503,8 +507,14 @@ function buildDimensions(items: QualitySourceItem[]): QualityDimension[] {
   const patternCounts = new Map<FailurePatternId, number>();
 
   for (const item of items) {
-    workflowCounts.set(item.workflow, (workflowCounts.get(item.workflow) ?? 0) + 1);
-    taskTypeCounts.set(item.taskType, (taskTypeCounts.get(item.taskType) ?? 0) + 1);
+    workflowCounts.set(
+      item.workflow,
+      (workflowCounts.get(item.workflow) ?? 0) + 1,
+    );
+    taskTypeCounts.set(
+      item.taskType,
+      (taskTypeCounts.get(item.taskType) ?? 0) + 1,
+    );
   }
 
   for (const status of QUALITY_STATUS_FILTER_VALUES) {
@@ -582,19 +592,30 @@ export function buildQualitySummary(
   for (const item of input.items) {
     allClassified.set(qualityItemId(item), classifyQualityPatterns(item));
   }
+  const patternIdsByItemId = new Map(
+    [...allClassified.entries()].map(([key, patterns]) => [
+      key,
+      patterns.map((pattern) => pattern.patternId),
+    ]),
+  );
 
   const inWindow = applyQualityFilters(input.items, filters, {
-    patternIdsByItemId: new Map(
-      [...allClassified.entries()].map(([k, v]) => [k, v.map((p) => p.patternId)]),
-    ),
+    patternIdsByItemId,
   });
 
   const previous = previousWindow(filters);
   const previousItems = !Number.isNaN(previous.fromMs)
-    ? input.items.filter((item) => {
-        const ms = Date.parse(item.updatedAt);
-        return ms >= previous.fromMs && ms <= previous.toMs;
-      })
+    ? applyQualityFilters(
+        input.items,
+        {
+          ...filters,
+          from: new Date(previous.fromMs).toISOString(),
+          to: new Date(previous.toMs).toISOString(),
+        },
+        {
+          patternIdsByItemId,
+        },
+      )
     : [];
 
   const currentSlice = computeSlice(inWindow);

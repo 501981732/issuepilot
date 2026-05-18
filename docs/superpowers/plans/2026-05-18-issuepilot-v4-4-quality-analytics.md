@@ -37,25 +37,25 @@ This plan implements only V4.4 Quality Analytics from `docs/superpowers/specs/20
 
 ### New Files
 
-- `packages/shared-contracts/src/quality.ts`  
+- `packages/shared-contracts/src/quality.ts`
   Shared JSON wire contract and type guards for V4.4 quality analytics.
 
-- `packages/shared-contracts/src/__tests__/quality.test.ts`  
+- `packages/shared-contracts/src/__tests__/quality.test.ts`
   Contract tests for metric ids, pattern ids, status filters, response round-trip, and type guards.
 
-- `apps/orchestrator/src/quality/types.ts`  
+- `apps/orchestrator/src/quality/types.ts`
   Internal normalized source item types used by collector, filters, patterns, and aggregator.
 
-- `apps/orchestrator/src/quality/collect.ts`  
+- `apps/orchestrator/src/quality/collect.ts`
   Reads `ReportStore` and optional `WorkItemStore` into normalized analytics source items. This file performs no metric math.
 
-- `apps/orchestrator/src/quality/filters.ts`  
+- `apps/orchestrator/src/quality/filters.ts`
   Parses query filters and applies project scope, date window, workflow, task type, normalized status, and pattern filters.
 
-- `apps/orchestrator/src/quality/patterns.ts`  
+- `apps/orchestrator/src/quality/patterns.ts`
   Deterministic failure pattern classifiers.
 
-- `apps/orchestrator/src/quality/aggregate.ts`  
+- `apps/orchestrator/src/quality/aggregate.ts`
   Computes metrics, trends, dimensions, failure pattern summaries, diagnostics, and drill-down items.
 
 - `apps/orchestrator/src/quality/__tests__/collect.test.ts`
@@ -63,49 +63,49 @@ This plan implements only V4.4 Quality Analytics from `docs/superpowers/specs/20
 - `apps/orchestrator/src/quality/__tests__/patterns.test.ts`
 - `apps/orchestrator/src/quality/__tests__/aggregate.test.ts`
 
-- `apps/dashboard/components/reports/quality-analytics.tsx`  
+- `apps/dashboard/components/reports/quality-analytics.tsx`
   Client component for the Quality Analytics section.
 
 - `apps/dashboard/components/reports/quality-analytics.test.tsx`
 
-- `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics-acceptance.md`  
+- `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics-acceptance.md`
   Acceptance checklist generated when implementation finishes.
 
 ### Modified Files
 
-- `packages/shared-contracts/src/index.ts`  
+- `packages/shared-contracts/src/index.ts`
   Re-export `quality.ts`.
 
-- `packages/shared-contracts/src/api.ts`  
+- `packages/shared-contracts/src/api.ts`
   Export `QualitySummaryResponse` from the API surface if existing tests expect all HTTP contracts to be reachable from this file.
 
-- `apps/orchestrator/src/reports/store.ts`  
+- `apps/orchestrator/src/reports/store.ts`
   Add `all(): Promise<RunReportArtifact[]>` to `ReportStore` so quality aggregation can read full artifacts rather than summaries.
 
-- `apps/orchestrator/src/server/index.ts`  
+- `apps/orchestrator/src/server/index.ts`
   Add quality service deps and `GET /api/quality/summary`; enforce team project scope exactly as the spec says.
 
-- `apps/orchestrator/src/server/__tests__/server.test.ts`  
+- `apps/orchestrator/src/server/__tests__/server.test.ts`
   Cover the quality route, project scope, unsupported `project` query, and empty-store behavior.
 
-- `apps/orchestrator/src/daemon.ts`  
+- `apps/orchestrator/src/daemon.ts`
   Wire single-mode quality aggregation deps into the server.
 
-- `apps/orchestrator/src/team/daemon.ts`  
+- `apps/orchestrator/src/team/daemon.ts`
   Wire per-project quality aggregation deps into the server.
 
 - `apps/orchestrator/src/__tests__/daemon.test.ts`
 - `apps/orchestrator/src/team/__tests__/daemon.test.ts`
 
-- `apps/dashboard/lib/api.ts`  
+- `apps/dashboard/lib/api.ts`
   Add `getQualitySummary(params, opts)`.
 
 - `apps/dashboard/lib/api.test.ts`
 
-- `apps/dashboard/app/reports/page.tsx`  
+- `apps/dashboard/app/reports/page.tsx`
   Fetch `listReports()` and `getQualitySummary()` together; pass both into `ReportsPage`.
 
-- `apps/dashboard/components/reports/reports-page.tsx`  
+- `apps/dashboard/components/reports/reports-page.tsx`
   Render `QualityAnalytics` above the current per-run table and preserve existing reports UI.
 
 - `apps/dashboard/components/reports/reports-page.test.tsx`

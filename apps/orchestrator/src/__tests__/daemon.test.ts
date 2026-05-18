@@ -1053,6 +1053,9 @@ describe("startDaemon human-review event publishing", () => {
 
     try {
       expect(serverDeps).toBeDefined();
+      expect(serverDeps?.quality?.metadata?.workflow).toBe(
+        path.basename(workflow.source.path),
+      );
       expect(serverDeps?.quality?.reports).toBeDefined();
       expect(serverDeps?.quality?.workItems).toBeDefined();
     } finally {

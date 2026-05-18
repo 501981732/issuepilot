@@ -1409,6 +1409,7 @@ export async function startDaemon(
       },
       reports: reportStore,
       quality: {
+        metadata: { workflow: path.basename(workflowPath) },
         reports: reportStore,
         workItems: workItemStore,
       },

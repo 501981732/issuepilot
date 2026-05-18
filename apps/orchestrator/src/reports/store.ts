@@ -16,14 +16,16 @@ export interface ReportStore {
   /**
    * Returns every persisted report artifact. Reads from the in-memory cache
    * first, then back-fills any reports that exist on disk but were not yet
-   * loaded. Invalid JSON files are silently skipped — V4.4 quality analytics
-   * counts them via its diagnostics layer.
+   * loaded. Invalid JSON files are skipped and counted by
+   * `invalidReportCount()`.
    */
   all(): Promise<RunReportArtifact[]>;
+  invalidReportCount(): number;
 }
 
 export function createReportStore(opts: { rootDir: string }): ReportStore {
   const reports = new Map<string, RunReportArtifact>();
+  const invalidReportFiles = new Set<string>();
   const dir = join(opts.rootDir, "reports");
 
   async function save(report: RunReportArtifact): Promise<void> {
@@ -43,6 +45,7 @@ export function createReportStore(opts: { rootDir: string }): ReportStore {
     } catch {
       return;
     }
+    invalidReportFiles.clear();
     for (const entry of entries) {
       if (!entry.endsWith(".json")) continue;
       const runId = entry.slice(0, -".json".length);
@@ -52,7 +55,7 @@ export function createReportStore(opts: { rootDir: string }): ReportStore {
         const parsed = JSON.parse(body) as RunReportArtifact;
         reports.set(runId, parsed);
       } catch {
-        // V4.4 diagnostics count invalid JSON in the quality collector.
+        invalidReportFiles.add(entry);
       }
     }
   }
@@ -83,6 +86,9 @@ export function createReportStore(opts: { rootDir: string }): ReportStore {
     async all() {
       await loadAllFromDisk();
       return [...reports.values()];
+    },
+    invalidReportCount() {
+      return invalidReportFiles.size;
     },
   };
 }

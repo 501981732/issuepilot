@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +66,20 @@ describe("report store", () => {
       await expect(store.all()).resolves.toEqual([report]);
       const fresh = createReportStore({ rootDir: root });
       await expect(fresh.all()).resolves.toEqual([report]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts invalid report JSON files skipped during full artifact load", async () => {
+    const root = await mkdtemp(join(tmpdir(), "issuepilot-report-"));
+    try {
+      const store = createReportStore({ rootDir: root });
+      await mkdir(join(root, "reports"), { recursive: true });
+      await writeFile(join(root, "reports", "broken.json"), "{", "utf8");
+
+      await expect(store.all()).resolves.toEqual([]);
+      expect(store.invalidReportCount()).toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

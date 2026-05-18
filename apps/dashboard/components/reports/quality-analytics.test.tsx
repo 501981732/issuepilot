@@ -6,13 +6,25 @@ import type {
   QualitySummaryResponse,
 } from "@issuepilot/shared-contracts";
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithIntl as render } from "../../test/intl";
 
 import { QualityAnalytics } from "./quality-analytics";
 
-function metric(over: Partial<QualityMetric> & Pick<QualityMetric, "id">): QualityMetric {
+const navigationMocks = vi.hoisted(() => ({
+  replace: vi.fn(),
+  refresh: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/reports",
+  useRouter: () => navigationMocks,
+}));
+
+function metric(
+  over: Partial<QualityMetric> & Pick<QualityMetric, "id">,
+): QualityMetric {
   return {
     id: over.id,
     label: over.label ?? over.id,
@@ -28,7 +40,8 @@ function metric(over: Partial<QualityMetric> & Pick<QualityMetric, "id">): Quali
 }
 
 function patternSummary(
-  over: Partial<FailurePatternSummary> & Pick<FailurePatternSummary, "patternId">,
+  over: Partial<FailurePatternSummary> &
+    Pick<FailurePatternSummary, "patternId">,
 ): FailurePatternSummary {
   return {
     patternId: over.patternId,
@@ -42,7 +55,9 @@ function patternSummary(
   };
 }
 
-function drilldown(over: Partial<QualityDrilldownItem> & Pick<QualityDrilldownItem, "itemId">): QualityDrilldownItem {
+function drilldown(
+  over: Partial<QualityDrilldownItem> & Pick<QualityDrilldownItem, "itemId">,
+): QualityDrilldownItem {
   return {
     itemId: over.itemId,
     patternIds: over.patternIds ?? [],
@@ -121,6 +136,12 @@ function qualitySummaryFixture(
 }
 
 describe("QualityAnalytics", () => {
+  beforeEach(() => {
+    navigationMocks.replace.mockClear();
+    navigationMocks.refresh.mockClear();
+    window.history.replaceState(null, "", "/reports");
+  });
+
   it("renders quality summary metrics", () => {
     render(<QualityAnalytics summary={qualitySummaryFixture()} />);
     expect(screen.getByText(/Quality Analytics/i)).toBeInTheDocument();
@@ -130,7 +151,9 @@ describe("QualityAnalytics", () => {
 
   it("renders pattern list with counts", () => {
     render(<QualityAnalytics summary={qualitySummaryFixture()} />);
-    expect(screen.getByRole("button", { name: /Permission/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Permission/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/2 · 67%/)).toBeInTheDocument();
   });
 
@@ -154,10 +177,41 @@ describe("QualityAnalytics", () => {
       />,
     );
 
-    expect(screen.getAllByRole("link", { name: /open source/i })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: /open source/i })).toHaveLength(
+      2,
+    );
     fireEvent.click(screen.getByRole("button", { name: /Permission/i }));
-    expect(screen.getAllByRole("link", { name: /open source/i })).toHaveLength(1);
-    expect(window.location.search).toContain("pattern=permission-issue");
+    expect(navigationMocks.replace).toHaveBeenCalledWith(
+      "/reports?pattern=permission-issue",
+      { scroll: false },
+    );
+    expect(navigationMocks.refresh).toHaveBeenCalled();
+  });
+
+  it("routes filter changes through URL query so SSR fetches filtered data", () => {
+    render(
+      <QualityAnalytics
+        summary={qualitySummaryFixture({
+          dimensions: [
+            {
+              kind: "workflow",
+              value: "default-web",
+              label: "default-web",
+              count: 3,
+            },
+          ],
+        })}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/Workflow/i), {
+      target: { value: "default-web" },
+    });
+
+    expect(navigationMocks.replace).toHaveBeenCalledWith(
+      "/reports?workflow=default-web",
+      { scroll: false },
+    );
   });
 
   it("links drilldown rows to their target href", () => {

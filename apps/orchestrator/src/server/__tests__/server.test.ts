@@ -192,19 +192,17 @@ describe("Orchestrator HTTP API", () => {
         projectCount: 1,
       }),
     );
-    const projectsGetter = vi.fn(
-      (): ProjectSummary[] => [
-        {
-          id: "platform-web",
-          name: "Platform Web",
-          workflowPath: "/srv/platform-web/WORKFLOW.md",
-          gitlabProject: "group/platform-web",
-          enabled: true,
-          activeRuns,
-          lastPollAt: null,
-        },
-      ],
-    );
+    const projectsGetter = vi.fn((): ProjectSummary[] => [
+      {
+        id: "platform-web",
+        name: "Platform Web",
+        workflowPath: "/srv/platform-web/WORKFLOW.md",
+        gitlabProject: "group/platform-web",
+        enabled: true,
+        activeRuns,
+        lastPollAt: null,
+      },
+    ]);
     const setup = await buildTestApp(async () => [], {
       runtime: runtimeGetter,
       projects: projectsGetter,
@@ -912,6 +910,7 @@ describe("run reports", () => {
         runId === report.runId ? summary : undefined,
       allSummaries: () => [summary],
       all: async () => [report],
+      invalidReportCount: () => 0,
     };
   }
 
@@ -988,6 +987,58 @@ describe("run reports", () => {
       await app.close();
     }
   });
+
+  it("GET /api/reports routes to the selected team project", async () => {
+    const projectAReport = {
+      ...fixtureReport(),
+      runId: "run-a",
+      issue: { ...fixtureReport().issue, projectId: "proj-a" },
+    };
+    const projectBReport = {
+      ...fixtureReport(),
+      runId: "run-b",
+      issue: { ...fixtureReport().issue, projectId: "proj-b" },
+    };
+    const { app } = await buildTestApp(async () => [], {
+      reportsByProject: new Map([
+        ["proj-a", buildReportStore(projectAReport)],
+        ["proj-b", buildReportStore(projectBReport)],
+      ]),
+    });
+    try {
+      const resp = await app.inject({
+        method: "GET",
+        url: "/api/reports",
+        headers: { "x-issuepilot-project": "proj-b" },
+      });
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body) as {
+        reports: Array<{ runId: string }>;
+      };
+      expect(body.reports).toEqual([
+        expect.objectContaining({ runId: "run-b" }),
+      ]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/reports requires project header in team mode", async () => {
+    const { app } = await buildTestApp(async () => [], {
+      reportsByProject: new Map([
+        ["proj-a", buildReportStore(fixtureReport())],
+      ]),
+    });
+    try {
+      const resp = await app.inject({ method: "GET", url: "/api/reports" });
+      expect(resp.statusCode).toBe(400);
+      expect(JSON.parse(resp.body)).toMatchObject({
+        code: "project_required",
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe("V4.1 work item routes", () => {
@@ -995,7 +1046,9 @@ describe("V4.1 work item routes", () => {
 
   afterEach(async () => {
     await Promise.all(
-      tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+      tempDirs
+        .splice(0)
+        .map((dir) => rm(dir, { recursive: true, force: true })),
     );
   });
 
@@ -1035,54 +1088,63 @@ describe("V4.1 work item routes", () => {
     over: Partial<NonNullable<ServerDeps["workItems"]>> = {},
   ): NonNullable<ServerDeps["workItems"]> {
     return {
-      planFromIssue: over.planFromIssue ??
+      planFromIssue:
+        over.planFromIssue ??
         (async () => ({
           workItem: workItemFixture(),
           plan: planFixture(),
         })),
       list: over.list ?? (async () => [workItemFixture()]),
-      detail: over.detail ??
+      detail:
+        over.detail ??
         (async () => ({
           workItem: workItemFixture(),
           plan: { current: planFixture(), history: [] },
           tasks: [],
           runLinks: [],
         })),
-      acceptPlan: over.acceptPlan ??
+      acceptPlan:
+        over.acceptPlan ??
         (async () => ({
           workItem: workItemFixture({ status: "ready" }),
           plan: planFixture(),
         })),
-      regeneratePlan: over.regeneratePlan ??
+      regeneratePlan:
+        over.regeneratePlan ??
         (async () => ({
           workItem: workItemFixture({ status: "planning" }),
           plan: { ...planFixture(), version: 2, status: "draft" as const },
         })),
       skipTask: over.skipTask ?? (async () => ({ ok: true as const })),
       retryTask: over.retryTask ?? (async () => ({ ok: true as const })),
-      replanTask: over.replanTask ??
+      replanTask:
+        over.replanTask ??
         (async () => ({
           workItem: workItemFixture({ status: "ready" }),
           plan: { ...planFixture(), version: 2, status: "draft" as const },
         })),
-      markNeedsRework: over.markNeedsRework ?? (async () => ({ ok: true as const })),
+      markNeedsRework:
+        over.markNeedsRework ?? (async () => ({ ok: true as const })),
       unskipTask: over.unskipTask ?? (async () => ({ ok: true as const })),
-      graph: over.graph ??
+      graph:
+        over.graph ??
         (async () => ({
           levels: [["t1"], ["t2"]],
           edges: [{ from: "t1", to: "t2" }],
           criticalPathTaskIds: ["t1", "t2"],
         })),
       report: over.report ?? (async () => undefined),
-      getReportMarkdown: over.getReportMarkdown ??
-        (async () => "# Work item report\n"),
-      getEvidence: over.getEvidence ??
+      getReportMarkdown:
+        over.getReportMarkdown ?? (async () => "# Work item report\n"),
+      getEvidence:
+        over.getEvidence ??
         (async () => ({
           index: [],
           byTask: {},
           missing: [],
         })),
-      confirmTaskEvidence: over.confirmTaskEvidence ??
+      confirmTaskEvidence:
+        over.confirmTaskEvidence ??
         (async (_workItemId, _taskId, evidenceId) => ({
           evidenceId,
           confirmedAt: "2026-05-17T00:20:00.000Z",
@@ -1187,6 +1249,7 @@ describe("V4.1 work item routes", () => {
       },
       allSummaries: () => [...byRun.values()].map(buildRunReportSummary),
       all: async () => [...byRun.values()],
+      invalidReportCount: () => 0,
     };
   }
 
@@ -1203,9 +1266,7 @@ describe("V4.1 work item routes", () => {
       "screenshots",
     );
     await mkdir(evidenceDir, { recursive: true });
-    const png = Buffer.from([
-      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-    ]);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     await writeFile(path.join(evidenceDir, "login.png"), png);
     return { taskWorktreePath, png };
   }
@@ -1228,15 +1289,17 @@ describe("V4.1 work item routes", () => {
   });
 
   it("POST /api/issues/:iid/plan returns work item and plan", async () => {
-    const planFromIssue = vi.fn(async (input: {
-      iid: number;
-      regenerate?: boolean;
-      operator: string;
-    }) => ({
-      workItem: workItemFixture(),
-      plan: planFixture(),
-      _captured: input,
-    }));
+    const planFromIssue = vi.fn(
+      async (input: {
+        iid: number;
+        regenerate?: boolean;
+        operator: string;
+      }) => ({
+        workItem: workItemFixture(),
+        plan: planFixture(),
+        _captured: input,
+      }),
+    );
     const { app } = await buildTestApp(async () => [], {
       workItems: buildWorkItemsService({
         planFromIssue: planFromIssue as never,
@@ -1390,7 +1453,9 @@ describe("V4.1 work item routes", () => {
       plan: { ...planFixture(), version: 2, status: "draft" as const },
     }));
     const { app } = await buildTestApp(async () => [], {
-      workItems: buildWorkItemsService({ regeneratePlan: regeneratePlan as never }),
+      workItems: buildWorkItemsService({
+        regeneratePlan: regeneratePlan as never,
+      }),
     });
     try {
       const resp = await app.inject({
@@ -1812,7 +1877,10 @@ describe("V4.1 work item routes", () => {
       run: { ...runReportFixture().run, workspacePath: taskWorktreePath },
     });
     const projectBReport = runReportFixture({
-      run: { ...runReportFixture().run, workspacePath: projectB.taskWorktreePath },
+      run: {
+        ...runReportFixture().run,
+        workspacePath: projectB.taskWorktreePath,
+      },
     });
     const getEvidenceA = vi.fn(async () => evidenceResponseFixture());
     const getEvidenceB = vi.fn(async () => ({
@@ -1849,7 +1917,10 @@ describe("V4.1 work item routes", () => {
             getEvidence: getEvidenceA as never,
           }),
         ],
-        ["proj-b", buildWorkItemsService({ getEvidence: getEvidenceB as never })],
+        [
+          "proj-b",
+          buildWorkItemsService({ getEvidence: getEvidenceB as never }),
+        ],
       ]) as never,
     });
     try {
@@ -2230,11 +2301,11 @@ describe("V4.1 work item routes", () => {
     function reportStoreWith(reports: RunReportArtifact[]) {
       return {
         save: async () => {},
-        get: async (runId: string) =>
-          reports.find((r) => r.runId === runId),
+        get: async (runId: string) => reports.find((r) => r.runId === runId),
         summary: () => undefined,
         allSummaries: () => [],
         all: async () => reports,
+        invalidReportCount: () => 0,
       };
     }
 
@@ -2345,11 +2416,19 @@ describe("V4.1 work item routes", () => {
         qualityByProject: new Map([
           [
             "proj-a",
-            { reports: reportStoreWith([fixtureRunReport({ runId: "a", projectId: "proj-a" })]) },
+            {
+              reports: reportStoreWith([
+                fixtureRunReport({ runId: "a", projectId: "proj-a" }),
+              ]),
+            },
           ],
           [
             "proj-b",
-            { reports: reportStoreWith([fixtureRunReport({ runId: "b", projectId: "proj-b" })]) },
+            {
+              reports: reportStoreWith([
+                fixtureRunReport({ runId: "b", projectId: "proj-b" }),
+              ]),
+            },
           ],
         ]),
       });
@@ -2512,8 +2591,7 @@ describe("V4.1 work item routes", () => {
         listWorkItems: async () => [workItem],
         getCurrentPlan: async (id: string) =>
           id === "wi-1" ? plan : undefined,
-        listAllTaskRunLinks: async (id: string) =>
-          id === "wi-1" ? links : [],
+        listAllTaskRunLinks: async (id: string) => (id === "wi-1" ? links : []),
         getReport: async (id: string) =>
           id === "wi-1" ? workItemReport : undefined,
       };

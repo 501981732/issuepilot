@@ -1,13 +1,19 @@
 "use client";
 
 import type {
+  FailurePatternId,
   FailurePatternSummary,
   QualityDrilldownItem,
+  QualityDimension,
   QualityMetric,
   QualityMetricId,
+  QualityStatusFilter,
   QualitySummaryResponse,
+  QualityWindow,
 } from "@issuepilot/shared-contracts";
+import { QUALITY_STATUS_FILTER_VALUES } from "@issuepilot/shared-contracts";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
@@ -70,6 +76,23 @@ function formatMetricValue(metric: QualityMetric): string {
   return `${metric.value}%`;
 }
 
+function nextSearch(
+  pathname: string,
+  updates: Record<string, string | undefined>,
+): string | undefined {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value && value.length > 0) {
+      url.searchParams.set(key, value);
+    } else {
+      url.searchParams.delete(key);
+    }
+  }
+  const query = url.searchParams.toString();
+  return query ? `${pathname}?${query}` : pathname;
+}
+
 function writeUrlFilter(key: string, value: string | undefined): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
@@ -83,10 +106,17 @@ function writeUrlFilter(key: string, value: string | undefined): void {
 
 export function QualityAnalytics({ summary }: QualityAnalyticsProps) {
   const t = useTranslations("reportsPage.quality");
+  const router = useRouter();
+  const pathname = usePathname() ?? "/reports";
   const [metricId, setMetricId] = useState<QualityMetricId>("success-rate");
-  const [activePattern, setActivePattern] = useState<string | undefined>(
-    summary.filters.pattern,
-  );
+  const activePattern = summary.filters.pattern;
+
+  function applyFilters(updates: Record<string, string | undefined>) {
+    const next = nextSearch(pathname, updates);
+    if (!next) return;
+    router.replace(next, { scroll: false });
+    router.refresh();
+  }
 
   const orderedMetrics = useMemo(() => {
     const byId = new Map(summary.metrics.map((m) => [m.id, m]));
@@ -102,7 +132,9 @@ export function QualityAnalytics({ summary }: QualityAnalyticsProps) {
 
   const filteredDrilldown = useMemo(() => {
     if (!activePattern) return summary.drilldown;
-    return summary.drilldown.filter((d) => d.patternIds.includes(activePattern as never));
+    return summary.drilldown.filter((d) =>
+      d.patternIds.includes(activePattern),
+    );
   }, [summary.drilldown, activePattern]);
 
   const hasAnyData = orderedMetrics.some(
@@ -130,6 +162,14 @@ export function QualityAnalytics({ summary }: QualityAnalyticsProps) {
         <>
           <SummaryStrip metrics={orderedMetrics} t={t} />
 
+          <FilterBar
+            filters={summary.filters}
+            dimensions={summary.dimensions}
+            patterns={summary.failurePatterns}
+            onChange={applyFilters}
+            t={t}
+          />
+
           <TrendPanel
             metrics={orderedMetrics}
             activeId={metricId}
@@ -143,8 +183,8 @@ export function QualityAnalytics({ summary }: QualityAnalyticsProps) {
             activePattern={activePattern}
             onSelect={(p) => {
               const next = activePattern === p ? undefined : p;
-              setActivePattern(next);
               writeUrlFilter("pattern", next);
+              applyFilters({ pattern: next });
             }}
             t={t}
           />
@@ -234,6 +274,130 @@ function SummaryStrip({
         );
       })}
     </ul>
+  );
+}
+
+function dimensionOptions(
+  dimensions: QualityDimension[],
+  kind: QualityDimension["kind"],
+): QualityDimension[] {
+  return dimensions
+    .filter((d) => d.kind === kind)
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function FilterBar({
+  filters,
+  dimensions,
+  patterns,
+  onChange,
+  t,
+}: {
+  filters: QualitySummaryResponse["filters"];
+  dimensions: QualityDimension[];
+  patterns: FailurePatternSummary[];
+  onChange: (updates: Record<string, string | undefined>) => void;
+  t: SectionTranslator;
+}) {
+  const workflowOptions = dimensionOptions(dimensions, "workflow");
+  const taskTypeOptions = dimensionOptions(dimensions, "task-type");
+
+  return (
+    <Card>
+      <CardContent className="grid gap-3 py-3 md:grid-cols-5">
+        <FilterSelect
+          label={t("filterWindow")}
+          value={filters.window}
+          onChange={(value) =>
+            onChange({
+              window: value as QualityWindow,
+              from: undefined,
+              to: undefined,
+            })
+          }
+          options={[
+            { value: "7d", label: "7d" },
+            { value: "30d", label: "30d" },
+          ]}
+        />
+        <FilterSelect
+          label={t("filterWorkflow")}
+          value={filters.workflow ?? ""}
+          onChange={(value) => onChange({ workflow: value || undefined })}
+          options={workflowOptions.map((d) => ({
+            value: d.value,
+            label: `${d.label} (${d.count})`,
+          }))}
+          emptyLabel={t("filterAll")}
+        />
+        <FilterSelect
+          label={t("filterTaskType")}
+          value={filters.taskType ?? ""}
+          onChange={(value) => onChange({ taskType: value || undefined })}
+          options={taskTypeOptions.map((d) => ({
+            value: d.value,
+            label: `${d.label} (${d.count})`,
+          }))}
+          emptyLabel={t("filterAll")}
+        />
+        <FilterSelect
+          label={t("filterStatus")}
+          value={filters.status ?? ""}
+          onChange={(value) =>
+            onChange({ status: (value as QualityStatusFilter) || undefined })
+          }
+          options={QUALITY_STATUS_FILTER_VALUES.map((value) => ({
+            value,
+            label: value,
+          }))}
+          emptyLabel={t("filterAll")}
+        />
+        <FilterSelect
+          label={t("filterPattern")}
+          value={filters.pattern ?? ""}
+          onChange={(value) =>
+            onChange({ pattern: (value as FailurePatternId) || undefined })
+          }
+          options={patterns.map((pattern) => ({
+            value: pattern.patternId,
+            label: `${pattern.label} (${pattern.count})`,
+          }))}
+          emptyLabel={t("filterAll")}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+  emptyLabel,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  emptyLabel?: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-[11px] font-medium uppercase tracking-[0.12em] text-fg-subtle">
+      <span>{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-9 rounded-md border border-border bg-surface px-2 text-sm normal-case tracking-normal text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {emptyLabel ? <option value="">{emptyLabel}</option> : null}
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -340,7 +504,10 @@ function PatternList({
                         : "border-border bg-surface hover:bg-surface-2",
                     )}
                   >
-                    <Badge tone={active ? "warning" : "neutral"} className="shrink-0">
+                    <Badge
+                      tone={active ? "warning" : "neutral"}
+                      className="shrink-0"
+                    >
                       {pattern.label}
                     </Badge>
                     <span className="font-mono text-xs tabular-nums text-fg-muted">
@@ -348,9 +515,7 @@ function PatternList({
                     </span>
                     <span className="ml-auto line-clamp-1 text-xs text-fg-subtle">
                       {pattern.topProject ?? "—"}
-                      {pattern.topWorkflow
-                        ? ` · ${pattern.topWorkflow}`
-                        : ""}
+                      {pattern.topWorkflow ? ` · ${pattern.topWorkflow}` : ""}
                     </span>
                   </button>
                 </li>
@@ -451,7 +616,11 @@ function DrilldownTable({
                           </span>
                         ) : (
                           item.patternIds.map((p) => (
-                            <Badge key={p} tone="neutral" className="text-[10px]">
+                            <Badge
+                              key={p}
+                              tone="neutral"
+                              className="text-[10px]"
+                            >
                               {p}
                             </Badge>
                           ))

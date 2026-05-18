@@ -366,7 +366,13 @@
     "headDuration": "Duration",
     "headUpdated": "Updated",
     "errorTitle": "IssuePilot reports unavailable",
-    "trendLabel": "{label} trend"
+    "trendLabel": "{label} trend",
+    "quality": {
+      "aria": "Quality analytics",
+      "title": "Quality Analytics",
+      "description": "Success, failure, rework, CI, review, and missing-evidence trends derived from local reports and work items.",
+      "empty": "No quality data yet. Run the orchestrator to populate this view."
+    }
   },
   "runDetail": {
     "backLink": "← Command Center",

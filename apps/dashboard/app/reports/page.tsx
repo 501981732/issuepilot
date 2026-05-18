@@ -1,15 +1,18 @@
 import { getTranslations } from "next-intl/server";
 
 import { ReportsPage } from "../../components/reports/reports-page";
-import { listReports } from "../../lib/api";
+import { getQualitySummary, listReports } from "../../lib/api";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function ReportsRoute() {
   try {
-    const { reports } = await listReports();
-    return <ReportsPage reports={reports} />;
+    const [{ reports }, quality] = await Promise.all([
+      listReports(),
+      getQualitySummary(),
+    ]);
+    return <ReportsPage reports={reports} quality={quality} />;
   } catch (err) {
     const t = await getTranslations("reportsPage");
     return (

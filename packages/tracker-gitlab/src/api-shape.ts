@@ -118,12 +118,40 @@ export interface MergeRequestsApi {
   show(projectId: string | number, mrIid: number): Promise<RawMergeRequest>;
 }
 
+/**
+ * Position payload accepted by GitLab's `POST /merge_requests/:iid/notes` (or
+ * the discussions API) for inline review comments. We intentionally type only
+ * the fields we send so unrelated GitLab evolutions don't ripple here.
+ */
+export interface MergeRequestNotePosition {
+  /** `"text"` for normal diff comments — we never send image positions. */
+  position_type: "text";
+  base_sha: string;
+  start_sha: string;
+  head_sha: string;
+  new_path: string;
+  old_path: string;
+  new_line?: number;
+  old_line?: number;
+}
+
 export interface MergeRequestNotesApi {
   all(
     projectId: string | number,
     mrIid: number,
     opts?: { perPage?: number },
   ): Promise<readonly RawIssueNote[]>;
+  create(
+    projectId: string | number,
+    mrIid: number,
+    body: string,
+    opts?: { position?: MergeRequestNotePosition },
+  ): Promise<RawIssueNote>;
+  remove(
+    projectId: string | number,
+    mrIid: number,
+    noteId: number,
+  ): Promise<void>;
 }
 
 export interface PipelinesApi {

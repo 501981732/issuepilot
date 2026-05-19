@@ -18,6 +18,7 @@ export type {
   GitLabApi,
   IssueNotesApi,
   IssuesApi,
+  MergeRequestNotePosition,
   MergeRequestNotesApi,
   MergeRequestsApi,
   PipelinesApi,
@@ -49,10 +50,19 @@ export {
 } from "./labels.js";
 export {
   createIssueNote,
+  createMrInlineNote,
+  createMrNote,
+  deleteMrNotes,
   findLatestIssuePilotWorkpadNote,
   findWorkpadNote,
+  GitLabScopeMissingError,
   updateIssueNote,
   type CreateIssueNoteResult,
+  type CreateMrInlineNoteInput,
+  type CreateMrInlineNoteResult,
+  type CreateMrNoteInput,
+  type DeleteMrNotesInput,
+  type DeleteMrNotesResult,
   type WorkpadNote,
 } from "./notes.js";
 export {

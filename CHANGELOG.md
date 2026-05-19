@@ -2,6 +2,38 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.6 Multi-Agent Collaboration（plan 阶段）
+
+### Added
+
+- 2026-05-19 — **V4.6 实施计划**：
+  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`。
+  按 12 个 Phase（shared contracts → workflow YAML → PipelineRun /
+  AgentReport store → recipe + role profile + failure mapping →
+  coordinator + auto_advance → coder agent → reviewer agent + GitLab
+  MR 推送 → test/evidence agent → HTTP API + daemon → V4.4 by-role
+  切片 + V4.5 role_configuration → dashboard 组件 + i18n → E2E +
+  acceptance）切分；每个 Phase 内部 TDD（先写失败测试 → 实现 →
+  通过测试 → commit），Phase 之间 empty commit + CHANGELOG append
+  作为 checkpoint。新增 Prerequisites 节，明确 V4.5 实现 PR 未合并
+  时 Task 10.3（improvement role_configuration target）整体降级为
+  `skipIf` 占位；统一 YAML on-disk snake_case ↔ TS in-memory camelCase
+  规范。Plan 经 `code-reviewer` subagent 3 轮 review 收口（每轮都把
+  字面值 / 枚举 / URL 路径 / 状态机映射对齐到 spec 已收口版本）。
+- 2026-05-19 — **V4 总 spec 实施计划同步**：V4.6 状态推进到「实施计划
+  已写」并指回 V4.6 plan（见 V4 总 spec `2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  实施计划节，commit `docs(v4): mark V4.6 plan written` 会在
+  Phase 12 Task 12.3 落地）。
+
+### Notes
+
+- 仅记录 plan 阶段；具体实现代码、单测、E2E、dashboard 组件、acceptance
+  文件均**未**在本 PR 中交付，将由后续 V4.6 实施 PR 按 Phase 推进。
+- Plan review fixup commits 留在 `docs/v4.6-multi-agent-spec` 分支：
+  Round 1 修齐字面值/契约/URL，Round 2 同步叙述段+`readyToMerge`
+  否决谓词，Round 3 对齐 `lastError.code` 与 `scope_insufficient` 单一
+  truth source。
+
 ## [Unreleased] V4.6 Multi-Agent Collaboration（spec 阶段）
 
 ### Added

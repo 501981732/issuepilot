@@ -53,6 +53,8 @@ async function buildTestApp(
     qualityByProject?: ServerDeps["qualityByProject"];
     improvements?: ServerDeps["improvements"];
     improvementsByProject?: ServerDeps["improvementsByProject"];
+    pipelines?: ServerDeps["pipelines"];
+    pipelinesByProject?: ServerDeps["pipelinesByProject"];
   } = {},
 ) {
   const state = createRuntimeState();
@@ -89,6 +91,10 @@ async function buildTestApp(
         : {}),
       ...(overrides.improvementsByProject
         ? { improvementsByProject: overrides.improvementsByProject }
+        : {}),
+      ...(overrides.pipelines ? { pipelines: overrides.pipelines } : {}),
+      ...(overrides.pipelinesByProject
+        ? { pipelinesByProject: overrides.pipelinesByProject }
         : {}),
     },
     { port: 0 },
@@ -2823,6 +2829,250 @@ describe("V4.1 work item routes", () => {
         });
         expect(unknown.statusCode).toBe(404);
         expect(unknown.json()).toMatchObject({ code: "project_not_found" });
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("V4.6 pipeline routes", () => {
+    function fakePipelineService(): NonNullable<ServerDeps["pipelines"]> {
+      return {
+        async getPipelineForTask({ workItemId, taskId }) {
+          if (workItemId === "wi_unknown") {
+            return {
+              ok: false,
+              error: { code: "task_not_found", message: "no task" },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              pipelineRun: null,
+              agentReports: [],
+              pendingRecipe: "coding_plus_reviewer",
+              pendingRecipeSource: "operator_override",
+              // intentionally include unrelated taskId field to confirm
+              // routing forwards params verbatim
+              ...(taskId === "t_x" ? {} : {}),
+            },
+          };
+        },
+        async listPipelinesForTask() {
+          return { ok: true, value: { pipelineRuns: [] } };
+        },
+        async getAgentReport({ agentReportId }) {
+          if (agentReportId === "missing") {
+            return {
+              ok: false,
+              error: { code: "agent_report_not_found", message: "x" },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              agentReport: {
+                agentReportId,
+                pipelineRunId: "pr_1",
+                taskId: "t_1",
+                role: "coder",
+                roleProfileId: "coder@abc",
+                status: "complete",
+                startedAt: "2026-05-19T11:00:00.000Z",
+                completedAt: "2026-05-19T11:00:05.000Z",
+                evidenceLinks: [],
+                redactedFields: [],
+                coder: { diffSummary: "ok", branch: "issuepilot/t_1" },
+              } as never,
+            },
+          };
+        },
+        async listTaskAgentReports() {
+          return { ok: true, value: { agentReports: [] } };
+        },
+        async listPipelineRunAgentReports({ pipelineRunId }) {
+          if (pipelineRunId === "pr_missing") {
+            return {
+              ok: false,
+              error: { code: "pipeline_run_not_found", message: "x" },
+            };
+          }
+          return { ok: true, value: { agentReports: [] } };
+        },
+        async setRecipeOverride({ recipe }) {
+          if (recipe === ("nope" as never)) {
+            return {
+              ok: false,
+              error: { code: "unknown_recipe", message: "nope" },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              recipe: recipe,
+              recipeSource: "operator_override",
+              appliedTo: "pending",
+            },
+          };
+        },
+        async revokeAiReview({ agentReportId }) {
+          if (agentReportId === "ar_not_revocable") {
+            return {
+              ok: false,
+              error: { code: "not_revocable", message: "x" },
+            };
+          }
+          if (agentReportId === "ar_coder") {
+            return {
+              ok: false,
+              error: { code: "role_mismatch", message: "x" },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              agentReportId,
+              status: "revoked",
+              revokedAt: "2026-05-19T13:00:00.000Z",
+            },
+          };
+        },
+        async retryAgentReport({ agentReportId }) {
+          if (agentReportId === "missing") {
+            return {
+              ok: false,
+              error: { code: "agent_report_not_found", message: "x" },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              pipelineRunId: "pr_1",
+              agentReportId: `${agentReportId}_v2`,
+            },
+          };
+        },
+        async skipAgentReport({ agentReportId }) {
+          if (agentReportId === "ar_coder") {
+            return {
+              ok: false,
+              error: { code: "role_skip_not_allowed", message: "x" },
+            };
+          }
+          return {
+            ok: true,
+            value: {
+              pipelineRunId: "pr_1",
+              agentReportId,
+              nextRole: "awaiting_human_review",
+            },
+          };
+        },
+        async validateWorkflowRoles() {
+          return { ok: true, value: { valid: true, errors: [] } };
+        },
+      };
+    }
+
+    it("single-mode: routes are wired and reachable", async () => {
+      const { app } = await buildTestApp(undefined, {
+        pipelines: fakePipelineService(),
+      });
+      try {
+        const pipeline = await app.inject(
+          "/api/work-items/wi_1/tasks/t_1/pipeline",
+        );
+        expect(pipeline.statusCode).toBe(200);
+        expect(pipeline.json()).toMatchObject({
+          pipelineRun: null,
+          pendingRecipe: "coding_plus_reviewer",
+        });
+
+        const taskNotFound = await app.inject(
+          "/api/work-items/wi_unknown/tasks/t_1/pipeline",
+        );
+        expect(taskNotFound.statusCode).toBe(404);
+        expect(taskNotFound.json()).toMatchObject({ code: "task_not_found" });
+
+        const override = await app.inject({
+          method: "POST",
+          url: "/api/work-items/wi_1/tasks/t_1/pipeline/recipe-override",
+          payload: { recipe: "coding_plus_reviewer" },
+          headers: { "x-issuepilot-operator": "alice" },
+        });
+        expect(override.statusCode).toBe(200);
+        expect(override.json().appliedTo).toBe("pending");
+
+        const unknownRecipe = await app.inject({
+          method: "POST",
+          url: "/api/work-items/wi_1/tasks/t_1/pipeline/recipe-override",
+          payload: { recipe: "nope" },
+        });
+        expect(unknownRecipe.statusCode).toBe(400);
+        expect(unknownRecipe.json()).toMatchObject({ code: "unknown_recipe" });
+
+        const retry = await app.inject({
+          method: "POST",
+          url: "/api/agent-reports/ar_reviewer/retry",
+          payload: { reason: "rerun" },
+        });
+        expect(retry.statusCode).toBe(200);
+        expect(retry.json().agentReportId).toBe("ar_reviewer_v2");
+
+        const skipBlocked = await app.inject({
+          method: "POST",
+          url: "/api/agent-reports/ar_coder/skip",
+        });
+        expect(skipBlocked.statusCode).toBe(400);
+        expect(skipBlocked.json()).toMatchObject({
+          code: "role_skip_not_allowed",
+        });
+
+        const validate = await app.inject(
+          "/api/workflows/default/roles/validate",
+        );
+        expect(validate.statusCode).toBe(200);
+        expect(validate.json()).toEqual({ valid: true, errors: [] });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("team-mode: missing header → 400 project_required; unknown → 404; query → 400 project_query_not_allowed", async () => {
+      const { app } = await buildTestApp(undefined, {
+        pipelinesByProject: new Map([["proj-a", fakePipelineService()]]),
+      });
+      try {
+        const missingHeader = await app.inject(
+          "/api/work-items/wi_1/tasks/t_1/pipeline",
+        );
+        expect(missingHeader.statusCode).toBe(400);
+        expect(missingHeader.json()).toMatchObject({
+          code: "project_required",
+        });
+
+        const unknownProject = await app.inject({
+          url: "/api/work-items/wi_1/tasks/t_1/pipeline",
+          headers: { "x-issuepilot-project": "missing" },
+        });
+        expect(unknownProject.statusCode).toBe(404);
+        expect(unknownProject.json()).toMatchObject({
+          code: "project_not_found",
+        });
+
+        const projectQuery = await app.inject(
+          "/api/work-items/wi_1/tasks/t_1/pipeline?project=proj-a",
+        );
+        expect(projectQuery.statusCode).toBe(400);
+        expect(projectQuery.json()).toMatchObject({
+          code: "project_query_not_allowed",
+        });
+
+        const headerOk = await app.inject({
+          url: "/api/work-items/wi_1/tasks/t_1/pipeline",
+          headers: { "x-issuepilot-project": "proj-a" },
+        });
+        expect(headerOk.statusCode).toBe(200);
       } finally {
         await app.close();
       }

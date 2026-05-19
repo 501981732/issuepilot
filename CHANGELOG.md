@@ -6,6 +6,38 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 9 Task 9.2（Fastify routes + server wiring）**：
+  - `apps/orchestrator/src/pipelines/routes.ts` 新增
+    `registerPipelineRoutes(app, resolveContext)`：按 spec §18 注册 10 条
+    V4.6 路由（GET pipeline / pipelines / agent-reports（task + pipeline-run）
+    / agent-reports/:id、POST pipeline/recipe-override / agent-reports/:id/
+    revoke-ai-review / retry / skip、GET workflows/:workflowId/roles/validate）。
+    错误码 → 状态码映射（`PipelineRouteErrorCode` 全枚举穷尽）：
+    - `task_not_found` / `pipeline_run_not_found` / `agent_report_not_found`
+      / `workflow_not_found` → 404；
+    - `recipe_override_locked` / `not_revocable` → 409；
+    - `unknown_recipe` / `role_mismatch` / `role_skip_not_allowed` /
+      `invalid_payload` / `project_required` / `project_query_not_allowed`
+      → 400。
+    路由内只做 query / params / body 校验和 operator header 解析
+    （`x-issuepilot-operator` fallback），所有业务规则交给 service。
+  - `apps/orchestrator/src/server/index.ts` 扩展：`ServerDeps` 新增
+    `pipelines?` / `pipelinesByProject?`；`resolvePipelineService` 同时承担
+    单 / team 模式分支 —— team 模式必填 `x-issuepilot-project` header，
+    显式 `?project=` query 直接 400 `project_query_not_allowed`（spec
+    §18.3）；未注入 service 时 503，不让 5xx 漏到 dashboard。最后调用
+    `registerPipelineRoutes(app, resolvePipelineService)` 把全部路由挂上。
+  - 测试：
+    - `apps/orchestrator/src/pipelines/__tests__/routes.test.ts` 新增 21 例：
+      把 `PipelineService` mock 成可控 stub，覆盖每条路由的 200 happy 路径
+      + 400 / 404 / 409 error mapping，外加 team-mode resolver 的 400 /
+      404 / `project_query_not_allowed` 三类拒绝路径。
+    - `apps/orchestrator/src/server/__tests__/server.test.ts` 新增 2 例
+      `V4.6 pipeline routes`：single-mode 全链路 happy + 4 类错误码端到端
+      返回，team-mode header / 未知 project / 不当 query 三种拒绝。
+  - 验证：21/21 routes ✓；server 84/84 ✓（含 2 新例）；`tsc --noEmit` +
+    `eslint --max-warnings 0` 干净。daemon 注入（Task 9.3）紧接进行。
+
 - 2026-05-19 — **V4.6 Phase 9 Task 9.1（pipelines service 高层方法）**：
   - `apps/orchestrator/src/pipelines/store.ts` 新增
     `PipelineStore.findAgentReportById(agentReportId)`：按 V4.6 spec §9 三层

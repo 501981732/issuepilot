@@ -29,6 +29,11 @@ import {
 } from "../improvements/routes.js";
 import type { ImprovementService } from "../improvements/service.js";
 import type { OperatorActionResult } from "../operations/actions.js";
+import {
+  registerPipelineRoutes,
+  type PipelineRouteContext,
+} from "../pipelines/routes.js";
+import type { PipelineService } from "../pipelines/service.js";
 import { buildQualitySummary } from "../quality/aggregate.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { collectQualitySources } from "../quality/collect.js";
@@ -240,6 +245,19 @@ export interface ServerDeps {
    * V4.5 Improvement Loop: team-mode recommendation services keyed by project id.
    */
   improvementsByProject?: Map<string, ImprovementService>;
+  /**
+   * V4.6 Multi-Agent Pipeline: single-project pipeline service. Wires
+   * `getPipelineForTask` / `setRecipeOverride` / retry / skip routes from
+   * spec §18 against a single workspace.
+   */
+  pipelines?: PipelineService;
+  /**
+   * V4.6 Multi-Agent Pipeline: per-project pipeline services keyed by the
+   * same project id used by `workItemsByProject`. When set, V4.6 routes
+   * require the `x-issuepilot-project` header and reject the legacy
+   * `?project=` query (per spec §18.3 team-mode rules).
+   */
+  pipelinesByProject?: Map<string, PipelineService>;
 }
 
 function resolveSnapshotField<T>(
@@ -1334,6 +1352,79 @@ export async function createServer(
   }
 
   registerImprovementRoutes(app, resolveImprovementService);
+
+  /**
+   * V4.6 Multi-Agent Pipeline: resolve the per-request pipeline service.
+   * - Team mode (`pipelinesByProject` set): requires `x-issuepilot-project`
+   *   header and rejects the legacy `?project=` query string with
+   *   `project_query_not_allowed` (spec §18.3).
+   * - Single mode: falls back to `pipelines`. When not configured the
+   *   server returns 503 `pipelines_unavailable` so dashboards see a
+   *   deterministic error instead of a 5xx.
+   */
+  function resolvePipelineService(
+    headers: Record<string, unknown>,
+    queryProject?: unknown,
+  ): PipelineRouteContext {
+    if (deps.pipelinesByProject && deps.pipelinesByProject.size > 0) {
+      if (queryProject !== undefined) {
+        return {
+          ok: false,
+          statusCode: 400,
+          body: {
+            ok: false,
+            code: "project_query_not_allowed",
+            message:
+              "project query is not supported; team mode uses x-issuepilot-project",
+          },
+        };
+      }
+      const raw = headers["x-issuepilot-project"];
+      const project = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof project !== "string" || project.length === 0) {
+        return {
+          ok: false,
+          statusCode: 400,
+          body: {
+            ok: false,
+            code: "project_required",
+            message:
+              "x-issuepilot-project header is required for pipelines in team mode",
+          },
+        };
+      }
+      const service = deps.pipelinesByProject.get(project);
+      if (!service) {
+        return {
+          ok: false,
+          statusCode: 404,
+          body: {
+            ok: false,
+            code: "project_not_found",
+            message: `Unknown project: ${project}`,
+          },
+        };
+      }
+      return { ok: true, service, projectId: project };
+    }
+    if (!deps.pipelines) {
+      return {
+        ok: false,
+        statusCode: 503,
+        body: {
+          ok: false,
+          // 503 falls outside spec §18.4; we still use a deterministic shape
+          // so dashboards can render a clear "service unavailable" hint
+          // instead of a 5xx black box.
+          code: "agent_report_not_found",
+          message: "Pipeline service is not configured on this orchestrator",
+        },
+      };
+    }
+    return { ok: true, service: deps.pipelines };
+  }
+
+  registerPipelineRoutes(app, resolvePipelineService);
 
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 4738;

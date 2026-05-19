@@ -6,6 +6,34 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 3（Pipeline Store + AgentReport Store）**：
+  - `apps/orchestrator/src/pipelines/store.ts` 新增 `PipelineStore`、
+    `createPipelineStore`、`createPipelineStoresByProject`、
+    `ensurePipelineDirs`、`PipelineStorePathError` / `PipelineStoreReadError`。
+    按 spec §9 三层目录布局落盘：
+    `pipelines/<workItemId>/<taskId>/<pipelineRunId>.json` 与
+    `agent-reports/<taskId>/<role>/<agentReportId>.json` + 同目录
+    `index.json`（维护 supersede 链 / latestAgentReportId）。
+  - 所有写入前过 `@issuepilot/observability/redact`，glpat / Bearer
+    等 token 被替换成 `[REDACTED]`；secret 字段名兜底替换。
+  - `supersede(prev, next)` 双向写回 `supersedes` / `supersededBy`；
+    `latestForTask` / `latestAgentReportForRole` 只返回未被 supersede 的
+    末端记录。
+  - 路径校验：workItemId / taskId / pipelineRunId / agentReportId 必须
+    匹配 `^[A-Za-z0-9._-]+$`，含 `..` / `/` / 绝对路径越权 → 抛
+    `PipelineStorePathError`；非法 role 同样抛该错误。
+  - 损坏 JSON 或 schema 不符 → `PipelineStoreReadError`；目录不存在
+    或 ENOENT 透传为 `null` / 空数组，符合 spec §9 容错语义。
+  - team 模式预留：`createPipelineStoresByProject([{projectId, root}])`
+    按项目隔离根目录，store root 互不重叠。
+  - 测试：`apps/orchestrator/src/pipelines/__tests__/store.test.ts`
+    新增 17 用例覆盖 savePipelineRun / getPipelineRunById / listForTask /
+    latestForTask / supersede / saveAgentReport（redact 验证 / index.json
+    维护）/ list/latestAgentReportForRole / createPipelineStoresByProject /
+    ensurePipelineDirs / 路径越权 / 损坏 JSON。`tsc --noEmit` 与
+    `eslint src/pipelines --max-warnings 0` 干净，`vitest run` 全 646
+    用例绿。
+
 - 2026-05-19 — **V4.6 Phase 2（workflow YAML 扩展）**：
   - `packages/workflow/src/types.ts`：`WorkflowConfig` 新增
     `defaultRecipe` / `roles` / `warnings`；`TrackerConfig` 新增

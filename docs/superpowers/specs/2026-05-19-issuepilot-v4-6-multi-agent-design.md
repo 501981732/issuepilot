@@ -761,3 +761,75 @@ V4.6 完成后，后续仍属于 V3 / V4 后续阶段，不在本 spec 中：
 - 把 V4.5 improvement recommendation 的 apply step 让 agent 自动 commit
   到分支（需要 V3 RBAC + 审计）。
 - 把 GitLab Merge Train / auto-merge 接入 reviewer verdict（需要 V3）。
+
+## 19. 实施范围裁剪建议（spec review 决策项）
+
+本 spec 第一稿同时覆盖 `coding`、`reviewer`、`test_evidence` 三种 role +
+RunnerAdapter 契约 + workflow schema + UI + Quality 反哺，工程量大约是 V4.5
+的 1.5–2 倍。从仓库 local-first 约束、V4 总 spec「V4.1–V4.6 可根据
+dog-food 反馈调整顺序」、以及 V4.5 review 暴露的「coding agent 自我背书」
+痛点反推，spec review 阶段建议在以下三种实施粒度中选一种。最终方案在 spec
+review pass 后写入实施计划，并对应回写本节为「已选择 X 方案」备忘，避免
+后续阶段忘记裁剪了什么。
+
+### 19.1 方案 A：reviewer-only + RunnerAdapter 契约（推荐）
+
+- V4.6 落地：`coding` + `reviewer` 两 role；workflow `agents.coding` /
+  `agents.reviewer`；RunnerAdapter contract 全量落地，但只实装
+  codex-app-server 适配；UI / Review Packet / Quality 反哺中只渲染
+  reviewer；新增 failure pattern `reviewer-needs-rework`。
+- 直接对症「coding agent 自我背书」痛点；与 V4.5 improvement loop 串成
+  「评审 → 改进」最短闭环。
+- 不引入 shell allowList / evidence emitter / stray-diff 检测，工程面集中
+  在 LLM 调度与 verdict 落地。
+- reviewer pass 强烈建议跑 single-turn 结构化输出（Codex 一个 turn 出
+  `AgentReviewerOutcome` JSON），不走 full `driveLifecycle`，进一步收紧
+  攻击面与测试复杂度。
+- `test_evidence` 单独拆到 V4.7 设计：
+  `docs/superpowers/specs/YYYY-MM-DD-issuepilot-v4-7-test-evidence-agent-design.md`
+  （待起草）。
+
+### 19.2 方案 B：保持当前三 role 全量 V4.6
+
+- 一次性把 reviewer + test_evidence 都落地。
+- 优点：从 dog-food 看「coding agent + reviewer + 自动 evidence」一次到位，
+  Quality Analytics 同时多两个 failure pattern。
+- 缺点：单 PR 量过大；test_evidence 引入命令 allowList / evidence emitter /
+  stray-diff 检测，与 reviewer 在工程面解耦不彻底；任何一个 role 出问题都
+  会阻塞另一个。
+- 选这条需要把 V4.6 实施计划进一步拆成 2-3 个独立批次（reviewer 先 /
+  test_evidence 后 / UI 反哺 third），并在 acceptance 中分批验收。
+
+### 19.3 方案 C：仅 RunnerAdapter 抽象 + Codex 迁移
+
+- V4.6 只做 contract 锁死 + 把 codex-app-server 迁到 RunnerAdapter 形态，
+  reviewer / test_evidence 都不实装。
+- 优点：完全消除 agent role 行为变化对 V4.5 dog-food 的干扰；
+  RunnerAdapter 契约可以在第一个非 Codex runner 落地之前已经在仓里跑通。
+- 缺点：与「V4.6 = 多 agent 协作」的产品叙事偏离；用户角度上「IssuePilot
+  现在能多角色协作了吗」答案仍然是「不」。
+
+### 19.4 决策建议
+
+第一优先 19.1（A）。理由：
+
+1. 与 V4.5 改进闭环的衔接最强：reviewer pass 失败模式直接成为 V4.5 改进
+   建议的输入，形成「评审 → 改进 → 再评审」内循环。
+2. 工程风险最低：reviewer pass 只读、不写文件、不写 GitLab；产品语义清晰
+   的同时安全不变量最容易守住。
+3. RunnerAdapter contract 同步锁死，给 V4.7 接入 Claude Code / Cursor /
+   内部 coding agent 留好门票。
+
+如果 spec review 决定走 A，本 spec 落地时需要：
+
+- §7.3、§8.1（`AgentTestEvidenceOutcome`）、§10.2 中所有
+  `test_evidence` 行、§11 `agents.test_evidence` 段、§13 Test/Evidence
+  section、§14 中 test_evidence 相关 case、§15.2/15.3/15.4/15.5/15.6
+  涉及 test_evidence 的测试用例、§16.4 中关于 test_evidence 的 hard
+  gate 描述，全部迁出到 V4.7 设计 spec，本文中保留「相关条目移至 V4.7」
+  指针。
+- `RunnerAdapter` 契约在 V4.6 全量落地（包括 `AgentRole = "test_evidence"`
+  的 type 占位），保证 V4.7 不需要再做 contract migration。
+- README / V4 主 spec / CHANGELOG 调整为
+  「V4.6 = reviewer + RunnerAdapter / V4.7 = test_evidence + evidence
+  emitter」。

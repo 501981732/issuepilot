@@ -6,6 +6,59 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 8 Task 8.1（Test/Evidence Agent）**：
+  - `apps/orchestrator/src/agents/test-evidence.ts`：实现
+    `createTestEvidenceAgent()` 把一组 `EvidenceCollector` 注入式合并：
+    - collector 返回 `kind="item"` → 入 `evidenceItems[]`；
+    - collector 返回 `kind="baseline"` → 写入 `baselineEvidence`；
+    - collector 返回 `kind="cancel"` → 立即返回 `AgentRunResult.kind="cancelled"`。
+    状态决策：
+    - 全部 `collected` → `status="complete"`；
+    - 有 `failed/skipped` 但仍有 `collected` → `status="incomplete"` +
+      `lastError.code="evidence_partial"`；
+    - 全部 `failed/skipped` → `status="failed"` +
+      `lastError.code="evidence_unavailable"`；
+    - collector 抛 `SandboxViolationError` → `status="failed"` +
+      `sandbox_violation`，保留已 `collected` 的 evidenceItems；
+    - 其他抛错 → `status="failed"` + `evidence_unavailable`。
+    `evidenceLinks[]` 自动收集 `artifactPath`。
+  - 测试：`test-evidence.test.ts` 6 例覆盖 happy + partial + sandbox
+    violation + 普通错误 + cancel + 全部失败。orchestrator 整套
+    772 用例全绿；`tsc --noEmit` + `eslint src/agents --max-warnings 0` 干净。
+
+- 2026-05-19 — **V4.6 Phase 7 Task 7.1+7.2（Reviewer Agent + findings 过滤）**：
+  - `apps/orchestrator/src/agents/reviewer.ts`：
+    - `parseReviewerMessage(raw)`：从 reviewer LLM 输出中抽
+      `\`\`\`json` fence 并 schema 校验 `summary` / `decision` /
+      `confidence` / `findings` / `risks` / `evidenceRequest` /
+      `inlineComments`。`decision` 限定在
+      `approve_with_comments | request_changes | cannot_review`；
+      `confidence` 必须 ∈ [0,1]；summary > 4000 抛
+      `ReviewerParseError(code="reviewer_summary_too_long")`，schema
+      不符抛 `ReviewerParseError(code="prompt_output_schema_mismatch")`。
+    - `filterFindingsForInline({findings, severityThreshold,
+      maxInlineComments, llmInlineComments?})`：按 spec §11/§12 把
+      findings 转 inline comments（`low` 永不入 inline），过滤后按
+      `maxInlineComments` 截断，返回 `{ inlineComments, hiddenCount }`；
+      若 LLM 直接给了 `inlineComments[]` 则优先用，仍然过滤 + cap。
+    - `formatReviewerConfidence(v)`：spec §11.1 序列化两位小数
+      （`0` → `"0.00"`、`0.911` → `"0.91"`、`1` → `"1.00"`，越界值
+      clamp 到 `[0,1]`）。
+    - `createReviewerAgent({lifecycle})`：把 `ReviewerLifecycleRunner`
+      的 raw message 解析 + 过滤后包装成 `ReviewerAgentReport`。
+      lifecycle 抛错 → status=failed, lastError.code=
+      `reviewer_unavailable`；parse 失败 → status=failed,
+      `parse_failed`（lastError.message 用 `prompt_output_schema_mismatch`
+      / `reviewer_summary_too_long`）。`request_changes` /
+      `cannot_review` 仍写 `status="complete"`，由 coordinator 处理终态。
+      `publishToMr=false` → `mrPublication.status="skipped_by_config"`；
+      其他默认 `pending`，由后续 publish 步骤（Phase 7.4）改写。
+  - 测试：`reviewer.test.ts` 22 例覆盖 parser（fence/schema/decision/
+    confidence/summary 长度）、`formatReviewerConfidence` 边界、
+    findings 过滤多场景（threshold=medium/high/critical, cap=3/25,
+    LLM-supplied inlineComments 优先级）、agent run（happy approve /
+    publishToMr=false / parse_failed / request_changes / 抛错）。
+
 - 2026-05-19 — **V4.6 Phase 6 Task 6.1（Coder Agent 包装）**：
   - `apps/orchestrator/src/agents/coder.ts`：实现 `createCoderAgent({lifecycle})`
     把 `CoderLifecycleRunner`（DI）的执行结果折叠成

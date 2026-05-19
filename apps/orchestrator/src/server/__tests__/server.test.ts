@@ -51,6 +51,8 @@ async function buildTestApp(
     workItemsByProject?: ServerDeps["workItemsByProject"];
     quality?: ServerDeps["quality"];
     qualityByProject?: ServerDeps["qualityByProject"];
+    improvements?: ServerDeps["improvements"];
+    improvementsByProject?: ServerDeps["improvementsByProject"];
   } = {},
 ) {
   const state = createRuntimeState();
@@ -81,6 +83,12 @@ async function buildTestApp(
       ...(overrides.quality ? { quality: overrides.quality } : {}),
       ...(overrides.qualityByProject
         ? { qualityByProject: overrides.qualityByProject }
+        : {}),
+      ...(overrides.improvements
+        ? { improvements: overrides.improvements }
+        : {}),
+      ...(overrides.improvementsByProject
+        ? { improvementsByProject: overrides.improvementsByProject }
         : {}),
     },
     { port: 0 },
@@ -2630,6 +2638,176 @@ describe("V4.1 work item routes", () => {
             }),
           ]),
         );
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  describe("V4.5 improvement routes", () => {
+    function fakeImprovementService(): NonNullable<ServerDeps["improvements"]> {
+      const records = new Map<string, ReturnType<typeof seedRecord>>();
+      function seedRecord(): {
+        recommendationId: string;
+        projectId: string;
+        scope: { mode: "single-project"; workflow: string };
+        problemPattern: "missing-evidence";
+        title: string;
+        summary: string;
+        target: { kind: "prompt_template"; description: string };
+        evidenceRefs: never[];
+        suggestedChange: string;
+        patchPreview: { status: "not_generated"; targetDescription: string };
+        confidence: "high";
+        risk: "low";
+        status:
+          | "open"
+          | "accepted"
+          | "rejected"
+          | "deferred";
+        actionHistory: Array<{
+          action: "generated";
+          actor: "system";
+          at: string;
+        }>;
+        createdAt: string;
+        updatedAt: string;
+      } {
+        return {
+          recommendationId: "rec_1",
+          projectId: "proj-a",
+          scope: { mode: "single-project", workflow: "default" },
+          problemPattern: "missing-evidence",
+          title: "Require evidence",
+          summary: "Repeated missing evidence",
+          target: { kind: "prompt_template", description: "Prompt template" },
+          evidenceRefs: [],
+          suggestedChange: "Require evidence.",
+          patchPreview: {
+            status: "not_generated",
+            targetDescription: "Prompt template",
+          },
+          confidence: "high",
+          risk: "low",
+          status: "open",
+          actionHistory: [
+            {
+              action: "generated",
+              actor: "system",
+              at: "2026-05-18T00:00:00.000Z",
+            },
+          ],
+          createdAt: "2026-05-18T00:00:00.000Z",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+        };
+      }
+      return {
+        async list() {
+          return [...records.values()] as never;
+        },
+        async detail(id: string) {
+          return records.get(id) as never;
+        },
+        async generate() {
+          const recommendation = seedRecord();
+          records.set("rec_1", recommendation);
+          return {
+            recommendations: [recommendation] as never,
+            generated: 1,
+            updated: 0,
+            skipped: 0,
+          };
+        },
+        async accept(id: string) {
+          const current = records.get(id) ?? seedRecord();
+          const next = { ...current, status: "accepted" as const };
+          records.set(id, next);
+          return { recommendation: next as never };
+        },
+        async reject(id: string) {
+          const current = records.get(id) ?? seedRecord();
+          const next = { ...current, status: "rejected" as const };
+          records.set(id, next);
+          return { recommendation: next as never };
+        },
+        async defer(id: string) {
+          const current = records.get(id) ?? seedRecord();
+          const next = { ...current, status: "deferred" as const };
+          records.set(id, next);
+          return { recommendation: next as never };
+        },
+        async patchPreview(id: string) {
+          const current = records.get(id) ?? seedRecord();
+          const next = {
+            ...current,
+            patchPreview: {
+              status: "generated" as const,
+              targetDescription: "Prompt template",
+              diff: "+ Require evidence.",
+            },
+          };
+          records.set(id, next as never);
+          return { recommendation: next as never };
+        },
+      };
+    }
+
+    it("generates, lists, accepts, and previews recommendations", async () => {
+      const { app } = await buildTestApp(undefined, {
+        improvements: fakeImprovementService(),
+      });
+      try {
+        const generated = await app.inject({
+          method: "POST",
+          url: "/api/improvements/recommendations/generate",
+          payload: {},
+        });
+        expect(generated.statusCode).toBe(200);
+        expect(generated.json().generated).toBe(1);
+
+        const listed = await app.inject("/api/improvements/recommendations");
+        expect(listed.statusCode).toBe(200);
+        expect(listed.json().recommendations).toHaveLength(1);
+
+        const accepted = await app.inject({
+          method: "POST",
+          url: "/api/improvements/recommendations/rec_1/accept",
+          headers: { "x-issuepilot-operator": "alice" },
+          payload: { note: "valid" },
+        });
+        expect(accepted.statusCode).toBe(200);
+        expect(accepted.json().recommendation.status).toBe("accepted");
+
+        const preview = await app.inject({
+          method: "POST",
+          url: "/api/improvements/recommendations/rec_1/patch-preview",
+          payload: {},
+        });
+        expect(preview.statusCode).toBe(200);
+        expect(preview.json().recommendation.patchPreview.status).toBe(
+          "generated",
+        );
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("requires project header for team-mode improvements", async () => {
+      const { app } = await buildTestApp(undefined, {
+        improvementsByProject: new Map([["proj-a", fakeImprovementService()]]),
+      });
+      try {
+        const missing = await app.inject("/api/improvements/recommendations");
+        expect(missing.statusCode).toBe(400);
+        expect(missing.json()).toMatchObject({ code: "project_required" });
+
+        const unknown = await app.inject({
+          method: "GET",
+          url: "/api/improvements/recommendations",
+          headers: { "x-issuepilot-project": "missing" },
+        });
+        expect(unknown.statusCode).toBe(404);
+        expect(unknown.json()).toMatchObject({ code: "project_not_found" });
       } finally {
         await app.close();
       }

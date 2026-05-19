@@ -16,6 +16,7 @@ import {
   createCoordinator,
   type AgentRunResult,
   type Coordinator,
+  type ReviewerMrPublisher,
   type RoleProfileResolver,
   type TaskWriter,
 } from "../coordinator.js";
@@ -168,6 +169,10 @@ interface TestHarness {
   coderRun: ReturnType<typeof vi.fn>;
   reviewerRun: ReturnType<typeof vi.fn>;
   teRun: ReturnType<typeof vi.fn>;
+  publishCalls: Array<{
+    reviewerReportId: string;
+    decision: ReviewerAgentReport["reviewer"]["decision"];
+  }>;
 }
 
 const harness = async (
@@ -176,6 +181,7 @@ const harness = async (
     reviewer: AgentRunResult | (() => AgentRunResult);
     testEvidence: AgentRunResult | (() => AgentRunResult);
   }> = {},
+  publisher?: ReviewerMrPublisher,
 ): Promise<TestHarness> => {
   const root = await mkdtemp(join(tmpdir(), "ip-coord-"));
   const store = createPipelineStore({ root });
@@ -203,12 +209,25 @@ const harness = async (
   });
   const tick = isoSeq();
   let idCounter = 0;
+  const publishCalls: TestHarness["publishCalls"] = [];
+  const wrappedPublisher: ReviewerMrPublisher | undefined = publisher
+    ? {
+        async publish(input) {
+          publishCalls.push({
+            reviewerReportId: input.reviewerReport.agentReportId,
+            decision: input.reviewerReport.reviewer.decision,
+          });
+          return publisher.publish(input);
+        },
+      }
+    : undefined;
   const coordinator = createCoordinator({
     pipelineStore: store,
     agents: {
       coder: { run: coderRun },
       reviewer: { run: reviewerRun },
       testEvidence: { run: teRun },
+      ...(wrappedPublisher ? { reviewerPublisher: wrappedPublisher } : {}),
     },
     roleProfileResolver: buildResolver(),
     taskWriter,
@@ -216,7 +235,16 @@ const harness = async (
     now: tick,
     newId: () => `pr_${++idCounter}`,
   });
-  return { coordinator, store, taskPatches, events, coderRun, reviewerRun, teRun };
+  return {
+    coordinator,
+    store,
+    taskPatches,
+    events,
+    coderRun,
+    reviewerRun,
+    teRun,
+    publishCalls,
+  };
 };
 
 describe("coordinator coding_only", () => {
@@ -364,7 +392,7 @@ describe("coordinator coding_plus_reviewer", () => {
     );
   });
 
-  it("reviewer agent failed (reviewer_unavailable) → PipelineRun failed, TaskNode failed reviewer_unavailable", async () => {
+  it("reviewer agent failed (reviewer_unavailable) → PipelineRun failed, TaskNode blocked / reviewer_unavailable (spec §7.3)", async () => {
     const h = await harness({
       reviewer: {
         kind: "report",
@@ -380,7 +408,10 @@ describe("coordinator coding_plus_reviewer", () => {
       workflowDefault: "coding_plus_reviewer",
     });
     expect(res.finalStatus).toBe("failed");
-    expect(h.taskPatches.at(-1)?.status).toBe("failed");
+    // spec §7.3 line 269: reviewer agent crash → TaskNode blocked (operator
+    // takes over), not failed. V4.6 tightens this from the V4.2 generic
+    // "failed" mapping.
+    expect(h.taskPatches.at(-1)?.status).toBe("blocked");
     expect(h.taskPatches.at(-1)?.roleFailureReason).toBe(
       "reviewer_unavailable",
     );
@@ -436,5 +467,215 @@ describe("coordinator full_pipeline", () => {
     expect(res.finalStatus).toBe("failed");
     expect(h.taskPatches.at(-1)?.status).toBe("failed");
     expect(h.taskPatches.at(-1)?.roleFailureReason).toBe("sandbox_violation");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// V4.6 Phase 7 Task 7.5: reviewer MR publish wiring
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("coordinator reviewer MR publish wiring (Task 7.5)", () => {
+  it("calls publisher after reviewer success, writes mrPublication.published, keeps report status=complete", async () => {
+    const publisher: ReviewerMrPublisher = {
+      async publish() {
+        return {
+          mrPublication: {
+            status: "published",
+            noteIds: ["1001", "1002"],
+            publishedAt: "2026-05-19T11:30:00.000Z",
+          },
+          redactedFieldsAdded: ["reviewer.summary"],
+          scopeInsufficient: false,
+        };
+      },
+    };
+    const h = await harness({}, publisher);
+    const res = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    expect(h.publishCalls).toHaveLength(1);
+    expect(h.publishCalls[0]?.decision).toBe("approve_with_comments");
+    const reviewerReport = res.reports.find((r) => r.role === "reviewer") as
+      | ReviewerAgentReport
+      | undefined;
+    expect(reviewerReport?.status).toBe("complete");
+    expect(reviewerReport?.reviewer.mrPublication).toEqual({
+      status: "published",
+      noteIds: ["1001", "1002"],
+      publishedAt: "2026-05-19T11:30:00.000Z",
+    });
+    expect(reviewerReport?.redactedFields).toContain("reviewer.summary");
+    // pipeline still proceeds to test_evidence
+    expect(res.finalStatus).toBe("awaiting_human_review");
+    expect(res.pipelineRun.agentReportIds.test_evidence).toBe("ar_te");
+  });
+
+  it("publish_failed does NOT block the pipeline — report stays complete, test_evidence still runs", async () => {
+    const publisher: ReviewerMrPublisher = {
+      async publish() {
+        return {
+          mrPublication: {
+            status: "publish_failed",
+            noteIds: [],
+            lastError: {
+              code: "gitlab_rate_limited",
+              message: "GitLab returned 502",
+            },
+          },
+          redactedFieldsAdded: [],
+          scopeInsufficient: false,
+        };
+      },
+    };
+    const h = await harness({}, publisher);
+    const res = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    const reviewerReport = res.reports.find((r) => r.role === "reviewer") as
+      | ReviewerAgentReport
+      | undefined;
+    expect(reviewerReport?.status).toBe("complete");
+    expect(reviewerReport?.reviewer.mrPublication.status).toBe(
+      "publish_failed",
+    );
+    expect(reviewerReport?.reviewer.mrPublication.lastError?.code).toBe(
+      "gitlab_rate_limited",
+    );
+    expect(res.finalStatus).toBe("awaiting_human_review");
+    // auto_advance not inhibited
+    expect(h.teRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("scopeInsufficient upgrades reviewer report to failed (scope_insufficient) and TaskNode → blocked / reviewer_cannot_review", async () => {
+    const publisher: ReviewerMrPublisher = {
+      async publish() {
+        return {
+          mrPublication: {
+            status: "publish_failed",
+            noteIds: [],
+            lastError: {
+              code: "scope_insufficient",
+              message: "missing scope api",
+              hint: "Add api scope to ISSUEPILOT_GITLAB_TOKEN",
+            },
+          },
+          redactedFieldsAdded: [],
+          scopeInsufficient: { missingScope: "api" },
+        };
+      },
+    };
+    const h = await harness({}, publisher);
+    const res = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    const reviewerReport = res.reports.find((r) => r.role === "reviewer") as
+      | ReviewerAgentReport
+      | undefined;
+    expect(reviewerReport?.status).toBe("failed");
+    expect(reviewerReport?.lastError?.code).toBe("scope_insufficient");
+    expect(res.finalStatus).toBe("failed");
+    expect(h.taskPatches.at(-1)?.status).toBe("blocked");
+    expect(h.taskPatches.at(-1)?.roleFailureReason).toBe(
+      "reviewer_cannot_review",
+    );
+    expect(h.events.map((e) => e.key)).toContain("reviewer_cannot_review");
+    // test_evidence MUST NOT run when reviewer is blocked
+    expect(h.teRun).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call publisher when reviewer LLM decision is cannot_review", async () => {
+    const publisher: ReviewerMrPublisher = {
+      publish: vi.fn(),
+    };
+    const h = await harness(
+      {
+        reviewer: {
+          kind: "report",
+          report: fakeReviewerReport({
+            reviewer: {
+              summary: "cannot review",
+              decision: "cannot_review",
+              confidence: 0,
+              risks: [],
+              evidenceRequest: [],
+              findings: [],
+              inlineComments: [],
+              mrPublication: { status: "pending", noteIds: [] },
+            },
+          }),
+        },
+      },
+      publisher,
+    );
+    await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    expect(publisher.publish).not.toHaveBeenCalled();
+    expect(h.publishCalls).toHaveLength(0);
+  });
+
+  it("calls publisher even when reviewer decision is request_changes (operator still wants findings on MR)", async () => {
+    const published = vi.fn(async () => ({
+      mrPublication: {
+        status: "published" as const,
+        noteIds: ["1"],
+        publishedAt: "2026-05-19T11:30:00.000Z",
+      },
+      redactedFieldsAdded: [],
+      scopeInsufficient: false as const,
+    }));
+    const h = await harness(
+      {
+        reviewer: {
+          kind: "report",
+          report: fakeReviewerReport({
+            reviewer: {
+              summary: "rework",
+              decision: "request_changes",
+              confidence: 0.6,
+              risks: [],
+              evidenceRequest: [],
+              findings: [],
+              inlineComments: [],
+              mrPublication: { status: "pending", noteIds: [] },
+            },
+          }),
+        },
+      },
+      { publish: published },
+    );
+    const res = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    expect(published).toHaveBeenCalledTimes(1);
+    expect(res.finalStatus).toBe("awaiting_rework");
+    const reviewerReport = res.reports.find((r) => r.role === "reviewer") as
+      | ReviewerAgentReport
+      | undefined;
+    expect(reviewerReport?.reviewer.mrPublication.status).toBe("published");
+  });
+
+  it("no publisher → mrPublication stays as the reviewer agent's own output (backward compatible)", async () => {
+    const h = await harness();
+    const res = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    const reviewerReport = res.reports.find((r) => r.role === "reviewer") as
+      | ReviewerAgentReport
+      | undefined;
+    expect(reviewerReport?.reviewer.mrPublication.status).toBe("pending");
+    expect(res.finalStatus).toBe("awaiting_human_review");
   });
 });

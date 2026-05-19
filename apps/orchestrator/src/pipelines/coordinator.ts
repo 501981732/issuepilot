@@ -15,9 +15,11 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  type AgentLastError,
   type AgentReport,
   type AgentRole,
   type CoderAgentReport,
+  type MrPublication,
   type PipelineRun,
   type PipelineRunStatus,
   type ReviewerAgentReport,
@@ -61,10 +63,41 @@ export interface TestEvidenceAgentRunner {
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 
+/**
+ * V4.6 Phase 7 Task 7.5：把 reviewer agent 输出送到 GitLab MR 的发布器。
+ *
+ * 注意 coordinator 不直接 import `apps/orchestrator/src/gitlab/mr-comments.ts`；
+ * 而是依赖此接口，由 daemon wiring（Phase 9）在 production 注入真实实现。
+ *
+ * 行为约定：
+ * - 返回 `mrPublication`：替换 reviewer.report.reviewer.mrPublication。
+ * - 返回 `redactedFieldsAdded`：append 到 reviewer.report.redactedFields[]。
+ * - 返回 `scopeInsufficient = { missingScope }`：coordinator 必须把 reviewer
+ *   报告升级为 `status = "failed"` + `lastError.code = "scope_insufficient"`，
+ *   TaskNode 走 `blocked` / `reviewer_cannot_review`（spec §16.2）。
+ */
+export interface ReviewerMrPublisher {
+  publish(input: {
+    reviewerReport: ReviewerAgentReport;
+    workItem: WorkItem;
+    task: TaskNode;
+    pipelineRun: PipelineRun;
+    profile: ReviewerRoleProfile;
+  }): Promise<{
+    mrPublication: MrPublication;
+    redactedFieldsAdded: string[];
+    scopeInsufficient: false | { missingScope: string };
+  }>;
+}
+
 export interface CoordinatorAgents {
   coder: CoderAgentRunner;
   reviewer: ReviewerAgentRunner;
   testEvidence: TestEvidenceAgentRunner;
+  /**
+   * 可选：未注入时，coordinator 不发起 MR 推送，reviewer 报告原样落盘。
+   */
+  reviewerPublisher?: ReviewerMrPublisher;
 }
 
 export interface RoleProfileResolver {
@@ -309,7 +342,69 @@ export const createCoordinator = (
         return { pipelineRun: run, finalStatus: "cancelled", reports };
       }
 
-      const report = result.report;
+      let report = result.report;
+
+      // ──────────────────────────────────────────────────────────────────
+      // Phase 7 Task 7.5：reviewer publish wiring
+      //
+      // 只有在 reviewer agent 报告 status=complete 且 decision !=
+      // cannot_review 时才调 publisher。`publishToMr=false` 由 publisher
+      // 自行决定（写 skipped_by_config），coordinator 不在这一层判断。
+      // ──────────────────────────────────────────────────────────────────
+      if (
+        isReviewerReport(report)
+        && report.status === "complete"
+        && report.reviewer.decision !== "cannot_review"
+        && opts.agents.reviewerPublisher
+        && profile.role === "reviewer"
+      ) {
+        const publishOutcome = await opts.agents.reviewerPublisher.publish({
+          reviewerReport: report,
+          workItem: input.workItem,
+          task: input.task,
+          pipelineRun: run,
+          profile,
+        });
+
+        const mergedRedactedFields = publishOutcome.redactedFieldsAdded.length
+          ? Array.from(
+              new Set([
+                ...report.redactedFields,
+                ...publishOutcome.redactedFieldsAdded,
+              ]),
+            )
+          : report.redactedFields;
+
+        if (publishOutcome.scopeInsufficient) {
+          // 升级为 failed → 走 failed 分支处理；mrPublication 仍写回去便
+          // 于 dashboard 显示。
+          const lastError: AgentLastError = publishOutcome.mrPublication
+            .lastError ?? {
+            code: "scope_insufficient",
+            message: `missing scope ${publishOutcome.scopeInsufficient.missingScope}`,
+          };
+          report = {
+            ...report,
+            status: "failed",
+            redactedFields: mergedRedactedFields,
+            lastError,
+            reviewer: {
+              ...report.reviewer,
+              mrPublication: publishOutcome.mrPublication,
+            },
+          };
+        } else {
+          report = {
+            ...report,
+            redactedFields: mergedRedactedFields,
+            reviewer: {
+              ...report.reviewer,
+              mrPublication: publishOutcome.mrPublication,
+            },
+          };
+        }
+      }
+
       await persistReport(report);
       reports.push(report);
       run = {
@@ -334,11 +429,23 @@ export const createCoordinator = (
           completedAt: now(),
         };
         await persistRun(run);
+        // spec §16.2：reviewer_cannot_review / reviewer_unavailable /
+        // redaction_failed / storage_full → TaskNode `blocked`（operator
+        // 介入），其余进 `failed`（默认）。
+        const blockedReasons = new Set<string>([
+          "storage_full",
+          "reviewer_cannot_review",
+          "reviewer_unavailable",
+          "redaction_failed",
+        ]);
+        const taskStatus: TaskNodeStatus = blockedReasons.has(taskReason ?? "")
+          ? "blocked"
+          : "failed";
         await opts.taskWriter.updateTask({
           workItemId: input.workItem.workItemId,
           taskId: input.task.taskId,
           patch: {
-            status: taskReason === "storage_full" ? "blocked" : "failed",
+            status: taskStatus,
             ...(taskReason !== null ? { roleFailureReason: taskReason } : {}),
             ...(report.lastError?.message
               ? { statusReason: report.lastError.message }

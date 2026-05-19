@@ -25,6 +25,10 @@
 - V4.5 Workflow / Skills Improvement Loop：
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
   （实施计划已完成，覆盖 V4.5 recommendation queue、patch preview 和 human apply gate）。
+- V4.6 Multi-Agent Collaboration：
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
+  （spec 已制定，覆盖 §7 V4.6 + Coder/Reviewer/TestEvidence 三角色 pipeline + AgentReport 中间层；
+  实施计划待写）。
 
 ## 1. Roadmap 决策
 

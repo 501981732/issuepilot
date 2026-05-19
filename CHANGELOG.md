@@ -4,7 +4,80 @@
 
 ## [Unreleased] V4.6 Multi-Agent Collaboration（实施阶段）
 
+### Plan & Acceptance
+
+- 设计 spec：
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`。
+- 实施计划：
+  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`。
+- 验收清单：
+  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
+- V4 roadmap 更新：
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  把 V4.6 状态从 _spec 已制定_ 推进到 _实施已完成_。
+
+### Tests
+
+- `@issuepilot/shared-contracts`：扩展 `FailurePatternId` / `byRole` /
+  `role_configuration` 用例，全量 vitest 通过。
+- `@issuepilot/orchestrator`：8 个 V4.6 pipeline 套件（coordinator / store
+  / service / routes / recipe / role-profile / auto-advance /
+  failure-mapping）+ `quality/patterns` / `quality/aggregate` /
+  `improvements/templates` + `__tests__/v4-6-multi-agent-e2e.test.ts`
+  （本次新增，spec §22.7 全部 7 个核心 + 2 个 plan 补充共 8 个 e2e 场景
+  全绿）。
+- `@issuepilot/dashboard`：44 个测试文件 / 276 个用例全部通过，新增
+  pipeline-progress / recipe-selector / revoke-ai-review-button /
+  agent-report-tabs / quality byRole 渲染断言。
+- `apps/orchestrator/src/server/__tests__/server.test.ts` 覆盖 V4.6 新
+  路由（pipeline / agent-reports / retry / skip / revoke /
+  recipe-override / validate-roles）。
+- 项目级 gate：`scripts/ci-equivalent-check.sh`（或 `pnpm -r build && lint
+  && test`）在发布前必须通过；本次 Phase 12 Task 12.6 单独跑过。
+
+### Notes
+
+- V4.6 不破坏现有 V4.1~V4.5 行为：
+  - GitLab label 状态机（`ai-ready` / `ai-running` / `human-review` /
+    `ai-rework` / `ai-failed` / `ai-blocked`）保持不动。
+  - 旧工作单元在 `pipelines/store.ts` 读取时做 lazy migration，dashboard
+    `V46PipelineSections` 仅在 SSR 传入 `pipelinesByTask` 时渲染，旧路径
+    自动回退到 V4.5。
+  - V4.4 `/api/quality/summary` 已存在字段语义不变；只新增可选 `byRole`
+    切片。
+- Reviewer publish 默认开但 **fail soft**：publish 失败仍保留
+  `AgentReport.status = complete`，dashboard 显示 `publish_failed` /
+  `scope_insufficient`；token scope 不足会把报告升级为 `failed` 并 block
+  TaskNode。
+- V4.6 **仅本地单机闭环**：未实现 Claude Code / 其他 runner adapter、
+  生产 worker 调度、Postgres 持久化、LLM 兜底；这些目标都留给 V3。
+- GitLab 凭据只在 process memory 中流转；`mrPublication.noteIds` 是唯一
+  持久化的 token 相邻值，revoke 时会轮转，绝不写入 store / dashboard /
+  event / prompt。
+
 ### Added
+
+- 2026-05-19 — **V4.6 Phase 12（E2E + acceptance + docs + CHANGELOG 终稿）**：
+  - `apps/orchestrator/src/__tests__/v4-6-multi-agent-e2e.test.ts`：新增
+    multi-agent pipeline e2e 套件，覆盖 spec §22.7 + plan 补充共 8 个
+    场景（full_pipeline happy path、reviewer request_changes loop、
+    test_evidence partial → awaiting_human_review、reviewer cannot_review
+    via scope_insufficient、sandbox_violation 把 TaskNode 置 failed、
+    cancel mid-pipeline + last_cancelled_at 清空、coding_only recipe、
+    test_evidence retry supersede chain）。reviewer skip 通过
+    pipelines/service 用例覆盖，e2e 不再重复 mock。
+  - `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`：
+    V4.6 验收清单（spec §24 全部 10 条勾选 + 验证命令清单 + 视觉验证
+    + Out-of-Scope 自检）。
+  - `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`：
+    V4 总 spec 把 V4.6 从 _spec 已制定_ 推进到 _实施已完成_，详细列出
+    已交付能力并明确未实现项归到 V3。
+  - `README.md` / `README.zh-CN.md` / `README.en.md`：roadmap 段把 V4.6
+    标为已交付，列举 pipeline / publish + revoke / quality byRole /
+    role_configuration 能力。
+  - `USAGE.md` / `USAGE.zh-CN.md`：新增 §5.10 V4.6 多 agent pipeline 操作
+    手册（recipe 覆盖、pipeline 可视化、AgentReport tab、Reviewer publish
+    + revoke、retry/skip、cancel/resume、CLI/HTTP 速查、操作员不变式）。
 
 - 2026-05-19 — **V4.6 Phase 11（Dashboard UI 集成）**：
   - `apps/dashboard/lib/api.ts`：新增 9 个 V4.6 API helper

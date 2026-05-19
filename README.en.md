@@ -683,24 +683,42 @@ productionizes the capabilities that prove valuable here.
 - **Cross-issue dependency analysis**: detect blockers, duplicated work,
   upstream/downstream dependencies, and mergeable tasks, then surface them as
   an engineering work graph.
-- **Multi-agent collaboration** (V4.6 in progress): coding agent, reviewer
+- **Multi-agent collaboration** (V4.6 shipped): coding agent, reviewer
   agent, and test/evidence agent roles, orchestrated by a single
   `PipelineCoordinator` over a recipe (`coding_only` /
   `coding_plus_reviewer` / `full_pipeline`) and producing one
-  `AgentReport` per role. **Phase 7 landed: Reviewer Agent + GitLab MR
-  publish loop** — reviewer findings turn into inline MR comments under
-  spec §12's six safety rails (`[ai-reviewer]` prefix, 1 summary note +
-  N inline notes, `severity_threshold` / `max_inline_comments` filter,
-  fail-soft publishing that does not block the pipeline, idempotent
-  `noteIds[]` revoke, redaction tracked into `AgentReport.redactedFields[]`).
-  Missing token scope upgrades the reviewer report to
-  `status=failed` / `lastError.code=scope_insufficient` and transitions
-  the TaskNode to `blocked` / `reviewer_cannot_review`. Phase 8 landed
-  the Test/Evidence Agent reusing the V4.3 evidence collectors. Design
-  spec:
-  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`;
-  implementation plan:
-  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`.
+  `AgentReport` per role. Highlights:
+  - **PipelineRun + AgentReport** capture every role's prompt / sandbox /
+    token scope / supersede chain; retry / skip reuse the same `PipelineRun`
+    and never drop the reviewer comments that were already pushed to MR.
+  - **Reviewer + GitLab MR publish loop** under spec §12's six safety
+    rails (`[ai-reviewer]` prefix, 1 summary note + N inline notes,
+    `severity_threshold` / `max_inline_comments` filter, fail-soft
+    publishing, idempotent revoke, redaction tracked into
+    `AgentReport.redactedFields[]`). Missing scope upgrades the reviewer
+    report to `failed` / `scope_insufficient` and transitions the TaskNode
+    to `blocked` / `reviewer_cannot_review`.
+  - **Test/Evidence Agent** reuses the V4.3 evidence collectors; partial
+    runs surface as `partial` PipelineRun + `awaiting_human_review`
+    TaskNode (`evidence_partial`).
+  - **HTTP API + Dashboard**: orchestrator exposes
+    `/api/work-items/:id/tasks/:taskId/pipeline`, `/api/agent-reports/:id`,
+    `:id/retry`, `:id/skip`, `:id/revoke-ai-review`,
+    `/api/work-items/:id/tasks/:taskId/recipe-override`, and
+    `/api/workflows/_validate-roles`. Dashboard adds `PipelineProgress`,
+    `RecipeSelector`, `AgentReportTabs`, `RevokeAiReviewButton`, and a
+    V4.6 by-role panel under `/reports`.
+  - **Quality + improvement integration**: `FailurePatternId` adds 13
+    V4.6 failure modes (reviewer / test_evidence / pipeline / sandbox /
+    storage / redaction); `ImprovementTargetKind` gains
+    `role_configuration` so operators can push fixes to reviewer /
+    test_evidence role profiles.
+  - Design spec:
+    `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`;
+    implementation plan:
+    `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`;
+    acceptance:
+    `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

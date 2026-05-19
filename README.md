@@ -634,21 +634,41 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，
   在 dashboard 中形成研发工作图谱。
-- **多 agent 协作**（V4.6 实施中）：实现 coding agent、reviewer agent、
+- **多 agent 协作**（V4.6 已交付）：实现 coding agent、reviewer agent、
   test/evidence agent 三角色分工，由 PipelineCoordinator 按 recipe（
   `coding_only` / `coding_plus_reviewer` / `full_pipeline`）顺序调度并
-  产出独立的 `AgentReport`。Phase 7 已落地 **Reviewer Agent + GitLab MR
-  publish 闭环**：reviewer findings 转 inline comments 后按 spec §12 的
-  6 条护栏发布到 MR（`[ai-reviewer]` 前缀、1 主 note + N inline、
-  `severity_threshold` / `max_inline_comments` 过滤、fail soft 不阻断 pipeline、
-  noteIds 可 revoke、redaction 同步进 `AgentReport.redactedFields[]`），
-  token scope 不足 → AgentReport 升级为 `status=failed` /
-  `lastError.code=scope_insufficient`，TaskNode 进 `blocked` /
-  `reviewer_cannot_review`。Phase 8 已落地 Test/Evidence Agent 复用 V4.3
-  evidence collector。设计 spec：
-  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`；
-  实施计划：
-  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`。
+  产出独立的 `AgentReport`。已完整覆盖：
+  - **PipelineRun + AgentReport**：每个 role 的 prompt / sandbox / token
+    scope / supersede 都进入独立中间层；retry / skip 复用同一 `PipelineRun`
+    并通过 supersede 双向链记录历史，不阻断已发布到 MR 的 reviewer 评论。
+  - **Reviewer + GitLab MR publish 闭环**：reviewer findings 转 inline
+    comments 后按 spec §12 的 6 条护栏发布到 MR（`[ai-reviewer]` 前缀、1 主
+    note + N inline、`severity_threshold` / `max_inline_comments` 过滤、
+    fail soft 不阻断 pipeline、noteIds 可 revoke、redaction 同步写入
+    `AgentReport.redactedFields[]`）；token scope 不足 → AgentReport 升级为
+    `status=failed` / `lastError.code=scope_insufficient`，TaskNode 进
+    `blocked` / `reviewer_cannot_review`。
+  - **Test/Evidence Agent**：复用 V4.3 evidence collector；partial 时
+    pipeline 收到 `partial`，TaskNode 进 `awaiting_human_review`
+    （`evidence_partial`）。
+  - **HTTP API + Dashboard**：orchestrator 暴露
+    `/api/work-items/:id/tasks/:taskId/pipeline` / `/api/agent-reports/:id`
+    / `:id/retry` / `:id/skip` / `:id/revoke-ai-review` /
+    `/api/work-items/:id/tasks/:taskId/recipe-override` /
+    `/api/workflows/_validate-roles`；dashboard 在工作单元详情中新增
+    `PipelineProgress` / `RecipeSelector` / `AgentReportTabs` /
+    `RevokeAiReviewButton`，`/reports` 增加 V4.6 by-role 切片（coder
+    success / reviewer approve / cannot_review / unavailable /
+    test_evidence complete / partial）。
+  - **质量 + 改进环接入**：`FailurePatternId` 增加 13 个 V4.6 失败模式；
+    `ImprovementTargetKind` 新增 `role_configuration`，让 operator 可以
+    把改进推到 reviewer / test_evidence role profile。
+  - 设计 spec：
+    `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`；
+    实施计划：
+    `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`；
+    验收清单：
+    `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
 - **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
   并把 review 反馈转成下一轮 agent 的结构化输入。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、

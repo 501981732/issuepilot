@@ -6,6 +6,7 @@ import type {
 } from "@issuepilot/shared-contracts";
 
 import { toFailurePatternId } from "../pipelines/failure-mapping.js";
+
 import type {
   QualityRunSourceItem,
   QualitySourceItem,

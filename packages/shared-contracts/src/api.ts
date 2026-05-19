@@ -1,19 +1,18 @@
+import type {
+  AgentReport,
+  AgentRole,
+  ReviewerDecision,
+} from "./agent-report.js";
 import { type IssuePilotEvent } from "./events.js";
-export type {
-  ImprovementActionRequest,
-  ImprovementActionResponse,
-  ImprovementGenerateRequest,
-  ImprovementGenerateResponse,
-  ImprovementPatchPreviewRequest,
-  ImprovementRecommendationDetailResponse,
-  ImprovementRecommendationFilters,
-  ImprovementRecommendationsListResponse,
-} from "./improvement.js";
+import type {
+  PipelineRun,
+  WorkflowRecipe,
+  RecipeSource,
+} from "./pipeline.js";
 import {
   type RunReportArtifact,
   type RunReportSummary,
 } from "./report.js";
-export type { QualitySummaryResponse } from "./quality.js";
 import { type RunRecord, type RunStatus } from "./run.js";
 import type {
   TaskNode,
@@ -25,6 +24,18 @@ import type {
   WorkItemReport,
   WorkItemStatus,
 } from "./work-item.js";
+
+export type {
+  ImprovementActionRequest,
+  ImprovementActionResponse,
+  ImprovementGenerateRequest,
+  ImprovementGenerateResponse,
+  ImprovementPatchPreviewRequest,
+  ImprovementRecommendationDetailResponse,
+  ImprovementRecommendationFilters,
+  ImprovementRecommendationsListResponse,
+} from "./improvement.js";
+export type { QualitySummaryResponse } from "./quality.js";
 
 /**
  * Wire types for the local orchestrator HTTP surface. Phase 6 (Fastify)
@@ -192,17 +203,6 @@ export interface ConfirmEvidenceResponse {
  * header 与 active project 校验，沿用 V4.4 / V4.5 模式。错误码使用
  * `PipelineRouteErrorCode` 统一字面量。
  */
-
-import type {
-  AgentReport,
-  AgentRole,
-  ReviewerDecision,
-} from "./agent-report.js";
-import type {
-  PipelineRun,
-  WorkflowRecipe,
-  RecipeSource,
-} from "./pipeline.js";
 
 /** V4.6 route 统一 error code（spec §18.4）。 */
 export type PipelineRouteErrorCode =

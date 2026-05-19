@@ -151,7 +151,7 @@ ${rolesYaml}---
 prompt body
 `;
 
-  const writeAllRolePrompts = async (
+  const _writeAllRolePrompts = async (
     dir: string,
     overrides: Partial<Record<"coder" | "reviewer" | "test_evidence", string>> = {},
   ): Promise<void> => {

@@ -27,8 +27,11 @@
   （实施计划已完成，覆盖 V4.5 recommendation queue、patch preview 和 human apply gate）。
 - V4.6 Multi-Agent Collaboration：
   `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
-  （spec 已制定，覆盖 §7 V4.6 + Coder/Reviewer/TestEvidence 三角色 pipeline + AgentReport 中间层；
-  实施计划已写，见 `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`）。
+  （**实施已完成**，覆盖 §7 V4.6 + Coder/Reviewer/TestEvidence 三角色 pipeline + AgentReport
+  中间层 + recipe / publish-revoke / cancel 状态机 / V4.4 quality byRole 切片
+  / V4.5 role_configuration 改进目标 / dashboard pipeline & recipe & revoke
+  UI；实施计划见 `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`，
+  验收清单见 `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`）。
 
 ## 1. Roadmap 决策
 
@@ -264,16 +267,30 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
 - Operator 可以接受、拒绝或延后建议。
 - 接受的建议生成可审查 patch，不直接静默修改。
 
-### V4.6：Multi-Agent / Multi-Runner Collaboration
+### V4.6：Multi-Agent / Multi-Runner Collaboration（实施已完成）
 
 目标：在本地优先模型中引入多角色协作，但不做生产 worker 平台。
 
-能力：
+能力（已落地）：
 
-- coding agent、reviewer agent、test/evidence agent 角色分工。
-- 支持 Claude Code、内部 coding agent 等 runner adapter 的产品语义。
-- 每个 agent 产物进入统一 report / audit 模型。
-- 初期仍可串行或有限并行，生产级 worker 调度留给 V3。
+- Coder → Reviewer → Test/Evidence 三角色 pipeline，单一 Codex app-server
+  + 多 role profile 驱动；recipe 三档（`full_pipeline` /
+  `coding_plus_reviewer` / `coding_only`），允许 operator 启动前 override。
+- 每个 agent 产出独立 `AgentReport` 落盘（supersede 双向链），统一进入
+  `PipelineRun` 模型，由 dashboard `PipelineProgress` / `AgentReportTabs`
+  渲染。
+- Reviewer 默认把 findings + inline comments 推送到 GitLab MR；失败
+  fail soft（不阻断 pipeline，dashboard 显示 publish_failed / scope_insufficient）；
+  支持 `RevokeAiReviewButton` 幂等撤回。
+- Cancel 写入 `last_cancelled_at`，下一次 startPipeline 自动清零并恢复
+  auto_advance。
+- V4.4 quality 增加 13 个 V4.6 失败模式 + `byRole` 切片；V4.5 改进环增加
+  `role_configuration` target kind。
+- 实施细节见
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
+  / `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`
+  / `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
+- 未实现项（仍属于 V3）：Claude Code 等 runner adapter、生产级 worker 平台。
 
 ## 8. 架构
 

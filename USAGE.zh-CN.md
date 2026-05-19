@@ -47,7 +47,8 @@ workspace 的团队 daemon。
   - [5.7 V4.1 Workflow Spine — 大 Issue 端到端走一圈](#57-v41-workflow-spine--大-issue-端到端走一圈)
   - [5.8 V4.2 Task Graph — graph 视图、replan、mark-rework、branch chaining、team-mode project switcher](#58-v42-task-graph--graph-视图replanmark-reworkbranch-chainingteam-mode-project-switcher)
   - [5.9 V4.3 Review Packet + Evidence — reviewer packet、evidence 视图、人工确认](#59-v43-review-packet--evidence--reviewer-packetevidence-视图人工确认)
-  - [5.10 V2 当前的边界与未覆盖](#510-v2-当前的边界与未覆盖)
+  - [5.10 V4.6 多 Agent Pipeline — Coder/Reviewer/Test-Evidence 流水线、recipe 覆盖、MR 发布/撤回](#510-v46-多-agent-pipeline--coderreviewertest-evidence-流水线recipe-覆盖mr-发布撤回)
+  - [5.11 V2 当前的边界与未覆盖](#511-v2-当前的边界与未覆盖)
 - [Part 6 — 日常运维与排障](#part-6--日常运维与排障)
   - [6.1 在哪里看什么](#61-在哪里看什么)
   - [6.2 失败 / blocked run 取证](#62-失败--blocked-run-取证)
@@ -973,7 +974,99 @@ V4.3 operator 视角的不变量：
 - 父 Issue label / handoff note 仍经 aggregator reconciliation 写入；
   evidence confirm 只触发重新渲染，不允许 synthetic task run 直接改父 label。
 
-### 5.10 V2 当前的边界与未覆盖
+### 5.10 V4.6 多 Agent Pipeline — Coder/Reviewer/Test-Evidence 流水线、recipe 覆盖、MR 发布/撤回
+
+V4.6 在 V4 智能研发工作台之上引入三角色协作（Coder → Reviewer →
+Test/Evidence）。orchestrator 用单一 Codex app-server + 三种 role profile
+驱动整条 pipeline，把每个 role 独立持久化为 `AgentReport`，共享同一个
+`PipelineRun`，并在工作单元详情页统一展示。
+
+1. **Recipe 与覆盖**。每个 workflow 声明 `default_recipe`
+   （`full_pipeline` / `coding_plus_reviewer` / `coding_only`）。任务启动
+   前可以在 `RecipeSelector` 中临时切换，dashboard 通过
+   `POST /api/work-items/:id/tasks/:taskId/recipe-override` 把覆盖值写入
+   `task.pendingRecipe`。一旦第一个 agent 开始运行，选择器就 lock，操作
+   员需要先 retry / cancel 才能调整。
+2. **Pipeline 可视化**。工作单元详情页顶部展示 `PipelineProgress` 三步
+   进度（Coder → Reviewer → Test/Evidence）。recipe 未启用的步骤灰显；
+   当前 running role 高亮；失败 / partial / cancelled 状态都用屏幕阅读
+   器友好的 badge 标注。
+3. **AgentReport tab**。进度条下方的 `AgentReportTabs` 提供三个 tab：
+   - **Coder**：summary + last error（V3 runner adapter 落地后补 diff 快
+     照链接）。
+   - **Reviewer**：决策 badge（`approve_with_comments` / `request_changes`
+     / `cannot_review`），按 severity 排序的 findings、inline 评论、MR
+     publication 状态（`pending` / `published` / `publish_failed` /
+     `revoked` / `scope_insufficient` / `skipped_by_config`），以及
+     **Revoke AI Review** 按钮。
+   - **Test/Evidence**：evidence 列表（状态 `collected` / `skipped` /
+     `failed`）。
+4. **Reviewer 默认推送 MR 评论**。workflow 中 `reviewer.publish_to_mr`
+   默认开启，reviewer findings 会转成 MR 上的 inline 评论（1 个 summary
+   note + N 个 inline note，前缀 `[ai-reviewer]`）。Publish fail soft：
+   推送失败不阻断 pipeline，reviewer 报告依然 `complete`，
+   `mrPublication.status` 写为 `publish_failed`；token scope 不足会把报告
+   升级为 `failed` / `scope_insufficient` 并 block 任务节点。
+5. **撤回 AI Review 评论**。Reviewer tab 上的 `Revoke AI Review` 按钮
+   调用 `POST /api/agent-reports/:agentReportId/revoke-ai-review`，幂等
+   删除 IssuePilot 自己写入的 note（通过 `mrPublication.noteIds` 跟踪），
+   把 `mrPublication.status` 翻成 `revoked`。`pending` / `publish_failed`
+   / `skipped_by_config` / `revoked` 状态会显示带 i18n 提示的禁用原因。
+6. **单角色 retry / skip**。Pipeline 处于 `awaiting_rework` 或 `partial`
+   时，操作员可调
+   `POST /api/agent-reports/:id/retry`（同一个 PipelineRun 内重新跑该
+   role，新 AgentReport supersede 旧的）或
+   `POST /api/agent-reports/:id/skip`（把该 role 标 `cancelled`，让
+   coordinator 推进到下一 role）。
+7. **质量 + 改进环接入**。`/reports` 增加 **V4.6 各角色切片**：coder
+   success / reviewer approve / cannot_review / unavailable /
+   test_evidence complete / partial。V4.5 改进环新增
+   `role_configuration` 目标，可以把改进推到 reviewer / test_evidence 的
+   role profile（prompt 模板 / sandbox / tool allow / severity 阈值 等）。
+8. **Cancel 与恢复**。Cancel 会写入 `task.last_cancelled_at`；下一次
+   startPipeline 在跑 coder 之前会清空时间戳。`auto_advance` 在
+   `last_cancelled_at` 仍设置时被抑制，确保操作员每次都重新确认是否继续。
+
+CLI / HTTP 速查（单项目模式；团队模式加 `x-issuepilot-project: <id>`）：
+
+```bash
+# 1. 查询当前 task 的 pipeline 摘要
+curl http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/pipeline
+
+# 2. 读取该 task 最近一轮的所有 AgentReport
+curl 'http://127.0.0.1:4738/api/agent-reports?taskId=<taskId>'
+
+# 3. 任务启动前临时覆盖 recipe
+curl -X POST -H 'content-type: application/json' \
+  -d '{"recipe":"coding_only"}' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/recipe-override
+
+# 4. 单 role retry（同 PipelineRun 内 supersede）
+curl -X POST http://127.0.0.1:4738/api/agent-reports/<agent_report_id>/retry
+
+# 5. 单 role skip（coordinator 推进到下一 role）
+curl -X POST http://127.0.0.1:4738/api/agent-reports/<agent_report_id>/skip
+
+# 6. 撤回 reviewer 在 GitLab MR 上写的 note
+curl -X POST http://127.0.0.1:4738/api/agent-reports/<agent_report_id>/revoke-ai-review
+```
+
+操作员应知的 V4.6 不变式：
+
+- 每个 role 有独立的 prompt / sandbox / tool allow-list。reviewer
+  sandbox 默认 `read_only_worktree`，test_evidence 默认
+  `read_only_source_write_evidence`，dashboard 不允许操作员临时放大权限。
+- GitLab token 只在进程内存，不写入 store / dashboard / event log；
+  `mrPublication.noteIds` 是唯一持久化的 token 相邻字段，revoke 时会轮转。
+- skip / cancel 不会自动删除 reviewer 已经写到 MR 的评论，需要操作员
+  显式点 Revoke。
+- V4.6 不动 GitLab label 状态机（`ai-ready` / `ai-running` /
+  `human-review` / `ai-rework` / `ai-failed` / `ai-blocked`），只是
+  TaskNode 状态新增 `running_coding` / `running_reviewer` /
+  `running_test_evidence` / `awaiting_human_review` 用于更细粒度的
+  dashboard 展示。
+
+### 5.11 V2 当前的边界与未覆盖
 
 V2 主体已完成，**显式不在 V2 范围**的能力（会在 V3 / V4 处理）：
 

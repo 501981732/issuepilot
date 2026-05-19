@@ -398,6 +398,24 @@
       "openSource": "打开来源",
       "diagnostics": "{count, plural, other {跳过 # 份无法解析的报告}}",
       "unknownCount": "{count} 未知"
+    },
+    "recommendations": {
+      "title": "改进建议",
+      "description": "从 Quality Analytics 生成带证据的 workflow、prompt、项目规则和 skill 改进建议。",
+      "generate": "生成改进建议",
+      "empty": "暂无改进建议。",
+      "evidence": "证据",
+      "patchPreview": "Patch 预览",
+      "rollback": "回滚说明",
+      "accept": "接受",
+      "reject": "拒绝",
+      "defer": "延后",
+      "preview": "生成 patch 预览",
+      "confidence": "置信度：{value}",
+      "risk": "风险：{value}",
+      "status": "状态：{value}",
+      "target": "目标：{value}",
+      "evidenceCount": "{count} 条证据"
     }
   },
   "runDetail": {

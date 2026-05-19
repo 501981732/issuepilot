@@ -246,6 +246,22 @@ export interface PipelineStore {
       }
     | null
   >;
+  /**
+   * V4.6 review fix C4：跨 task / role 列出所有 AgentReport，用于
+   * `buildQualitySummary({ agentReports })` 计算 byRole 切片。
+   *
+   * 遍历 `<root>/agent-reports/<taskId>/<role>/*.json`（跳过
+   * `index.json`），按 `startedAt >= sinceIso` 过滤；默认排除
+   * `supersededBy != null` 的报告以避免重复计数。
+   *
+   * agent-reports 目录尚未创建时返回 `[]`，便于 V4.5 工作流共存。
+   */
+  listAllAgentReports(opts?: {
+    /** 过滤 startedAt >= sinceIso；默认无下限（全部）。 */
+    sinceIso?: string;
+    /** 默认 false：过滤 supersededBy != null。 */
+    includeSuperseded?: boolean;
+  }): Promise<AgentReport[]>;
   /** 暴露 path builder 给上层（如测试 / 维护脚本）。 */
   readonly paths: PipelineStorePaths;
   readonly root: string;
@@ -467,6 +483,65 @@ export const createPipelineStore = (
         role: input.role,
         agentReportId: idx.latestAgentReportId,
       });
+    },
+
+    async listAllAgentReports(opts) {
+      const sinceIso = opts?.sinceIso;
+      const includeSuperseded = opts?.includeSuperseded ?? false;
+      const agentReportsRoot = path.join(root, "agent-reports");
+      let taskDirs: string[];
+      try {
+        taskDirs = await readdir(agentReportsRoot);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw cause;
+      }
+      const out: AgentReport[] = [];
+      for (const taskId of taskDirs) {
+        if (!SAFE_SEGMENT.test(taskId)) continue;
+        const taskDir = path.join(agentReportsRoot, taskId);
+        let roleEntries: string[];
+        try {
+          roleEntries = await readdir(taskDir);
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw cause;
+        }
+        for (const roleEntry of roleEntries) {
+          if (
+            roleEntry !== "coder" &&
+            roleEntry !== "reviewer" &&
+            roleEntry !== "test_evidence"
+          ) {
+            continue;
+          }
+          const roleDir = path.join(taskDir, roleEntry);
+          let files: string[];
+          try {
+            files = await readdir(roleDir);
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw cause;
+          }
+          for (const name of files) {
+            if (!name.endsWith(".json")) continue;
+            // spec §9：每个 role 目录里 index.json 是 supersede 链 sentinel，
+            // 不是 AgentReport 本体；跳过。
+            if (name === "index.json") continue;
+            const filePath = path.join(roleDir, name);
+            try {
+              const report = await readJsonSafe(filePath, isAgentReport);
+              if (sinceIso && report.startedAt < sinceIso) continue;
+              if (!includeSuperseded && report.supersededBy) continue;
+              out.push(report);
+            } catch (cause) {
+              if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+              throw cause;
+            }
+          }
+        }
+      }
+      return out;
     },
 
     async findAgentReportById(agentReportId) {

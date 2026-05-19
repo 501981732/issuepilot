@@ -20,7 +20,9 @@ import {
   spawnRpc,
 } from "@issuepilot/runner-codex-app-server";
 import type {
+  ImprovementGenerateRequest,
   IssuePilotInternalEvent,
+  QualitySummaryResponse,
   RunReportArtifact,
 } from "@issuepilot/shared-contracts";
 import {
@@ -75,9 +77,12 @@ import {
   type RoleProfileResolver,
 } from "./pipelines/coordinator.js";
 import { createPipelineService } from "./pipelines/service.js";
-import { createPipelineStore } from "./pipelines/store.js";
+import { createPipelineStore, type PipelineStore } from "./pipelines/store.js";
 import { buildQualitySummary } from "./quality/aggregate.js";
-import { collectQualitySources } from "./quality/collect.js";
+import {
+  collectQualitySources,
+  type QualityCollectorDeps,
+} from "./quality/collect.js";
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
@@ -478,6 +483,63 @@ async function readLogTail(logFile: string, limit = 200): Promise<string[]> {
   }
 }
 
+/**
+ * V4.6 review fix C4：把 `createImprovementService` 的 `buildQualitySummary`
+ * callback 抽成可单测的工厂。
+ *
+ * 当工作流启用 V4.6 multi-agent pipeline（`workflow.defaultRecipe` +
+ * `workflow.roles` 都存在）时 daemon 构造 `pipelineStore` 并传入，让
+ * `/api/quality/summary` 的 `byRole` 切片有数据；未启用 pipeline 的 V4.5
+ * 工作流不传 `pipelineStore`，行为与历史一致。
+ *
+ * 共享给 `apps/orchestrator/src/team/daemon.ts` 的 per-project
+ * improvement service 使用，并被 `daemon-pipeline-wiring.test.ts` 直接覆盖。
+ */
+export interface BuildPipelineQualitySummaryDeps {
+  /**
+   * V4.6 pipeline store；未启用 V4.6 时传 `undefined`，callback 不会传入
+   * `agentReports`，buildQualitySummary 行为与 V4.5 完全一致。
+   */
+  pipelineStore: PipelineStore | undefined;
+  collectorDeps: QualityCollectorDeps;
+  scope: QualitySummaryResponse["scope"];
+}
+
+export function buildPipelineQualitySummary(
+  deps: BuildPipelineQualitySummaryDeps,
+): (input: ImprovementGenerateRequest) => Promise<QualitySummaryResponse> {
+  return async (input) => {
+    const collected = await collectQualitySources(deps.collectorDeps);
+    const fromIso =
+      input.filters?.from ??
+      new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    // 仅在启用 V4.6 pipeline 时拉取 AgentReport；exactOptionalPropertyTypes
+    // 要求 `agentReports` 字段不允许传 undefined，所以用条件 spread。
+    const agentReports = deps.pipelineStore
+      ? await deps.pipelineStore.listAllAgentReports({ sinceIso: fromIso })
+      : undefined;
+    return buildQualitySummary({
+      items: collected.items,
+      filters: {
+        from: fromIso,
+        to: input.filters?.to ?? new Date().toISOString(),
+        window: input.filters?.window ?? "7d",
+        ...(input.filters?.workflow
+          ? { workflow: input.filters.workflow }
+          : {}),
+        ...(input.filters?.taskType
+          ? { taskType: input.filters.taskType }
+          : {}),
+        ...(input.filters?.status ? { status: input.filters.status } : {}),
+        ...(input.filters?.pattern ? { pattern: input.filters.pattern } : {}),
+      },
+      scope: deps.scope,
+      diagnostics: collected.diagnostics,
+      ...(agentReports ? { agentReports } : {}),
+    });
+  };
+}
+
 export async function startDaemon(
   options: StartDaemonOptions,
   deps: StartDaemonDeps = {},
@@ -543,8 +605,12 @@ export async function startDaemon(
    * "missing workflow config → friendly log, does not crash" gate.
    */
   let pipelineService: ReturnType<typeof createPipelineService> | undefined;
+  // V4.6 review fix C4：把 pipelineStore 引用提到 if-block 外，让下面的
+  // `buildPipelineQualitySummary` callback 也能读到（启用 V4.6 时填实例，
+  // 未启用 V4.6 时保持 undefined，buildQualitySummary 行为不变）。
+  let pipelineStore: PipelineStore | undefined;
   if (workflow.defaultRecipe && workflow.roles) {
-    const pipelineStore = createPipelineStore({
+    pipelineStore = createPipelineStore({
       root: path.join(workflow.workspace.root, ".issuepilot"),
     });
     const pipelineAgents: CoordinatorAgents = {
@@ -639,29 +705,19 @@ export async function startDaemon(
           return undefined;
       }
     },
-    buildQualitySummary: async (input) => {
-      const collected = await collectQualitySources({
+    // V4.6 review fix C4：通过 buildPipelineQualitySummary 把当前窗口内的
+    // AgentReport 喂给 buildQualitySummary，让 /api/quality/summary 的
+    // byRole 切片真正落到 dashboard 的 ByRolePanel。未启用 V4.6 pipeline
+    // 时 pipelineStore 为 undefined，等价于历史行为。
+    buildQualitySummary: buildPipelineQualitySummary({
+      pipelineStore,
+      collectorDeps: {
         metadata: { workflow: path.basename(workflowPath) },
         reports: reportStore,
         workItems: workItemStore,
-      });
-      return buildQualitySummary({
-        items: collected.items,
-        filters: {
-          from:
-            input.filters?.from ??
-            new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-          to: input.filters?.to ?? new Date().toISOString(),
-          window: input.filters?.window ?? "7d",
-          ...(input.filters?.workflow ? { workflow: input.filters.workflow } : {}),
-          ...(input.filters?.taskType ? { taskType: input.filters.taskType } : {}),
-          ...(input.filters?.status ? { status: input.filters.status } : {}),
-          ...(input.filters?.pattern ? { pattern: input.filters.pattern } : {}),
-        },
-        scope: { mode: "single-project" },
-        diagnostics: collected.diagnostics,
-      });
-    },
+      },
+      scope: { mode: "single-project" },
+    }),
   });
   const workItemPlanner =
     deps.workItemPlanner ?? createDefaultWorkItemPlanner();

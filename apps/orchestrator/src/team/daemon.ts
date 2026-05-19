@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
+import { buildPipelineQualitySummary } from "../daemon.js";
 import { createImprovementService } from "../improvements/service.js";
 import { createImprovementStore } from "../improvements/store.js";
 import {
@@ -16,10 +17,11 @@ import {
   createPipelineService,
   type PipelineService,
 } from "../pipelines/service.js";
-import { createPipelineStore } from "../pipelines/store.js";
-import { buildQualitySummary } from "../quality/aggregate.js";
+import {
+  createPipelineStore,
+  type PipelineStore,
+} from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
-import { collectQualitySources } from "../quality/collect.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
@@ -292,8 +294,13 @@ export async function startTeamDaemon(
     // plan Task 9.3 "missing config → friendly log").
     const projectDefaultRecipe = project.workflow.defaultRecipe;
     const projectRoles = project.workflow.roles;
+    // V4.6 review fix C4：把 pipelineStore 提到 if-block 外，让本 project
+    // 的 buildQualitySummary callback 在未启用 V4.6 时仍保持 undefined（行
+    // 为不变），启用 V4.6 时拿到本 project 隔离的 pipelineStore（不会混
+    // 用其他 project 的 AgentReport）。
+    let pipelineStore: PipelineStore | undefined;
     if (projectDefaultRecipe && projectRoles) {
-      const pipelineStore = createPipelineStore({
+      pipelineStore = createPipelineStore({
         root: path.join(project.workflow.workspace.root, ".issuepilot"),
       });
       const pipelineAgents: CoordinatorAgents = {
@@ -388,33 +395,15 @@ export async function startTeamDaemon(
               return undefined;
           }
         },
-        buildQualitySummary: async (input) => {
-          const collected = await collectQualitySources(qualityDeps);
-          return buildQualitySummary({
-            items: collected.items,
-            filters: {
-              from:
-                input.filters?.from ??
-                new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-              to: input.filters?.to ?? new Date().toISOString(),
-              window: input.filters?.window ?? "7d",
-              ...(input.filters?.workflow
-                ? { workflow: input.filters.workflow }
-                : {}),
-              ...(input.filters?.taskType
-                ? { taskType: input.filters.taskType }
-                : {}),
-              ...(input.filters?.status
-                ? { status: input.filters.status }
-                : {}),
-              ...(input.filters?.pattern
-                ? { pattern: input.filters.pattern }
-                : {}),
-            },
-            scope: { mode: "team-project", projectId },
-            diagnostics: collected.diagnostics,
-          });
-        },
+        // V4.6 review fix C4：team 模式下每个 project 一份独立的
+        // pipelineStore；通过 buildPipelineQualitySummary helper 把本
+        // project 的 AgentReport 喂给 buildQualitySummary，让 dashboard
+        // 的 byRole 切片在 team 模式同样可见，且不混库（spec §9 / §17.4）。
+        buildQualitySummary: buildPipelineQualitySummary({
+          pipelineStore,
+          collectorDeps: qualityDeps,
+          scope: { mode: "team-project", projectId },
+        }),
       }),
     );
   }

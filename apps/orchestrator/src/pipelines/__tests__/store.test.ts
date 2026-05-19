@@ -455,6 +455,76 @@ describe("PipelineStore.supersedeAgentReport", () => {
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// V4.6 review fix C4 — PipelineStore.listAllAgentReports (cross-task/role
+// listing used by daemon to feed buildQualitySummary({ agentReports }))
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("PipelineStore.listAllAgentReports (V4.6 review C4)", () => {
+  it("filters by sinceIso and excludes superseded by default", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ip-store-listall-"));
+    const store = createPipelineStore({ root });
+    await store.saveAgentReport(
+      coderReport({
+        agentReportId: "ar_old",
+        startedAt: "2026-05-19T00:00:00.000Z",
+        supersededBy: "ar_new",
+      }),
+    );
+    await store.saveAgentReport(
+      coderReport({
+        agentReportId: "ar_new",
+        startedAt: "2026-05-20T00:00:00.000Z",
+      }),
+    );
+    await store.saveAgentReport(
+      reviewerReport({
+        agentReportId: "ar_rev_new",
+        startedAt: "2026-05-20T01:00:00.000Z",
+      }),
+    );
+
+    const recent = await store.listAllAgentReports({
+      sinceIso: "2026-05-19T12:00:00.000Z",
+    });
+    expect(recent.map((r) => r.agentReportId).sort()).toEqual([
+      "ar_new",
+      "ar_rev_new",
+    ]);
+
+    const recentWithSuperseded = await store.listAllAgentReports({
+      sinceIso: "2026-05-19T12:00:00.000Z",
+      includeSuperseded: true,
+    });
+    expect(recentWithSuperseded.map((r) => r.agentReportId).sort()).toEqual([
+      "ar_new",
+      "ar_rev_new",
+    ]);
+
+    const fromDawn = await store.listAllAgentReports({
+      includeSuperseded: true,
+    });
+    expect(fromDawn).toHaveLength(3);
+  });
+
+  it("returns [] when agent-reports dir does not exist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ip-store-empty-"));
+    const store = createPipelineStore({ root });
+    const out = await store.listAllAgentReports();
+    expect(out).toEqual([]);
+  });
+
+  it("skips index.json sentinel files when scanning role dirs", async () => {
+    const { store } = await createTempStore();
+    await store.saveAgentReport(
+      coderReport({ agentReportId: "ar_only", startedAt: "2026-05-20T00:00:00.000Z" }),
+    );
+    const all = await store.listAllAgentReports({ includeSuperseded: true });
+    expect(all).toHaveLength(1);
+    expect(all[0]?.agentReportId).toBe("ar_only");
+  });
+});
+
 describe("createPipelineStoresByProject", () => {
   it("按 projectId 隔离根目录；upsert 同根目录返回同实例", async () => {
     const tmp1 = await mkdtemp(join(tmpdir(), "ip-pipeline-proj-a-"));

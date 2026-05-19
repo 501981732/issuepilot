@@ -35,10 +35,31 @@ git diff --check
 ## 验证记录
 
 - `pnpm --filter @issuepilot/shared-contracts exec vitest run src/__tests__/improvement.test.ts src/__tests__/quality.test.ts src/__tests__/index.test.ts` → PASS.
-- `pnpm --filter @issuepilot/orchestrator exec vitest run src/improvements src/server/__tests__/server.test.ts src/__tests__/improvements-v45-e2e.test.ts` → PASS.
-- `pnpm --filter @issuepilot/dashboard exec vitest run lib/api.test.ts components/reports/recommendations.test.tsx components/reports/reports-page.test.tsx app/reports/page.test.tsx` → PASS.
+- `pnpm --filter @issuepilot/orchestrator exec vitest run src/improvements src/server/__tests__/server.test.ts src/__tests__/improvements-v45-e2e.test.ts` → PASS（含 supersede / sandbox / 404 detail 新增用例）。
+- `pnpm --filter @issuepilot/dashboard exec vitest run lib/api.test.ts components/reports/recommendations.test.tsx components/reports/reports-page.test.tsx app/reports/page.test.tsx` → PASS（含改进操作失败 banner 用例）。
 - `scripts/ci-equivalent-check.sh` → PASS。首次执行因 `src/daemon.ts` / `src/team/daemon.ts` 的
   `import/order` 警告（lint stage `--max-warnings 0`）失败，运行
   `pnpm --filter @issuepilot/orchestrator exec eslint --fix src/daemon.ts src/team/daemon.ts`
-  自动调整 import 顺序后复跑通过。
+  自动调整 import 顺序后复跑通过。code-review 修复后再次复跑同样 PASS。
 - `git diff --check` → PASS（由 `scripts/ci-equivalent-check.sh` 最后一阶段执行）。
+
+## Code Review 修复记录（2026-05-19）
+
+- **Critical**：`engine.ts` 在 `accepted` / `rejected` 上不再被忽略；引入
+  supersede 行为（新 id + `supersedes`）并由 `service.generate` 把旧记录翻成
+  `superseded`、追加 `"superseded"` action history（`ImprovementAction` 联合
+  随之扩展）。
+- **Important**：engine 新增 `resolveTargetPath` 钩子，daemon 单 mode /
+  team mode 都注入 `workflow_front_matter` → workflow YAML 与
+  `project_rules` → `<workspace>/AGENTS.md`，让 dashboard 的 patch preview
+  能真正产出 inert diff。
+- **Important**：`patch-preview.ts` 引入 `allowedPathPrefixes` 沙箱，越界
+  返回 `blocked: target_outside_sandbox`；daemon 把工作流文件路径与 workspace
+  根目录加入白名单，杜绝 operator-influenced 路径外溢。
+- **Important**：`/api/improvements/recommendations/:id` 未命中改为 404
+  `{ code: "not_found" }`，server 测试补回归用例。
+- **Important**：CHANGELOG V4.5 段扩展为完整的 Added / Notes 列表，覆盖
+  shared contract / orchestrator / server / daemon / dashboard / 文档全链路。
+- **Minor**：dashboard `ReportsPage` 把改进操作包成 `runImprovementAction`，
+  失败时显示本地化 `alert` banner 并仍执行 `router.refresh()`，新增 i18n
+  `reportsPage.recommendations.actionFailed`。

@@ -6,6 +6,42 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 9 Task 9.3（daemon 注入 pipeline service）**：
+  - `apps/orchestrator/src/daemon.ts`：在 single 模式 daemon 中按需构造
+    `PipelineStore` + `Coordinator`（agent runners 暂为 deterministic
+    `agent_not_configured` stub，Phase 5-7 真实 runner 落地前先用占位）
+    + `PipelineService`，并把它通过新的 `pipelines` ServerDeps 字段注入
+    Fastify。`taskWriter` / `workItems` adapter 复用 `workItemStore`
+    上的现有 `getCurrentPlan` / `saveTaskPlan` / `getWorkItem`，避免
+    引入新的持久化代码路径。
+  - `apps/orchestrator/src/team/daemon.ts`：在 team 模式 daemon 的
+    per-project for 循环里同样按项目构造独立 `PipelineStore` /
+    `Coordinator` / `PipelineService`，写入新的 `pipelinesByProject`
+    map 并交给 server。
+  - 防御性降级：当 workflow YAML 缺少 V4.6 的 `default_recipe` 或
+    `roles` 段时（V4.5 / Phase 1 测试 fixture 都是这种情况），daemon
+    打印一条 `console.warn`「V4.6 pipeline service skipped …」，不构造
+    pipeline service，也不抛错 —— 对应 plan Task 9.3 "missing config →
+    friendly log, does not crash" 验收条款（spec §10）。
+  - `apps/orchestrator/src/pipelines/service.ts` 顺手把
+    `PipelineWorkItemAccess.updateTask` 的 patch 类型从
+    `Partial<TaskNode>` 改为 `PipelineTaskPatch`（显式允许 `undefined`），
+    让 daemon adapter 把 `currentPipelineRunId` / `roleFailureReason`
+    清空时与 `exactOptionalPropertyTypes` 严格模式兼容。
+  - 测试：
+    - `apps/orchestrator/src/__tests__/daemon.test.ts` 新增 2 例
+      `startDaemon V4.6 pipeline wiring`：第 1 例把 V4.6 字段补齐后
+      验证 `ServerDeps.pipelines` 已绑定 + `validateWorkflowRoles`
+      返回 `valid: true`；第 2 例针对 legacy 工作流断言
+      `ServerDeps.pipelines` 为 undefined + 触发友好 warn。
+    - `apps/orchestrator/src/team/__tests__/daemon.test.ts` 新增 1 例
+      `wires V4.6 pipelinesByProject ...`：混合 project（有 / 无
+      `default_recipe` + `roles`），断言只有合规项目进入
+      `pipelinesByProject`，并捕获跳过项目的 warn。
+  - 验证：orchestrator 整套 72 文件 / 843 用例全绿（含 3 新例）；
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。Phase 9 checkpoint
+    （Task 9.4）紧接进行。
+
 - 2026-05-19 — **V4.6 Phase 9 Task 9.2（Fastify routes + server wiring）**：
   - `apps/orchestrator/src/pipelines/routes.ts` 新增
     `registerPipelineRoutes(app, resolveContext)`：按 spec §18 注册 10 条

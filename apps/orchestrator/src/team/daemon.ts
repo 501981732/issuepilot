@@ -6,6 +6,17 @@ import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
 import { createImprovementService } from "../improvements/service.js";
 import { createImprovementStore } from "../improvements/store.js";
+import {
+  CoordinatorError,
+  createCoordinator,
+  type CoordinatorAgents,
+  type RoleProfileResolver,
+} from "../pipelines/coordinator.js";
+import {
+  createPipelineService,
+  type PipelineService,
+} from "../pipelines/service.js";
+import { createPipelineStore } from "../pipelines/store.js";
 import { buildQualitySummary } from "../quality/aggregate.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { collectQualitySources } from "../quality/collect.js";
@@ -228,6 +239,16 @@ export async function startTeamDaemon(
     string,
     ReturnType<typeof createImprovementService>
   >();
+  /**
+   * V4.6 Multi-Agent Pipeline: per-project pipeline service. Mirrors the
+   * single-daemon path — stores live under each project's own
+   * `<workspace.root>/.issuepilot/{pipelines,agent-reports}/...` so team
+   * isolation extends here too. Coordinator agents are deterministic stubs
+   * until Phase 5-7 wiring lands per project; routes that don't execute an
+   * agent (get / list / setRecipeOverride / skip / revoke-ai-review /
+   * validateWorkflowRoles) work fully end-to-end.
+   */
+  const pipelinesByProject = new Map<string, PipelineService>();
   for (const project of registry.enabledProjects()) {
     const reportStore = createReportStore({
       rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
@@ -264,6 +285,94 @@ export async function startTeamDaemon(
       path.resolve(project.workflowProfilePath),
       path.resolve(project.workflow.workspace.root),
     ];
+    // V4.6 per-project pipeline service. We bail (with a friendly log)
+    // when the project workflow is missing the V4.6 `default_recipe` /
+    // `roles` sections so the daemon stays bootable against test fixtures
+    // and V4.5 workflows that have not been migrated yet (spec §10 +
+    // plan Task 9.3 "missing config → friendly log").
+    const projectDefaultRecipe = project.workflow.defaultRecipe;
+    const projectRoles = project.workflow.roles;
+    if (projectDefaultRecipe && projectRoles) {
+      const pipelineStore = createPipelineStore({
+        root: path.join(project.workflow.workspace.root, ".issuepilot"),
+      });
+      const pipelineAgents: CoordinatorAgents = {
+        coder: {
+          async run() {
+            throw new CoordinatorError(
+              "V4.6 coder agent runner is not wired on team-mode yet",
+              "agent_not_configured",
+            );
+          },
+        },
+        reviewer: {
+          async run() {
+            throw new CoordinatorError(
+              "V4.6 reviewer agent runner is not wired on team-mode yet",
+              "agent_not_configured",
+            );
+          },
+        },
+        testEvidence: {
+          async run() {
+            throw new CoordinatorError(
+              "V4.6 test_evidence agent runner is not wired on team-mode yet",
+              "agent_not_configured",
+            );
+          },
+        },
+      };
+      const pipelineRoleProfileResolver: RoleProfileResolver = {
+        async resolveRoleProfile() {
+          return null;
+        },
+      };
+      const pipelineCoordinator = createCoordinator({
+        pipelineStore,
+        agents: pipelineAgents,
+        roleProfileResolver: pipelineRoleProfileResolver,
+        taskWriter: {
+          updateTask: async ({ workItemId, taskId, patch }) => {
+            const plan = await workItemStore.getCurrentPlan(workItemId);
+            if (!plan) return;
+            const nextTasks = plan.tasks.map((t) =>
+              t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+            );
+            await workItemStore.saveTaskPlan({ ...plan, tasks: nextTasks });
+          },
+        },
+      });
+      pipelinesByProject.set(
+        project.id,
+        createPipelineService({
+          pipelineStore,
+          coordinator: pipelineCoordinator,
+          workItems: {
+            getWorkItem: (id) => workItemStore.getWorkItem(id),
+            getTask: async ({ workItemId, taskId }) => {
+              const plan = await workItemStore.getCurrentPlan(workItemId);
+              return plan?.tasks.find((t) => t.taskId === taskId);
+            },
+            updateTask: async ({ workItemId, taskId, patch }) => {
+              const plan = await workItemStore.getCurrentPlan(workItemId);
+              if (!plan) return;
+              const nextTasks = plan.tasks.map((t) =>
+                t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+              );
+              await workItemStore.saveTaskPlan({ ...plan, tasks: nextTasks });
+            },
+          },
+          workflow: {
+            getDefaultRecipe: () => projectDefaultRecipe,
+            getRoles: () => projectRoles,
+          },
+        }),
+      );
+    } else {
+      console.warn(
+        `[issuepilot] V4.6 pipeline service skipped for project ${project.id}: workflow is missing default_recipe or roles. Update the workflow YAML to enable /api/work-items/.../pipeline endpoints (spec §10).`,
+      );
+    }
     improvementsByProject.set(
       project.id,
       createImprovementService({
@@ -335,6 +444,7 @@ export async function startTeamDaemon(
       reportsByProject,
       qualityByProject,
       improvementsByProject,
+      pipelinesByProject,
     },
     { host, port },
   );

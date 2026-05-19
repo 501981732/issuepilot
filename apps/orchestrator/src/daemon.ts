@@ -67,6 +67,15 @@ import {
   reconcile,
 } from "./orchestrator/reconcile.js";
 import { sweepReviewFeedbackOnce } from "./orchestrator/review-feedback.js";
+import {
+  CoordinatorError,
+  createCoordinator,
+  type Coordinator,
+  type CoordinatorAgents,
+  type RoleProfileResolver,
+} from "./pipelines/coordinator.js";
+import { createPipelineService } from "./pipelines/service.js";
+import { createPipelineStore } from "./pipelines/store.js";
 import { buildQualitySummary } from "./quality/aggregate.js";
 import { collectQualitySources } from "./quality/collect.js";
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
@@ -515,6 +524,104 @@ export async function startDaemon(
     workflowPath,
     path.resolve(workflow.workspace.root),
   ];
+  /**
+   * V4.6 Multi-Agent Pipeline: pipeline + agent-report artifacts live under
+   * `<workspace.root>/.issuepilot/{pipelines,agent-reports}/...`. The store
+   * is lazy on disk so a daemon that never runs a V4.6 pipeline still
+   * exposes the routes (returning empty lists) without writing anything.
+   *
+   * Phase 9 Task 9.3: build a `Coordinator` with conservative agent
+   * stubs so the routes are reachable end-to-end. Real coder / reviewer /
+   * test_evidence agent runners land via Phase 5-7 wiring in a subsequent
+   * change; for now we surface a deterministic `CoordinatorError` whenever
+   * a route tries to actually execute an agent (retry / start-pipeline).
+   * Non-execution routes (get / list / setRecipeOverride / skip /
+   * revoke-ai-review / validateWorkflowRoles) work fully against the real
+   * `PipelineStore`. When the workflow is missing the V4.6 `default_recipe`
+   * / `roles` sections we skip wiring (with a friendly log) so the daemon
+   * stays bootable against legacy V4.5 workflow YAML — matches the plan's
+   * "missing workflow config → friendly log, does not crash" gate.
+   */
+  let pipelineService: ReturnType<typeof createPipelineService> | undefined;
+  if (workflow.defaultRecipe && workflow.roles) {
+    const pipelineStore = createPipelineStore({
+      root: path.join(workflow.workspace.root, ".issuepilot"),
+    });
+    const pipelineAgents: CoordinatorAgents = {
+      coder: {
+        async run() {
+          throw new CoordinatorError(
+            "V4.6 coder agent runner is not wired on this daemon yet",
+            "agent_not_configured",
+          );
+        },
+      },
+      reviewer: {
+        async run() {
+          throw new CoordinatorError(
+            "V4.6 reviewer agent runner is not wired on this daemon yet",
+            "agent_not_configured",
+          );
+        },
+      },
+      testEvidence: {
+        async run() {
+          throw new CoordinatorError(
+            "V4.6 test_evidence agent runner is not wired on this daemon yet",
+            "agent_not_configured",
+          );
+        },
+      },
+    };
+    const pipelineRoleProfileResolver: RoleProfileResolver = {
+      async resolveRoleProfile() {
+        return null;
+      },
+    };
+    const pipelineCoordinator: Coordinator = createCoordinator({
+      pipelineStore,
+      agents: pipelineAgents,
+      roleProfileResolver: pipelineRoleProfileResolver,
+      taskWriter: {
+        updateTask: async ({ workItemId, taskId, patch }) => {
+          const plan = await workItemStore.getCurrentPlan(workItemId);
+          if (!plan) return;
+          const nextTasks = plan.tasks.map((t) =>
+            t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+          );
+          await workItemStore.saveTaskPlan({ ...plan, tasks: nextTasks });
+        },
+      },
+    });
+    pipelineService = createPipelineService({
+      pipelineStore,
+      coordinator: pipelineCoordinator,
+      workItems: {
+        getWorkItem: (id) => workItemStore.getWorkItem(id),
+        getTask: async ({ workItemId, taskId }) => {
+          const plan = await workItemStore.getCurrentPlan(workItemId);
+          return plan?.tasks.find((t) => t.taskId === taskId);
+        },
+        updateTask: async ({ workItemId, taskId, patch }) => {
+          const plan = await workItemStore.getCurrentPlan(workItemId);
+          if (!plan) return;
+          const nextTasks = plan.tasks.map((t) =>
+            t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+          );
+          await workItemStore.saveTaskPlan({ ...plan, tasks: nextTasks });
+        },
+      },
+      workflow: {
+        getDefaultRecipe: () => workflow.defaultRecipe,
+        getRoles: () => workflow.roles,
+      },
+    });
+  } else {
+    console.warn(
+      "[issuepilot] V4.6 pipeline service skipped: workflow YAML is missing default_recipe or roles. Update the workflow to enable /api/work-items/.../pipeline endpoints (spec §10).",
+    );
+  }
+
   const improvementService = createImprovementService({
     store: improvementStore,
     allowedPathPrefixes: improvementSandbox,
@@ -1475,6 +1582,7 @@ export async function startDaemon(
         workItems: workItemStore,
       },
       improvements: improvementService,
+      ...(pipelineService ? { pipelines: pipelineService } : {}),
     },
     { host, port },
   );

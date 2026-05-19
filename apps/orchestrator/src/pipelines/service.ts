@@ -39,7 +39,6 @@ import {
   type AgentReportSummary,
   type RetryAgentReportResponse,
   type RevokeAiReviewResponse,
-  type SetRecipeOverrideRequest,
   type SetRecipeOverrideResponse,
   type SkipAgentReportResponse,
   type TaskNode,
@@ -65,6 +64,16 @@ const err = (
   message: string,
 ): PipelineServiceResult<never> => ({ ok: false, error: { code, message } });
 
+/**
+ * patch 字段允许显式 `undefined`，让 service 在 coder retry 时清空
+ * `currentPipelineRunId` / `roleFailureReason` 等 V4.6 字段（spec §8.3）。
+ * 与 `coordinator.ts:TaskPatch` 保持同一形状，daemon 注入时可以直接
+ * 把 `taskWriter.updateTask` 转接进来。
+ */
+export type PipelineTaskPatch = {
+  [K in keyof TaskNode]?: TaskNode[K] | undefined;
+};
+
 export interface PipelineWorkItemAccess {
   getWorkItem(id: string): Promise<WorkItem | undefined>;
   getTask(input: {
@@ -74,7 +83,7 @@ export interface PipelineWorkItemAccess {
   updateTask(input: {
     workItemId: string;
     taskId: string;
-    patch: Partial<TaskNode>;
+    patch: PipelineTaskPatch;
   }): Promise<void>;
 }
 
@@ -169,8 +178,9 @@ const summarizeReport = (report: AgentReport): AgentReportSummary => {
   };
   if (report.completedAt) base.completedAt = report.completedAt;
   if (report.lastError?.code) base.lastErrorCode = report.lastError.code;
-  if ((report as { supersededBy?: string }).supersededBy) {
-    base.supersededBy = (report as { supersededBy?: string }).supersededBy;
+  const supersededBy = (report as { supersededBy?: string }).supersededBy;
+  if (typeof supersededBy === "string" && supersededBy.length > 0) {
+    base.supersededBy = supersededBy;
   }
   if (report.role === "reviewer") {
     base.decision = report.reviewer.decision;

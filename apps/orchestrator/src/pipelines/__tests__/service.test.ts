@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 import type {
   AgentReport,
-  AgentRole,
   CoderAgentReport,
   PipelineRun,
   ReviewerAgentReport,

@@ -1430,3 +1430,162 @@ describe("startDaemon human-review event publishing", () => {
     }
   });
 });
+
+/**
+ * V4.6 Phase 9 Task 9.3: startDaemon should attach `pipelines` to
+ * ServerDeps whenever the workflow declares `default_recipe` + `roles`,
+ * and emit a friendly warning (not crash) when those V4.6 fields are
+ * absent. Both branches use the test seam `createServer` to capture
+ * `ServerDeps` without spinning up a real HTTP listener.
+ */
+describe("startDaemon V4.6 pipeline wiring", () => {
+  it("wires pipelines into ServerDeps when workflow declares V4.6 default_recipe + roles", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-daemon-v46-"),
+    );
+    try {
+      const workflow = createWorkflow(root) as ReturnType<
+        typeof createWorkflow
+      > & {
+        defaultRecipe: "full_pipeline";
+        roles: {
+          coder: {
+            role: "coder";
+            promptTemplate: string;
+            promptTemplateHash: string;
+            sandbox: "read_write_worktree";
+          };
+          reviewer: {
+            role: "reviewer";
+            promptTemplate: string;
+            promptTemplateHash: string;
+            sandbox: "read_only_worktree";
+          };
+          test_evidence: {
+            role: "test_evidence";
+            promptTemplate: string;
+            promptTemplateHash: string;
+            sandbox: "read_only_source_write_evidence";
+          };
+        };
+      };
+      workflow.defaultRecipe = "full_pipeline";
+      workflow.roles = {
+        coder: {
+          role: "coder",
+          promptTemplate: "/tmp/c.md",
+          promptTemplateHash: "deadbeef",
+          sandbox: "read_write_worktree",
+        },
+        reviewer: {
+          role: "reviewer",
+          promptTemplate: "/tmp/r.md",
+          promptTemplateHash: "deadbeef",
+          sandbox: "read_only_worktree",
+        },
+        test_evidence: {
+          role: "test_evidence",
+          promptTemplate: "/tmp/t.md",
+          promptTemplateHash: "deadbeef",
+          sandbox: "read_only_source_write_evidence",
+        },
+      };
+
+      let captured: ServerDeps | undefined;
+      const daemon = await startDaemon(
+        { workflowPath: workflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => workflow),
+            start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () =>
+            createGitLabForHumanReviewScanPollution(),
+          ),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            captured = deps;
+            return createFakeServer();
+          }),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+
+      try {
+        if (!captured) throw new Error("server deps not captured");
+        expect(captured.pipelines).toBeDefined();
+        expect(captured.pipelinesByProject).toBeUndefined();
+
+        const result = await captured.pipelines!.validateWorkflowRoles({
+          workflowId: "default",
+        });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value).toEqual({ valid: true, errors: [] });
+        }
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await removeTempDir(root);
+    }
+  });
+
+  it("emits a friendly warning and leaves pipelines unset when V4.6 fields are missing", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "issuepilot-daemon-v46-skip-"),
+    );
+    try {
+      const workflow = createWorkflow(root);
+      // intentionally NOT setting defaultRecipe / roles — fixture matches
+      // legacy V4.5 workflow YAML.
+      let captured: ServerDeps | undefined;
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const daemon = await startDaemon(
+          { workflowPath: workflow.source.path },
+          {
+            workflowLoader: {
+              loadOnce: vi.fn(async () => workflow),
+              start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+              render: vi.fn(() => "prompt"),
+            },
+            createGitLab: vi.fn(async () =>
+              createGitLabForHumanReviewScanPollution(),
+            ),
+            createServer: vi.fn(async (deps: ServerDeps) => {
+              captured = deps;
+              return createFakeServer();
+            }),
+            startLoop: vi.fn(() => ({
+              tick: vi.fn(async () => {}),
+              stop: vi.fn(async () => {}),
+            })),
+            state: createRuntimeState(),
+          },
+        );
+        try {
+          if (!captured) throw new Error("server deps not captured");
+          expect(captured.pipelines).toBeUndefined();
+          expect(
+            warn.mock.calls.some(([msg]) =>
+              String(msg).includes(
+                "V4.6 pipeline service skipped",
+              ),
+            ),
+          ).toBe(true);
+        } finally {
+          await daemon.stop();
+        }
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      await removeTempDir(root);
+    }
+  });
+});

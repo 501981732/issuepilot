@@ -1,4 +1,14 @@
 import { type IssuePilotEvent } from "./events.js";
+export type {
+  ImprovementActionRequest,
+  ImprovementActionResponse,
+  ImprovementGenerateRequest,
+  ImprovementGenerateResponse,
+  ImprovementPatchPreviewRequest,
+  ImprovementRecommendationDetailResponse,
+  ImprovementRecommendationFilters,
+  ImprovementRecommendationsListResponse,
+} from "./improvement.js";
 import {
   type RunReportArtifact,
   type RunReportSummary,

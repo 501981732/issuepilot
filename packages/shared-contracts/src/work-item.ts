@@ -43,12 +43,22 @@ export const isTaskPlanStatus = (value: unknown): value is TaskPlanStatus =>
  * 单个子任务的状态机。`blocked_by_dependency` 用于上游 task 未完成或
  * upstream MR 未合并 base_branch 的情况（spec §12.4）。`needs_rework`
  * 留给 V4.2 reviewer feedback 入口，V4.1 仅做枚举占位。
+ *
+ * V4.6 扩展（spec §8.0）：把 `running` 拆细为 `running_coding` /
+ * `running_reviewer` / `running_test_evidence` 三态，并新增
+ * `awaiting_human_review` 终态。旧 `running` 仍保留作为兼容值，
+ * 旧 task store 读出时由 `legacyRunningStateToV46` 升级到 V4.6 字面值。
  */
 export const TASK_NODE_STATUS_VALUES = [
   "planned",
   "blocked_by_dependency",
   "ready",
+  /** @deprecated V4.6+ 使用 `running_coding` / `running_reviewer` / `running_test_evidence`；仅保留作为读路径兼容。 */
   "running",
+  "running_coding",
+  "running_reviewer",
+  "running_test_evidence",
+  "awaiting_human_review",
   "completed",
   "failed",
   "blocked",
@@ -60,6 +70,43 @@ export type TaskNodeStatus = (typeof TASK_NODE_STATUS_VALUES)[number];
 export const isTaskNodeStatus = (value: unknown): value is TaskNodeStatus =>
   typeof value === "string" &&
   (TASK_NODE_STATUS_VALUES as readonly string[]).includes(value);
+
+/**
+ * V4.6 spec §8.0：旧 task store 里写的是 `running`，本 helper 在读路径
+ * 把它升级成 V4.6 默认的 `running_coding`，其他状态原值返回。
+ */
+export const legacyRunningStateToV46 = (
+  status: TaskNodeStatus,
+): TaskNodeStatus => (status === "running" ? "running_coding" : status);
+
+/**
+ * V4.6 spec §7.3 / §16.2：`TaskNode.roleFailureReason` 字段的字面量集合。
+ *
+ * 与 `LastErrorCode` 不同：lastError.code 是 agent 内部失败原因，
+ * roleFailureReason 是 orchestrator 投射到 TaskNode 上的"运维级根因"，
+ * 用于 dashboard 提示与 V4.4 quality 失败模式分桶。两表映射规则
+ * 由 `failure-mapping.ts`（orchestrator）维护。
+ */
+export const TASK_ROLE_FAILURE_REASON_VALUES = [
+  "coding_failed",
+  "reviewer_unavailable",
+  "reviewer_cannot_review",
+  "reviewer_requested_changes",
+  "evidence_unavailable",
+  "evidence_partial",
+  "sandbox_violation",
+  "redaction_failed",
+  "storage_full",
+  "role_profile_invalid",
+] as const;
+export type TaskRoleFailureReason =
+  (typeof TASK_ROLE_FAILURE_REASON_VALUES)[number];
+
+export const isTaskRoleFailureReason = (
+  value: unknown,
+): value is TaskRoleFailureReason =>
+  typeof value === "string" &&
+  (TASK_ROLE_FAILURE_REASON_VALUES as readonly string[]).includes(value);
 
 /**
  * WorkItemReport 自身的可读性状态。`incomplete` 表示报告引用的 run /
@@ -158,6 +205,34 @@ export interface TaskNode {
    * count true review-driven rework without false positives.
    */
   needsReworkReason?: string;
+  /**
+   * V4.6 spec §8.3：当前关联的 PipelineRun ID。仅在 TaskNode 进入
+   * `ready` 后由 orchestrator 创建 PipelineRun 时写入；进入
+   * `running_coding` 之后不再变化（除 retry / replan 时切换）。
+   */
+  currentPipelineRunId?: string;
+  /**
+   * V4.6 spec §8.3：在 `planned` / `blocked_by_dependency` 阶段
+   * （PipelineRun 尚未创建）调用 recipe-override 时写入；orchestrator
+   * 在 PipelineRun 创建时灌进 draft 并清空。
+   *
+   * 类型故意写成 string 而不是 import WorkflowRecipe，以避免 work-item
+   * → pipeline 的双向依赖；运行时 `isWorkflowRecipe` 校验由
+   * `pipelines/recipe.ts` 负责。
+   */
+  pendingRecipe?: string;
+  pendingRecipeSource?: string;
+  /**
+   * V4.6 spec §8.3：PipelineRun cancel 把 TaskNode 拉回 `ready` 时写入。
+   * orchestrator auto_advance 检查该标记并跳过，直到 operator 在
+   * dashboard 显式触发新一轮 pipeline 时清空。
+   */
+  last_cancelled_at?: string;
+  /**
+   * V4.6 spec §7.3 / §8.3：运维级根因码，取自
+   * `TASK_ROLE_FAILURE_REASON_VALUES`。dashboard 据此渲染失败提示。
+   */
+  roleFailureReason?: TaskRoleFailureReason;
 }
 
 /**
@@ -252,7 +327,19 @@ export function effectiveTaskStatus(
   if (task.status === "needs_rework" || task.status === "skipped") {
     return task.status;
   }
-  return link?.status ?? task.status;
+  const resolved: TaskNodeStatus = link?.status ?? task.status;
+  // V4.6 兼容：`running_coding` / `running_reviewer` / `running_test_evidence`
+  // 在旧 UI 路径上仍按"在跑"展示。spec §8.0 要求把三细态对外折叠成
+  // legacy `running`，让 V4.5 之前的 dashboard / aggregate 行为保持不变；
+  // 真正的细化状态由 V4.6 dashboard 经 PipelineRun / AgentReport 自取。
+  if (
+    resolved === "running_coding" ||
+    resolved === "running_reviewer" ||
+    resolved === "running_test_evidence"
+  ) {
+    return "running";
+  }
+  return resolved;
 }
 
 /**

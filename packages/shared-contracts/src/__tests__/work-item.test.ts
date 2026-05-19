@@ -5,8 +5,12 @@ import {
   TASK_PLAN_STATUS_VALUES,
   WORK_ITEM_REPORT_STATUS_VALUES,
   WORK_ITEM_STATUS_VALUES,
+  TASK_ROLE_FAILURE_REASON_VALUES,
   isTaskNodeStatus,
+  isTaskRoleFailureReason,
   isWorkItemStatus,
+  legacyRunningStateToV46,
+  effectiveTaskStatus,
   type TaskNode,
   type TaskPlan,
   type TaskPlanEdit,
@@ -36,12 +40,16 @@ describe("work-item contracts", () => {
     ]);
   });
 
-  it("locks the TaskNode status enum", () => {
+  it("locks the TaskNode status enum (V4.6 扩展)", () => {
     expect([...TASK_NODE_STATUS_VALUES]).toEqual([
       "planned",
       "blocked_by_dependency",
       "ready",
       "running",
+      "running_coding",
+      "running_reviewer",
+      "running_test_evidence",
+      "awaiting_human_review",
       "completed",
       "failed",
       "blocked",
@@ -162,6 +170,67 @@ describe("work-item contracts", () => {
       at: "2026-05-17T00:00:00.000Z",
     };
     expect(edit.field).toBe("replan");
+  });
+
+  it("TASK_ROLE_FAILURE_REASON_VALUES 严格按 spec §7.3 / §16.2", () => {
+    expect(new Set(TASK_ROLE_FAILURE_REASON_VALUES)).toEqual(
+      new Set([
+        "coding_failed",
+        "reviewer_unavailable",
+        "reviewer_cannot_review",
+        "reviewer_requested_changes",
+        "evidence_unavailable",
+        "evidence_partial",
+        "sandbox_violation",
+        "redaction_failed",
+        "storage_full",
+        "role_profile_invalid",
+      ]),
+    );
+    expect(isTaskRoleFailureReason("coding_failed")).toBe(true);
+    // scope_insufficient 是 lastError.code，不是 TaskNode reason
+    expect(isTaskRoleFailureReason("scope_insufficient")).toBe(false);
+  });
+
+  it("legacyRunningStateToV46 把 running 映射到 running_coding", () => {
+    expect(legacyRunningStateToV46("running")).toBe("running_coding");
+    expect(legacyRunningStateToV46("ready")).toBe("ready");
+    expect(legacyRunningStateToV46("completed")).toBe("completed");
+  });
+
+  it("TaskNode 接收 V4.6 新字段", () => {
+    const t: TaskNode = {
+      taskId: "t_v46",
+      title: "T",
+      goal: "g",
+      scope: "s",
+      dependsOn: [],
+      suggestedValidation: [],
+      status: "running_reviewer",
+      runIds: ["run_a"],
+      riskLevel: "low",
+      pendingRecipe: "coding_plus_reviewer",
+      pendingRecipeSource: "operator_override",
+      last_cancelled_at: "2026-05-19T00:00:00.000Z",
+      roleFailureReason: "reviewer_unavailable",
+      currentPipelineRunId: "pr_42",
+    };
+    expect(JSON.parse(JSON.stringify(t))).toEqual(t);
+  });
+
+  it("effectiveTaskStatus 把 running_* 三态映射到旧 running（向后兼容 UI）", () => {
+    expect(
+      effectiveTaskStatus({ status: "running_coding" }, undefined),
+    ).toBe("running");
+    expect(
+      effectiveTaskStatus({ status: "running_reviewer" }, undefined),
+    ).toBe("running");
+    expect(
+      effectiveTaskStatus({ status: "running_test_evidence" }, undefined),
+    ).toBe("running");
+    expect(
+      effectiveTaskStatus({ status: "awaiting_human_review" }, undefined),
+    ).toBe("awaiting_human_review");
   });
 
   it("requires WorkItemReport summaries plus evidence index", () => {

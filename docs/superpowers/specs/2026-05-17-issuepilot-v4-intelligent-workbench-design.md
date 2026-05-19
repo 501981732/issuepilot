@@ -21,7 +21,10 @@
   （已落地，覆盖 §7 V4.3 + §14.3 + §14.4 + §15）。
 - V4.4 Quality Analytics：
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`
-  （已完成设计，下一步进入实施计划）。
+  （已落地，覆盖 §7 V4.4 + Reports / Process Insights 第一版）。
+- V4.5 Workflow / Skills Improvement Loop：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
+  （实施计划已完成，覆盖 V4.5 recommendation queue、patch preview 和 human apply gate）。
 
 ## 1. Roadmap 决策
 

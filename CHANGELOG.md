@@ -2,6 +2,23 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.6 Multi-Agent / Multi-Runner Collaboration（设计中）
+
+### Added
+
+- 2026-05-19 — 起草 V4.6 设计 spec
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`：
+  在 V4.1–V4.5 的基础上引入 `coding` / `reviewer` / `test_evidence` 三种
+  AgentRole + `RunnerAdapter` 抽象，定义 `AgentPass` 数据模型、workflow
+  YAML 的 `agents` 段、`/api/runs/:runId/agent-passes/...` API、Review
+  Packet 中的 reviewer / test_evidence 渲染、安全 / 沙箱不变量与失败降级
+  矩阵。第一版只实装 codex-app-server 适配，但 contract 锁死以便后续接入
+  Claude Code / Cursor / 内部 coding agent。
+- 同步 V4 主 spec
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  实施计划清单，把 V4.6 设计 spec 链接补回。README 三语版本把「多 agent
+  协作」条目标记为 V4.6 设计中并指向新 spec。
+
 ## [Unreleased] V4.5 Workflow / Skills Improvement Loop
 
 ### Added

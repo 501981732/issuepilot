@@ -683,9 +683,10 @@ productionizes the capabilities that prove valuable here.
 - **Cross-issue dependency analysis**: detect blockers, duplicated work,
   upstream/downstream dependencies, and mergeable tasks, then surface them as
   an engineering work graph.
-- **Multi-agent collaboration**: coding agent, reviewer agent, and
-  test/evidence agent roles that can collaborate per sub-task and summarize
-  their results.
+- **Multi-agent collaboration** (V4.6 in design): coding agent, reviewer
+  agent, and test/evidence agent roles that can collaborate per sub-task and
+  summarize their results. Design spec:
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

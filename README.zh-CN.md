@@ -634,8 +634,9 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，
   在 dashboard 中形成研发工作图谱。
-- **多 agent 协作**：实现 coding agent、reviewer agent、test/evidence
-  agent 等角色分工，支持子任务级协作和汇总。
+- **多 agent 协作**（V4.6 设计中）：实现 coding agent、reviewer agent、
+  test/evidence agent 等角色分工，支持子任务级协作和汇总。设计 spec：
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`。
 - **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
   并把 review 反馈转成下一轮 agent 的结构化输入。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、

@@ -2,27 +2,97 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased] V4.5 Workflow / Skills Improvement Loop (Design)
+## [Unreleased] V4.6 Multi-Agent / Multi-Runner Collaboration（设计中）
 
 ### Added
 
-- 2026-05-18 — **V4.5 Improvement Loop 设计 spec 与实施计划**：在 V4.4
-  Quality Analytics 基础上规划 workflow / skills / prompt / 项目规则
-  的改进闭环，第一版严格 observe + suggest（不自动 apply、不静默改
-  workflow / skills / prompt / `AGENTS.md`、不引入 LLM 作为分类器、
-  不引入 Postgres / 后台 job、不修改 label 状态机）。本次仅落地文档：
-  - `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`
-    （V4.5 设计 spec，含数据模型、API 契约、安全边界与验收标准）。
-  - `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
-    （V4.5 实施计划，覆盖 shared contract → orchestrator module →
-    daemon wiring → dashboard → docs / acceptance 共 12 个 task；新增
-    `## Scope Check` / `In Scope` / `Out of Scope` 节与 V4.4 plan 对齐）。
-  - `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
-    V4 智能工作台总览 roadmap：V4.5 从"设计中"刷新为"实施计划已完成"。
-  - 三份 README（`README.md`、`README.zh-CN.md`、`README.en.md`）V4
-    roadmap 同步新增 V4.5 段落，明确"V4.5 是观察 + 建议，不自动改写"。
+- 2026-05-19 — 起草 V4.6 设计 spec
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`：
+  在 V4.1–V4.5 的基础上引入 `coding` / `reviewer` / `test_evidence` 三种
+  AgentRole + `RunnerAdapter` 抽象，定义 `AgentPass` 数据模型、workflow
+  YAML 的 `agents` 段、`/api/runs/:runId/agent-passes/...` API、Review
+  Packet 中的 reviewer / test_evidence 渲染、安全 / 沙箱不变量与失败降级
+  矩阵。第一版只实装 codex-app-server 适配，但 contract 锁死以便后续接入
+  Claude Code / Cursor / 内部 coding agent。
+- 同步 V4 主 spec
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  实施计划清单，把 V4.6 设计 spec 链接补回。README 三语版本把「多 agent
+  协作」条目标记为 V4.6 设计中并指向新 spec。
 
-### Fixed
+## [Unreleased] V4.5 Workflow / Skills Improvement Loop
+
+### Added
+
+- 2026-05-18 — **V4.5 Workflow / Skills Improvement Loop**：把 V4.4
+  quality facts 转成可审查的 `ImprovementRecommendation`。设计源头：
+  `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`；
+  验收清单：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop-acceptance.md`。
+  - **共享 contract**（`@issuepilot/shared-contracts`）：新增
+    `ImprovementRecommendation`、`ImprovementPatchPreview`、
+    `ImprovementTargetKind`、`ImprovementRecommendationStatus`
+    枚举与 type guards；新增 list/detail/generate/action/patch-preview
+    的请求/响应类型，并从 `api.ts` 重新导出。`ImprovementAction` 联合中加入
+    `"superseded"` 以保留旧记录被替换的审计痕迹。
+  - **orchestrator**：新增 `apps/orchestrator/src/improvements/`
+    （`store.ts` / `templates.ts` / `engine.ts` / `patch-preview.ts` /
+    `service.ts` / `routes.ts` / `types.ts`）。
+    - `store.ts` 把 recommendation 写到
+      `<workspace>/.issuepilot/recommendations/<id>.json`，落盘前走
+      `@issuepilot/observability` 的 `redact` 防止 token 泄露。
+    - `engine.ts` 按 `(projectId, workflow, taskType, patternId, targetKind)`
+      聚类，新增 dedupe / supersede 行为（spec §9.2）：`open` / `deferred` /
+      `blocked` / `stale` 按现有 id 合并新 evidence；`accepted` / `rejected`
+      触发 **supersede**，发出新 id 并通过 `supersedes` 字段引用旧记录，旧记录
+      被服务层翻成 `superseded` 且 actionHistory 追加 `"superseded"` 条目；
+      `superseded` 状态会被跳过避免循环。支持新的
+      `resolveTargetPath` 钩子注入 `target.path`。
+    - `templates.ts` 定义 7 种 failure pattern 模板；`permission-issue`
+      文案显式避免要求把 token 写到文件。
+    - `patch-preview.ts` 生成 inert unified diff、记录
+      `sourceSnapshot.sha256`，并新增 `allowedPathPrefixes` 沙箱：路径解析后
+      不在白名单内时返回 `blocked: target_outside_sandbox`，从根上防止
+      operator-influenced `target.path` 让 orchestrator 读
+      `~/.issuepilot/credentials`。fail closed 覆盖 missing path、unreadable
+      target、stale source、outside sandbox 四种场景。
+    - `service.ts` 协调 store / engine / patch-preview，并在 `generate`
+      时按 `supersededIds` 把旧记录翻成 `superseded`；`generate` 返回值的
+      `skipped` 字段如今承担「本次 generate 被 supersede 的旧记录数量」语义。
+    - `routes.ts` 暴露 `/api/improvements/recommendations*` 路由，detail
+      路由未命中时返回 404 `{ code: "not_found" }`（对齐 work-items 路由
+      约定）。
+  - **server / daemon 接线**：`apps/orchestrator/src/server/index.ts` 的
+    `ServerDeps` 新增 `improvements` / `improvementsByProject`，并在 server
+    内注册路由；`apps/orchestrator/src/daemon.ts` 与
+    `apps/orchestrator/src/team/daemon.ts` 分别构造 `improvementStore` +
+    `improvementService`，注入 `resolveTargetPath`（`workflow_front_matter`
+    → workflow YAML，`project_rules` → `<workspace>/AGENTS.md`）和
+    `allowedPathPrefixes`（单 mode = `[workflowPath, workspace.root]`，team
+    mode = `[project.workflowProfilePath, project.workflow.workspace.root]`）。
+    Team mode 每个 project 拿独立 store / service，互不串数据。
+  - **E2E**：`apps/orchestrator/src/__tests__/improvements-v45-e2e.test.ts`
+    跑通 quality facts → generate → accept → patch-preview，断言文件未被
+    写入且 `sourceSnapshot.sha256` 与磁盘一致。
+  - **dashboard**：`apps/dashboard/lib/api.ts` 新增 `improvementQuery` /
+    `listImprovementRecommendations` / `getImprovementRecommendation` /
+    `generateImprovementRecommendations` / `acceptImprovementRecommendation` /
+    `rejectImprovementRecommendation` / `deferImprovementRecommendation` /
+    `previewImprovementPatch`；
+    `apps/dashboard/components/reports/recommendations.tsx` 新增可选中的
+    queue + 详情视图（evidence refs、patch preview、accept/reject/defer/preview
+    按钮）；`reports-page.tsx` 把 Recommendations 渲染在 Quality Analytics
+    下面，按钮失败时显示本地化错误并仍调用 `router.refresh()` 收敛状态；
+    `app/reports/page.tsx` 与 quality summary、reports 列表并行拉取
+    `listImprovementRecommendations`。i18n 加入
+    `reportsPage.recommendations.*` 中英文键值，并新增 `error` /
+    `actionFailed` 文案。
+  - **文档 / 验收**：新增
+    `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop-acceptance.md`，
+    把 V4.5 验收标准、命令、记录串起来；`README.md` / `README.zh-CN.md` /
+    `README.en.md` 把 V4.5 状态从「设计中 / in V4.5 design」改为「实施中 /
+    in V4.5 implementation」并补充 implementation plan 链接。
 
 - 2026-05-19 — **V4.5 设计 spec 与实施计划字段一致性收口**：根据 V4.5
   docs code review，把 `ImprovementRecommendation.scope.projectId?:
@@ -35,6 +105,17 @@
   `useRouter().refresh()`，与 V4.4 `quality-analytics.tsx`「server
   component 数据 + 局部 client interaction」基线和 `AGENTS.md`
   「实现规则」一致。
+
+### Notes
+
+- V4.5 **不**自动改文件、**不** auto-commit、**不**碰 label 状态机：
+  `accept` 仅记录 operator 决定，patch preview 是只读 diff，沙箱拒绝越界
+  读取。已落地的 `target.path` 解析覆盖 `workflow_front_matter` 与
+  `project_rules`；`prompt_template` / `skill_instruction` 在 V4.5 第一版
+  保持 `blocked: target_path_missing`，作为后续 follow-up。
+- Repo gate `scripts/ci-equivalent-check.sh` 在合并前必须绿；本次提交
+  已确认 shared-contracts / orchestrator / dashboard focused 测试与
+  CI-equivalent 全部通过。
 
 ## [Unreleased] V4.4 Quality Analytics
 

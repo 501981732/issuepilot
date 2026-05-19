@@ -398,7 +398,26 @@
       "openSource": "open source",
       "diagnostics": "{count, plural, one {# invalid report skipped} other {# invalid reports skipped}}",
       "unknownCount": "{count} unknown"
-    }
+    },
+      "recommendations": {
+        "title": "Recommendations",
+        "description": "Evidence-backed workflow, prompt, project-rule, and skill suggestions generated from Quality Analytics.",
+        "generate": "Generate recommendations",
+        "empty": "No recommendations yet.",
+        "evidence": "Evidence",
+        "patchPreview": "Patch preview",
+        "rollback": "Rollback",
+        "accept": "Accept",
+        "reject": "Reject",
+        "defer": "Defer",
+        "preview": "Generate patch preview",
+        "confidence": "Confidence: {value}",
+        "risk": "Risk: {value}",
+        "status": "Status: {value}",
+        "target": "Target: {value}",
+        "evidenceCount": "{count} evidence refs",
+        "actionFailed": "Recommendation action failed ({code}): {message}"
+      }
   },
   "runDetail": {
     "backLink": "← Command Center",

@@ -665,7 +665,7 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`;
   implementation plan:
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`.
-- **Workflow / Skills Improvement Loop** — *in V4.5 design*. V4.5 turns
+- **Workflow / Skills Improvement Loop** — *in V4.5 implementation*. V4.5 turns
   V4.4 failure patterns, drill-down items, missing evidence, review rework,
   and CI failures into auditable `ImprovementRecommendation` records. Each
   recommendation carries evidence refs, a target kind, confidence, risk, and
@@ -675,15 +675,18 @@ productionizes the capabilities that prove valuable here.
   rules, or skill instructions. It does not silently edit files, auto-commit, or
   change the label state machine. Design spec:
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`.
+  Implementation plan:
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.
 - **Cross-issue dependency analysis**: detect blockers, duplicated work,
   upstream/downstream dependencies, and mergeable tasks, then surface them as
   an engineering work graph.
-- **Multi-agent collaboration**: coding agent, reviewer agent, and
-  test/evidence agent roles that can collaborate per sub-task and summarize
-  their results.
+- **Multi-agent collaboration** (V4.6 in design): coding agent, reviewer
+  agent, and test/evidence agent roles that can collaborate per sub-task and
+  summarize their results. Design spec:
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

@@ -1,8 +1,15 @@
 // @vitest-environment jsdom
-import type { QualitySummaryResponse } from "@issuepilot/shared-contracts";
-import { screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import type {
+  ImprovementRecommendation,
+  QualitySummaryResponse,
+} from "@issuepilot/shared-contracts";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  acceptImprovementRecommendation,
+  ApiError,
+} from "../../lib/api";
 import { renderWithIntl as render } from "../../test/intl";
 
 import { ReportsPage } from "./reports-page";
@@ -10,6 +17,53 @@ import { ReportsPage } from "./reports-page";
 vi.mock("./quality-analytics", () => ({
   QualityAnalytics: () => <section aria-label="Quality analytics" />,
 }));
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/reports",
+  useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
+}));
+
+import type * as ApiModule from "../../lib/api";
+
+vi.mock("../../lib/api", async () => {
+  const actual = await vi.importActual<typeof ApiModule>("../../lib/api");
+  return {
+    ...actual,
+    acceptImprovementRecommendation: vi.fn(),
+    deferImprovementRecommendation: vi.fn(),
+    generateImprovementRecommendations: vi.fn(),
+    previewImprovementPatch: vi.fn(),
+    rejectImprovementRecommendation: vi.fn(),
+  };
+});
+
+beforeEach(() => {
+  vi.mocked(acceptImprovementRecommendation).mockReset();
+});
+
+function improvement(): ImprovementRecommendation {
+  return {
+    recommendationId: "rec_1",
+    projectId: "proj-a",
+    scope: { mode: "single-project" },
+    problemPattern: "missing-evidence",
+    title: "Require evidence",
+    summary: "Repeated missing evidence",
+    target: { kind: "prompt_template", description: "Prompt template" },
+    evidenceRefs: [],
+    suggestedChange: "Require evidence.",
+    patchPreview: {
+      status: "not_generated",
+      targetDescription: "Prompt template",
+    },
+    confidence: "high",
+    risk: "low",
+    status: "open",
+    actionHistory: [],
+    createdAt: "2026-05-18T00:00:00.000Z",
+    updatedAt: "2026-05-18T00:00:00.000Z",
+  };
+}
 
 function qualitySummaryFixture(
   over: Partial<QualitySummaryResponse> = {},
@@ -63,6 +117,7 @@ describe("ReportsPage", () => {
           },
         ]}
         quality={qualitySummaryFixture()}
+        recommendations={[]}
       />,
     );
 
@@ -93,6 +148,7 @@ describe("ReportsPage", () => {
             },
           ],
         })}
+        recommendations={[]}
       />,
     );
     expect(
@@ -101,7 +157,49 @@ describe("ReportsPage", () => {
   });
 
   it("renders an empty state when no reports exist", () => {
-    render(<ReportsPage reports={[]} quality={qualitySummaryFixture()} />);
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture()}
+        recommendations={[]}
+      />,
+    );
     expect(screen.getByText(/No reports yet/i)).toBeInTheDocument();
+  });
+
+  it("renders recommendations below quality analytics", () => {
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture()}
+        recommendations={[improvement()]}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: /Recommendations/i }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Require evidence").length).toBeGreaterThan(0);
+  });
+
+  it("surfaces an alert when an improvement action fails", async () => {
+    vi.mocked(acceptImprovementRecommendation).mockRejectedValueOnce(
+      new ApiError("POST … failed: HTTP 503", 503, {
+        ok: false,
+        code: "improvements_unavailable",
+      }),
+    );
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture()}
+        recommendations={[improvement()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "improvements_unavailable",
+      );
+    });
   });
 });

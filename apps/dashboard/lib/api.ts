@@ -2,6 +2,14 @@ import type {
   AcceptWorkItemPlanRequest,
   ConfirmEvidenceResponse,
   FailurePatternId,
+  ImprovementActionRequest,
+  ImprovementActionResponse,
+  ImprovementGenerateRequest,
+  ImprovementGenerateResponse,
+  ImprovementPatchPreviewRequest,
+  ImprovementRecommendationDetailResponse,
+  ImprovementRecommendationFilters,
+  ImprovementRecommendationsListResponse,
   IssuePilotEvent,
   MarkTaskReworkRequest,
   OrchestratorStateSnapshot,
@@ -636,5 +644,122 @@ export function getWorkItemGraph(
   return apiGet<WorkItemGraphResponse>(
     `/api/work-items/${encodeURIComponent(id)}/graph`,
     opts,
+  );
+}
+
+/**
+ * V4.5 Improvement Loop dashboard client.
+ *
+ * Wraps the orchestrator routes added in
+ * `apps/orchestrator/src/improvements/routes.ts`:
+ *
+ * - GET  /api/improvements/recommendations
+ * - GET  /api/improvements/recommendations/:id
+ * - POST /api/improvements/recommendations/generate
+ * - POST /api/improvements/recommendations/:id/accept
+ * - POST /api/improvements/recommendations/:id/reject
+ * - POST /api/improvements/recommendations/:id/defer
+ * - POST /api/improvements/recommendations/:id/patch-preview
+ *
+ * Patch preview is inert by design — the server never writes the target
+ * file, the dashboard merely renders the diff for operator review.
+ */
+function improvementQuery(
+  filters: ImprovementRecommendationFilters,
+): string {
+  const search = new URLSearchParams();
+  if (filters.status) search.set("status", filters.status);
+  if (filters.pattern) search.set("pattern", filters.pattern);
+  if (filters.targetKind) search.set("targetKind", filters.targetKind);
+  if (filters.workflow) search.set("workflow", filters.workflow);
+  if (filters.taskType) search.set("taskType", filters.taskType);
+  return search.toString();
+}
+
+export function listImprovementRecommendations(
+  filters: ImprovementRecommendationFilters = {},
+  opts: ApiGetOptions = {},
+): Promise<ImprovementRecommendationsListResponse> {
+  const query = improvementQuery(filters);
+  return apiGet<ImprovementRecommendationsListResponse>(
+    `/api/improvements/recommendations${query ? `?${query}` : ""}`,
+    opts,
+  );
+}
+
+export function getImprovementRecommendation(
+  id: string,
+  opts: ApiGetOptions = {},
+): Promise<ImprovementRecommendationDetailResponse> {
+  return apiGet<ImprovementRecommendationDetailResponse>(
+    `/api/improvements/recommendations/${encodeURIComponent(id)}`,
+    opts,
+  );
+}
+
+export function generateImprovementRecommendations(
+  body: ImprovementGenerateRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<ImprovementGenerateResponse> {
+  return postWorkItemAction<ImprovementGenerateResponse>(
+    "/api/improvements/recommendations/generate",
+    body,
+    opts,
+  );
+}
+
+export function acceptImprovementRecommendation(
+  id: string,
+  body: ImprovementActionRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<ImprovementActionResponse> {
+  const effective: OperatorActionOptions =
+    body.operator && !opts.operator ? { ...opts, operator: body.operator } : opts;
+  return postWorkItemAction<ImprovementActionResponse>(
+    `/api/improvements/recommendations/${encodeURIComponent(id)}/accept`,
+    body,
+    effective,
+  );
+}
+
+export function rejectImprovementRecommendation(
+  id: string,
+  body: ImprovementActionRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<ImprovementActionResponse> {
+  const effective: OperatorActionOptions =
+    body.operator && !opts.operator ? { ...opts, operator: body.operator } : opts;
+  return postWorkItemAction<ImprovementActionResponse>(
+    `/api/improvements/recommendations/${encodeURIComponent(id)}/reject`,
+    body,
+    effective,
+  );
+}
+
+export function deferImprovementRecommendation(
+  id: string,
+  body: ImprovementActionRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<ImprovementActionResponse> {
+  const effective: OperatorActionOptions =
+    body.operator && !opts.operator ? { ...opts, operator: body.operator } : opts;
+  return postWorkItemAction<ImprovementActionResponse>(
+    `/api/improvements/recommendations/${encodeURIComponent(id)}/defer`,
+    body,
+    effective,
+  );
+}
+
+export function previewImprovementPatch(
+  id: string,
+  body: ImprovementPatchPreviewRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<ImprovementActionResponse> {
+  const effective: OperatorActionOptions =
+    body.operator && !opts.operator ? { ...opts, operator: body.operator } : opts;
+  return postWorkItemAction<ImprovementActionResponse>(
+    `/api/improvements/recommendations/${encodeURIComponent(id)}/patch-preview`,
+    body,
+    effective,
   );
 }

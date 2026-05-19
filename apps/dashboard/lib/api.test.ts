@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
+  acceptImprovementRecommendation,
   acceptWorkItemPlan,
   archiveRun,
   buildEvidenceFileUrl,
   confirmWorkItemTaskEvidence,
+  deferImprovementRecommendation,
+  generateImprovementRecommendations,
+  getImprovementRecommendation,
   getQualitySummary,
   getRunDetail,
   getState,
@@ -15,12 +19,15 @@ import {
   getWorkItemReport,
   getWorkItemReportMarkdown,
   listEvents,
+  listImprovementRecommendations,
   listReports,
   listRuns,
   listWorkItems,
   markWorkItemTaskRework,
   planWorkItem,
+  previewImprovementPatch,
   regenerateWorkItemPlan,
+  rejectImprovementRecommendation,
   replanWorkItemTask,
   resolveApiBase,
   retryRun,
@@ -709,5 +716,123 @@ describe("V4.3 evidence client", () => {
     expect(url).toContain("runId=run%2Bwith-plus");
     // URLSearchParams 把 space 编成 `+`；与 server 端 form-decode 对称。
     expect(url).toContain("path=commands%2Fc%2B+%2Boutput.log");
+  });
+});
+
+describe("V4.5 Improvement recommendations API", () => {
+  const improvement = {
+    recommendationId: "rec_1",
+    projectId: "proj-a",
+    scope: { mode: "single-project" as const },
+    problemPattern: "missing-evidence" as const,
+    title: "Require evidence",
+    summary: "Repeated missing evidence",
+    target: { kind: "prompt_template" as const, description: "Prompt template" },
+    evidenceRefs: [],
+    suggestedChange: "Require evidence.",
+    patchPreview: {
+      status: "not_generated" as const,
+      targetDescription: "Prompt template",
+    },
+    confidence: "high" as const,
+    risk: "low" as const,
+    status: "open" as const,
+    actionHistory: [],
+    createdAt: "2026-05-18T00:00:00.000Z",
+    updatedAt: "2026-05-18T00:00:00.000Z",
+  };
+
+  it("listImprovementRecommendations serializes filters and project header", async () => {
+    const fetchMock = mockFetch({ recommendations: [improvement] });
+    await listImprovementRecommendations(
+      { status: "open", pattern: "missing-evidence", targetKind: "prompt_template" },
+      { project: "proj-a" },
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/improvements/recommendations?"),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "x-issuepilot-project": "proj-a" }),
+      }),
+    );
+    const url = new URL(fetchMock.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.get("status")).toBe("open");
+    expect(url.searchParams.get("pattern")).toBe("missing-evidence");
+    expect(url.searchParams.get("targetKind")).toBe("prompt_template");
+  });
+
+  it("calls improvement action endpoints with operator headers", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () =>
+        new Response(JSON.stringify({ recommendation: improvement }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    await acceptImprovementRecommendation("rec_1", {
+      operator: "alice",
+      note: "valid",
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("/api/improvements/recommendations/rec_1/accept"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "x-issuepilot-operator": "alice" }),
+      }),
+    );
+
+    await rejectImprovementRecommendation("rec_1", {}, { operator: "alice" });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("/api/improvements/recommendations/rec_1/reject"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "x-issuepilot-operator": "alice" }),
+      }),
+    );
+
+    await deferImprovementRecommendation("rec_1", {}, { operator: "alice" });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("/api/improvements/recommendations/rec_1/defer"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "x-issuepilot-operator": "alice" }),
+      }),
+    );
+
+    await previewImprovementPatch(
+      "rec_1",
+      { operator: "alice" },
+      { operator: "alice" },
+    );
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      expect.stringContaining("/api/improvements/recommendations/rec_1/patch-preview"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "x-issuepilot-operator": "alice" }),
+      }),
+    );
+  });
+
+  it("gets detail and generates recommendations", async () => {
+    const fetchMock = mockFetch({ recommendation: improvement });
+    await getImprovementRecommendation("rec_1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/improvements/recommendations/rec_1"),
+      expect.objectContaining({ method: "GET" }),
+    );
+
+    const fetchMock2 = mockFetch({
+      recommendations: [improvement],
+      generated: 1,
+      updated: 0,
+      skipped: 0,
+    });
+    await generateImprovementRecommendations({
+      filters: { pattern: "missing-evidence" },
+    });
+    expect(fetchMock2).toHaveBeenCalledWith(
+      expect.stringContaining("/api/improvements/recommendations/generate"),
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

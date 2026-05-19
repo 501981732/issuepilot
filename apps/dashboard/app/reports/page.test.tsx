@@ -4,13 +4,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import enMessages from "../../i18n/messages/en.json";
 import { PROJECT_COOKIE_KEY } from "../../lib/active-project-cookie";
-import { getQualitySummary, listReports } from "../../lib/api";
+import {
+  getQualitySummary,
+  listImprovementRecommendations,
+  listReports,
+} from "../../lib/api";
 import { renderWithIntl as render } from "../../test/intl";
 
 import ReportsRoute from "./page";
 
 vi.mock("../../lib/api", () => ({
   getQualitySummary: vi.fn(),
+  listImprovementRecommendations: vi.fn(),
   listReports: vi.fn(),
 }));
 
@@ -42,12 +47,15 @@ vi.mock("../../components/reports/reports-page", () => ({
   ReportsPage: ({
     reports,
     quality,
+    recommendations,
   }: {
     reports: unknown[];
     quality: { filters: Record<string, unknown> };
+    recommendations: unknown[];
   }) => (
     <div data-testid="reports-page">
-      {reports.length}:{String(quality.filters.pattern ?? "")}
+      {reports.length}:{String(quality.filters.pattern ?? "")}:
+      {recommendations.length}
     </div>
   ),
 }));
@@ -74,8 +82,12 @@ describe("ReportsRoute", () => {
     cookieStore.clear();
     vi.mocked(listReports).mockReset();
     vi.mocked(getQualitySummary).mockReset();
+    vi.mocked(listImprovementRecommendations).mockReset();
     vi.mocked(listReports).mockResolvedValue({ reports: [] });
     vi.mocked(getQualitySummary).mockResolvedValue(qualitySummary());
+    vi.mocked(listImprovementRecommendations).mockResolvedValue({
+      recommendations: [],
+    });
   });
 
   it("passes project cookie and URL filters to reports and quality APIs", async () => {
@@ -101,6 +113,14 @@ describe("ReportsRoute", () => {
         workflow: "default-web",
         taskType: "frontend",
       },
+      { project: "platform-web" },
+    );
+    expect(listImprovementRecommendations).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pattern: "permission-issue",
+        workflow: "default-web",
+        taskType: "frontend",
+      }),
       { project: "platform-web" },
     );
     expect(screen.getByTestId("reports-page")).toBeInTheDocument();

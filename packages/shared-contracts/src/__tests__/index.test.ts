@@ -1,11 +1,19 @@
 import { describe, it, expect } from "vitest";
 
 import * as mod from "../index.js";
+import {
+  isImprovementRecommendationStatus,
+  isImprovementTargetKind,
+  PACKAGE_NAME,
+} from "../index.js";
 
 describe("@issuepilot/shared-contracts", () => {
   it("exports VERSION and PACKAGE_NAME", () => {
     expect(typeof mod.VERSION).toBe("string");
     expect(mod.PACKAGE_NAME).toBe("@issuepilot/shared-contracts");
+    expect(PACKAGE_NAME).toBe("@issuepilot/shared-contracts");
+    expect(isImprovementTargetKind("prompt_template")).toBe(true);
+    expect(isImprovementRecommendationStatus("open")).toBe(true);
   });
 
   it("re-exports the value-level helpers from every submodule", () => {

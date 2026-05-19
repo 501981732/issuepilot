@@ -619,7 +619,7 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`；
   实施计划：
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`。
-- **Workflow / Skills Improvement Loop** — _V4.5 设计中_。
+- **Workflow / Skills Improvement Loop** — _V4.5 实施中_。
   从 V4.4 的 failure patterns、drilldown、missing evidence、review rework
   和 CI failure 中生成可审计 `ImprovementRecommendation`：每条建议必须带
   evidence refs、target kind、置信度、风险和 action 状态。第一版放在
@@ -628,12 +628,15 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   project rules 或 skill instruction 的 patch preview，不静默改文件、不自动
   commit、不修改 label 状态机。设计 spec：
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`。
+  实施计划：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，
   在 dashboard 中形成研发工作图谱。
-- **多 agent 协作**：实现 coding agent、reviewer agent、test/evidence
-  agent 等角色分工，支持子任务级协作和汇总。
+- **多 agent 协作**（V4.6 设计中）：实现 coding agent、reviewer agent、
+  test/evidence agent 等角色分工，支持子任务级协作和汇总。设计 spec：
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`。
 - **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
   并把 review 反馈转成下一轮 agent 的结构化输入。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、

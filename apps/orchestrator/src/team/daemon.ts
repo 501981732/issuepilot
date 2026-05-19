@@ -4,7 +4,11 @@ import * as path from "node:path";
 import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
+import { createImprovementService } from "../improvements/service.js";
+import { createImprovementStore } from "../improvements/store.js";
+import { buildQualitySummary } from "../quality/aggregate.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
+import { collectQualitySources } from "../quality/collect.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
@@ -220,6 +224,10 @@ export async function startTeamDaemon(
   const workItemsByProject = new Map<string, WorkItemService>();
   const reportsByProject = new Map<string, ReportStore>();
   const qualityByProject = new Map<string, QualityCollectorDeps>();
+  const improvementsByProject = new Map<
+    string,
+    ReturnType<typeof createImprovementService>
+  >();
   for (const project of registry.enabledProjects()) {
     const reportStore = createReportStore({
       rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
@@ -238,6 +246,68 @@ export async function startTeamDaemon(
       reports: reportStore,
       workItems: workItemStore,
     });
+    // V4.5 Improvement Loop: per-project recommendation store rooted under
+    // the project workspace so support tarballs and team-mode isolation
+    // both align with the existing reports / work-items layout. Patch
+    // previews remain inert; the daemon never writes the suggested change
+    // back to the project tree.
+    const improvementStore = createImprovementStore({
+      rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
+    });
+    const qualityDeps = qualityByProject.get(project.id)!;
+    const projectId = project.id;
+    // Patch preview sandbox per project: only allow reads under the project
+    // workspace root or the project's compiled workflow file. Team-mode
+    // isolation extends here too — one project's recommendation can never
+    // read another project's tree.
+    const improvementSandbox = [
+      path.resolve(project.workflowProfilePath),
+      path.resolve(project.workflow.workspace.root),
+    ];
+    improvementsByProject.set(
+      project.id,
+      createImprovementService({
+        store: improvementStore,
+        allowedPathPrefixes: improvementSandbox,
+        resolveTargetPath: ({ template }) => {
+          switch (template.targetKind) {
+            case "workflow_front_matter":
+              return project.workflowProfilePath;
+            case "project_rules":
+              return path.join(project.workflow.workspace.root, "AGENTS.md");
+            default:
+              return undefined;
+          }
+        },
+        buildQualitySummary: async (input) => {
+          const collected = await collectQualitySources(qualityDeps);
+          return buildQualitySummary({
+            items: collected.items,
+            filters: {
+              from:
+                input.filters?.from ??
+                new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+              to: input.filters?.to ?? new Date().toISOString(),
+              window: input.filters?.window ?? "7d",
+              ...(input.filters?.workflow
+                ? { workflow: input.filters.workflow }
+                : {}),
+              ...(input.filters?.taskType
+                ? { taskType: input.filters.taskType }
+                : {}),
+              ...(input.filters?.status
+                ? { status: input.filters.status }
+                : {}),
+              ...(input.filters?.pattern
+                ? { pattern: input.filters.pattern }
+                : {}),
+            },
+            scope: { mode: "team-project", projectId },
+            diagnostics: collected.diagnostics,
+          });
+        },
+      }),
+    );
   }
 
   const app = await createServerImpl(
@@ -264,6 +334,7 @@ export async function startTeamDaemon(
       workItemsByProject,
       reportsByProject,
       qualityByProject,
+      improvementsByProject,
     },
     { host, port },
   );

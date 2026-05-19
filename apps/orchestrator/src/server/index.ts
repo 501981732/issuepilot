@@ -22,6 +22,12 @@ import type {
 import { WORK_ITEM_STATUS_VALUES } from "@issuepilot/shared-contracts";
 import Fastify, { type FastifyInstance } from "fastify";
 
+import {
+  improvementRouteError,
+  registerImprovementRoutes,
+  type ImprovementRouteContext,
+} from "../improvements/routes.js";
+import type { ImprovementService } from "../improvements/service.js";
 import type { OperatorActionResult } from "../operations/actions.js";
 import { buildQualitySummary } from "../quality/aggregate.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
@@ -226,6 +232,14 @@ export interface ServerDeps {
    * cannot accidentally leak cross-project analytics.
    */
   qualityByProject?: Map<string, QualityCollectorDeps>;
+  /**
+   * V4.5 Improvement Loop: single-project recommendation service.
+   */
+  improvements?: ImprovementService;
+  /**
+   * V4.5 Improvement Loop: team-mode recommendation services keyed by project id.
+   */
+  improvementsByProject?: Map<string, ImprovementService>;
 }
 
 function resolveSnapshotField<T>(
@@ -1266,6 +1280,60 @@ export async function createServer(
       return reply.code(200).send(summary);
     },
   );
+
+  /**
+   * V4.5 Improvement Loop: resolve the per-request service.
+   * - Team mode (`improvementsByProject` set): requires `x-issuepilot-project`
+   *   header; unknown project → 404; missing header → 400. Mirrors the
+   *   quality summary behaviour so dashboards cannot leak cross-project
+   *   recommendations.
+   * - Single mode: falls back to `improvements`. When not configured the
+   *   server returns a deterministic 503 instead of a 5xx.
+   */
+  function resolveImprovementService(
+    headers: Record<string, unknown>,
+    queryProject?: unknown,
+  ): ImprovementRouteContext {
+    if (deps.improvementsByProject && deps.improvementsByProject.size > 0) {
+      const raw = headers["x-issuepilot-project"] ?? queryProject;
+      const project = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof project !== "string" || project.length === 0) {
+        return {
+          ok: false,
+          statusCode: 400,
+          body: improvementRouteError(
+            "project_required",
+            "x-issuepilot-project header is required for improvements in team mode",
+          ),
+        };
+      }
+      const service = deps.improvementsByProject.get(project);
+      if (!service) {
+        return {
+          ok: false,
+          statusCode: 404,
+          body: improvementRouteError(
+            "project_not_found",
+            `Unknown project: ${project}`,
+          ),
+        };
+      }
+      return { ok: true, service, projectId: project };
+    }
+    if (!deps.improvements) {
+      return {
+        ok: false,
+        statusCode: 503,
+        body: improvementRouteError(
+          "improvements_unavailable",
+          "Improvement recommendation service is not configured",
+        ),
+      };
+    }
+    return { ok: true, service: deps.improvements };
+  }
+
+  registerImprovementRoutes(app, resolveImprovementService);
 
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 4738;

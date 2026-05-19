@@ -511,8 +511,11 @@ describe("agent-report contracts", () => {
     );
   });
 
-  it("isLastErrorCode 接受 reviewer_cannot_review，拒绝未知字符串", () => {
-    expect(isLastErrorCode("reviewer_cannot_review")).toBe(true);
+  it("isLastErrorCode 接受 scope_insufficient，拒绝 TaskNode roleFailureReason 与未知值", () => {
+    expect(isLastErrorCode("scope_insufficient")).toBe(true);
+    // reviewer_cannot_review 是 TaskNode roleFailureReason / event key，
+    // 不是 lastError.code（spec §16.2）；这里加一条负向断言防回归。
+    expect(isLastErrorCode("reviewer_cannot_review")).toBe(false);
     expect(isLastErrorCode("totally_unknown")).toBe(false);
   });
 
@@ -1315,7 +1318,9 @@ describe("resolveEffectiveRecipe", () => {
     → `"revoked"`。
   - GitLab scope 不足（probe `tracker.token_scope_requirements`） →
     转成 `cannot_review` 让 reviewer 写 AgentReport
-    `status = "failed"`，`lastError.code = "reviewer_cannot_review"`。
+    `status = "failed"`，`lastError.code = "scope_insufficient"`（spec
+    §16.2 第 1 行：`scope_insufficient` 映射到 TaskNode
+    roleFailureReason `reviewer_cannot_review`）。
 - [ ] **Step 2-5**：实现。
 - [ ] **Step 6: Commit**：`feat(orchestrator): publish reviewer findings to GitLab MR with six safety rails`。
 
@@ -1533,8 +1538,10 @@ describe("resolveEffectiveRecipe", () => {
     pipeline_init_failed / role_profile_invalid / runner_unavailable /
     coding_failed / sandbox_violation / redaction_failed / storage_full）。
   - `classifyFailure({ taskNode, latestAgentReport })` 给一个
-    reviewer AgentReport `lastError = reviewer_cannot_review` →
-    返回 `pattern: "reviewer_cannot_review"` + `bucket: "configuration"`。
+    reviewer AgentReport `lastError.code = "scope_insufficient"` →
+    返回 `pattern: "reviewer_cannot_review"` + `bucket: "configuration"`
+    （spec §16.2 第 1 行映射：`scope_insufficient` lastError.code
+    → `reviewer_cannot_review` FailurePatternId）。
 - [ ] **Step 2-5**：实现，复用 `pipelines/failure-mapping.ts` 中的表
   保持双向一致；patterns.ts import failure-mapping。
 - [ ] **Step 6: Commit**：`feat(quality): classify V4.6 reviewer/evidence/sandbox failure patterns`。
@@ -1830,10 +1837,10 @@ describe("resolveEffectiveRecipe", () => {
   3. test_evidence partial → evidenceStatus = `partial`，
      PipelineRun.status `partial`，TaskNode `awaiting_human_review`。
   4. reviewer cannot_review (token scope 不足) → reviewer AgentReport
-     `failed` lastError.code `reviewer_cannot_review` → TaskNode
-     `blocked` reason `reviewer_cannot_review` → dashboard 指引 fix
-     token；§16.1 约定的 AgentReport 字段齐全（runId / promptTemplateHash
-     可为 null）。
+     `failed` lastError.code `scope_insufficient` → TaskNode `blocked`
+     reason `reviewer_cannot_review`（spec §16.2 第 1 行映射） →
+     dashboard 指引 fix token；§16.1 约定的 AgentReport 字段齐全
+     （runId / promptTemplateHash 可为 null）。
   5. sandbox_violation（reviewer agent 尝试写源码）→ Codex sandbox
      拒绝 → AgentReport `failed` lastError.code `sandbox_violation`
      → TaskNode `failed` reason `sandbox_violation`，dashboard 提示

@@ -6,6 +6,53 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 11（Dashboard UI 集成）**：
+  - `apps/dashboard/lib/api.ts`：新增 9 个 V4.6 API helper
+    （`getPipeline` / `listPipelines` / `getAgentReport` /
+    `listTaskAgentReports` / `listPipelineRunAgentReports` /
+    `setRecipeOverride` / `revokeAiReview` / `retryAgentReport` /
+    `skipAgentReport` / `validateWorkflowRoles`），统一通过
+    `withProjectHeader` 注入 `x-issuepilot-project`。配套
+    `apps/dashboard/lib/api.test.ts` 全覆盖 URL/方法/项目头/查询参数/
+    请求体/`ApiError` 透传断言。
+  - 新增四个 work-item 组件 + 同名 test：
+    - `pipeline-progress.tsx`：固定 Coder → Reviewer → Test/Evidence 三步
+      进度条，按 recipe 灰显未启用 role，按 AgentReport 状态着色，渲染
+      pending recipe badge。
+    - `recipe-selector.tsx`：三个 recipe 选项，启动后 lock，pending recipe
+      高亮，调用 `setRecipeOverride` 落盘并冒泡 `ApiError`。
+    - `revoke-ai-review-button.tsx`：仅 reviewer 角色显示，按
+      `mrPublication.status` 启用/禁用并显示 i18n 工具提示，二次确认后调用
+      `revokeAiReview`。
+    - `agent-report-tabs.tsx`：三 tab 静态布局，reviewer 面板含 decision
+      badge / findings（按 severity 排序）/ inline 评论 / MR publication
+      状态 / `RevokeAiReviewButton`，test_evidence 面板展示 evidenceItems。
+  - `apps/dashboard/components/work-items/work-item-detail.tsx`：接入
+    `pipelinesByTask` / `agentReportsByTask` 两个可选 prop；当且仅当 SSR 传入
+    V4.6 数据时，在 TaskList 下方渲染 `V46PipelineSections`
+    （PipelineProgress + RecipeSelector + AgentReportTabs），其余 task / 旧
+    工作单元行为保持 V4.5。
+  - `apps/dashboard/app/work-items/[id]/page.tsx`：并行 fetch 每个 task 的
+    PipelineRun 摘要与三 role 完整 AgentReport，`404` / `400` 自动 fail
+    soft → 工作单元不渲染 V4.6 区段，兼容 V4.5 工作单元。
+  - `apps/dashboard/components/reports/quality-analytics.tsx`：当
+    `summary.byRole` 存在时渲染 `ByRolePanel`（6 个 metric tile：
+    coderSuccess / reviewerApprove / reviewerCannotReview / reviewerUnavailable
+    / testEvidenceComplete / testEvidencePartial，未提供字段以 `—` 占位）。
+    `quality-analytics.test.tsx` 新增 byRole 渲染断言。
+  - `apps/dashboard/components/work-items/task-list.tsx` /
+    `task-graph.tsx`：扩展 `STATUS_KEY_MAP` / `STATUS_TONE`，覆盖 V4.6
+    新增 `TaskNodeStatus`（`running_coding` / `running_reviewer` /
+    `running_test_evidence` / `awaiting_human_review`）。
+  - `apps/dashboard/i18n/messages/{zh,en}.json`：新增
+    `workItem.pipeline` / `agentReportTab` / `mr` / `revoke` /
+    `recipeSelector` 等多组 V4.6 key；`reports.quality.byRoleTitle` /
+    `reports.quality.byRole.*` 中英对称（脚本验证 EN/ZH 全键集合相等）。
+  - 验证：`tsc -b apps/dashboard` 通过；`vitest run` 全套 276 项
+    （含 6 个 agent-report-tabs / 9 个 revoke / 12 个 recipe-selector / 多个
+    pipeline-progress 用例，全部新增）通过；`eslint --max-warnings 0`
+    覆盖新增/修改文件通过。
+
 - 2026-05-19 — **V4.6 Phase 10（V4.4 quality + V4.5 improvements 接入）**：
   - `packages/shared-contracts/src/quality.ts`：`FAILURE_PATTERN_ID_VALUES`
     新增 13 个 V4.6 增量值（`reviewer_unavailable` /

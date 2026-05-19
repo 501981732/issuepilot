@@ -1,6 +1,9 @@
 "use client";
 
 import type {
+  AgentReport,
+  AgentReportSummary,
+  GetPipelineResponse,
   MarkTaskReworkRequest,
   ReplanTaskRequest,
   TaskPlanEdit,
@@ -29,9 +32,12 @@ import {
 import { cn } from "../../lib/cn";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
+import { AgentReportTabs } from "./agent-report-tabs";
 import { EvidenceTab } from "./evidence-tab";
 import { ParentReviewPacket } from "./parent-review-packet";
+import { PipelineProgress } from "./pipeline-progress";
 import { PlanEditor } from "./plan-editor";
+import { RecipeSelector } from "./recipe-selector";
 import { TaskGraph } from "./task-graph";
 import { TaskList } from "./task-list";
 import { ViewToggle, type WorkItemView } from "./view-toggle";
@@ -57,6 +63,18 @@ export interface WorkItemDetailProps {
   initialView?: WorkItemView;
   /** Team-mode project id resolved from SSR cookie; used before client hydration. */
   project?: string;
+  /**
+   * V4.6 Multi-Agent Pipeline integration（plan Task 11.6 / 11.7）。
+   * 由 SSR 页面并行 fetch 后传入；若工作单元没有 V4.6 数据 → undefined。
+   * - `pipelinesByTask` 当前活跃 task 的最新 PipelineRun + agentReports 摘要。
+   * - `agentReportsByTask` 当前活跃 task 三 role 的完整 AgentReport，供
+   *   AgentReportTabs 渲染。
+   */
+  pipelinesByTask?: Record<string, GetPipelineResponse>;
+  agentReportsByTask?: Record<
+    string,
+    Partial<Record<AgentReport["role"], AgentReport>>
+  >;
 }
 
 export function WorkItemDetail({
@@ -64,6 +82,8 @@ export function WorkItemDetail({
   operator = "operator",
   initialView = "list",
   project,
+  pipelinesByTask,
+  agentReportsByTask,
 }: WorkItemDetailProps) {
   const t = useTranslations("workItem");
   const [data, setData] = useState<WorkItemDetailResponse>(initial);
@@ -391,16 +411,26 @@ export function WorkItemDetail({
             <ViewToggle view={view} onChange={setView} />
           </div>
           {view === "list" ? (
-            <TaskList
-              tasks={data.tasks}
-              runLinks={data.runLinks}
-              onSkip={handleSkip}
-              onRetry={handleRetry}
-              onReplan={handleReplan}
-              onMarkRework={handleMarkRework}
-              onUnskip={handleUnskip}
-              actionsEnabled
-            />
+            <>
+              <TaskList
+                tasks={data.tasks}
+                runLinks={data.runLinks}
+                onSkip={handleSkip}
+                onRetry={handleRetry}
+                onReplan={handleReplan}
+                onMarkRework={handleMarkRework}
+                onUnskip={handleUnskip}
+                actionsEnabled
+              />
+              {pipelinesByTask ? (
+                <V46PipelineSections
+                  tasks={data.tasks}
+                  workItemId={data.workItem.workItemId}
+                  pipelinesByTask={pipelinesByTask}
+                  agentReportsByTask={agentReportsByTask ?? {}}
+                />
+              ) : null}
+            </>
           ) : view === "evidence" ? (
             evidence ? (
               <EvidenceTab
@@ -441,6 +471,78 @@ export function WorkItemDetail({
       {planAccepted ? (
         <ParentReviewPacket report={data.report} project={project} />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * V4.6 pipeline 区段（plan Task 11.6）。遍历当前可见 task：只展开有
+ * pipeline 数据的 task 节，其余的 task 节继续走原生 TaskList 渲染。每个
+ * task 节包含 PipelineProgress + RecipeSelector + AgentReportTabs。
+ *
+ * 这块刻意做成"附加"在 TaskList 下方，而不是直接挂到 task 节点行里，方便
+ * 渐进式上线：当 daemon 没有 V4.6 数据时 `pipelinesByTask` 为 undefined，
+ * 整段不渲染（向后兼容 V4.5 dashboard 路径）。
+ */
+function V46PipelineSections({
+  tasks,
+  workItemId,
+  pipelinesByTask,
+  agentReportsByTask,
+}: {
+  tasks: WorkItemDetailResponse["tasks"];
+  workItemId: string;
+  pipelinesByTask: Record<string, GetPipelineResponse>;
+  agentReportsByTask: Record<
+    string,
+    Partial<Record<AgentReport["role"], AgentReport>>
+  >;
+}) {
+  const tasksWithPipeline = tasks.filter((t) => pipelinesByTask[t.taskId]);
+  if (tasksWithPipeline.length === 0) return null;
+  return (
+    <div className="space-y-4" data-component="v46-pipeline-sections">
+      {tasksWithPipeline.map((task) => {
+        const pipeline = pipelinesByTask[task.taskId]!;
+        const reports = agentReportsByTask[task.taskId] ?? {};
+        const locked = [
+          "running_coding",
+          "running_reviewer",
+          "running_test_evidence",
+          "awaiting_human_review",
+          "awaiting_rework",
+          "partial",
+          "failed",
+          "cancelled",
+        ].includes(pipeline.pipelineRun?.status ?? "");
+        return (
+          <section
+            key={task.taskId}
+            data-task-id={task.taskId}
+            className="space-y-2"
+          >
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
+              {task.title}
+            </h4>
+            <PipelineProgress
+              pipelineRun={pipeline.pipelineRun}
+              agentReports={pipeline.agentReports as AgentReportSummary[]}
+              pendingRecipe={pipeline.pendingRecipe}
+            />
+            <RecipeSelector
+              workItemId={workItemId}
+              taskId={task.taskId}
+              currentRecipe={pipeline.pipelineRun?.recipe ?? "full_pipeline"}
+              currentSource={
+                pipeline.pipelineRun?.recipeSource ?? "workflow_default"
+              }
+              pendingRecipe={pipeline.pendingRecipe}
+              locked={locked}
+            />
+            <AgentReportTabs reports={reports} />
+          </section>
+        );
+      })}
     </div>
   );
 }

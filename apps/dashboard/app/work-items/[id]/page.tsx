@@ -1,10 +1,20 @@
+import type {
+  AgentReport,
+  GetAgentReportResponse,
+  GetPipelineResponse,
+} from "@issuepilot/shared-contracts";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 
 import { WorkItemDetail } from "../../../components/work-items/work-item-detail";
 import { PROJECT_COOKIE_KEY } from "../../../lib/active-project-cookie";
-import { getWorkItem } from "../../../lib/api";
+import {
+  ApiError,
+  getAgentReport,
+  getPipeline,
+  getWorkItem,
+} from "../../../lib/api";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -30,11 +40,63 @@ export default async function WorkItemDetailRoute(props: {
       id,
       project ? { project } : {},
     );
+    // V4.6 plan Task 11.7：并行 fetch 每个 task 的 PipelineRun 摘要 +
+    // 三 role 完整 AgentReport。orchestrator 在 V4.5 之前的工作单元上
+    // 没有 V4.6 数据，会返回 404 `pipeline_run_not_found` / `agent_report_not_found`，
+    // 这里 fail soft → 静默把对应 task 留空，UI 自动回退到旧路径。
+    const opts = project ? { project } : {};
+    const taskIds = detail.tasks.map((t) => t.taskId);
+    const pipelinePairs = await Promise.all(
+      taskIds.map(async (taskId): Promise<[
+        string,
+        GetPipelineResponse | null,
+      ]> => {
+        try {
+          const res = await getPipeline(id, taskId, opts);
+          return [taskId, res];
+        } catch (err) {
+          if (err instanceof ApiError && (err.status === 404 || err.status === 400)) {
+            return [taskId, null];
+          }
+          throw err;
+        }
+      }),
+    );
+    const pipelinesByTask = Object.fromEntries(
+      pipelinePairs.filter(
+        (entry): entry is [string, GetPipelineResponse] => entry[1] !== null,
+      ),
+    );
+    const agentReportsByTask: Record<
+      string,
+      Partial<Record<AgentReport["role"], AgentReport>>
+    > = {};
+    for (const [taskId, pipeline] of Object.entries(pipelinesByTask)) {
+      const byRole: Partial<Record<AgentReport["role"], AgentReport>> = {};
+      const summaries = pipeline.agentReports.filter((s) => !s.supersededBy);
+      await Promise.all(
+        summaries.map(async (summary) => {
+          try {
+            const detail: GetAgentReportResponse = await getAgentReport(
+              summary.agentReportId,
+              opts,
+            );
+            byRole[detail.agentReport.role] = detail.agentReport;
+          } catch (err) {
+            if (err instanceof ApiError) return;
+            throw err;
+          }
+        }),
+      );
+      agentReportsByTask[taskId] = byRole;
+    }
     return (
       <WorkItemDetail
         initial={detail}
         initialView={initialView}
         project={project}
+        pipelinesByTask={pipelinesByTask}
+        agentReportsByTask={agentReportsByTask}
       />
     );
   } catch (err) {

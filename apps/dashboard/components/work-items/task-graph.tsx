@@ -39,6 +39,10 @@ const PADDING = 16;
 const STATUS_TONE: Record<TaskNodeStatus, string> = {
   ready: "bg-warning-soft text-warning-fg",
   running: "bg-info-soft text-info-fg",
+  running_coding: "bg-info-soft text-info-fg",
+  running_reviewer: "bg-info-soft text-info-fg",
+  running_test_evidence: "bg-info-soft text-info-fg",
+  awaiting_human_review: "bg-success-soft text-success-fg",
   completed: "bg-success-soft text-success-fg",
   failed: "bg-danger-soft text-danger-fg",
   blocked: "bg-danger-soft text-danger-fg",

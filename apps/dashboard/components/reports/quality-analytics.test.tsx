@@ -250,4 +250,51 @@ describe("QualityAnalytics", () => {
     );
     expect(screen.getByText(/3 invalid reports skipped/i)).toBeInTheDocument();
   });
+
+  it("V4.6: hides byRole panel when summary.byRole is undefined", () => {
+    render(<QualityAnalytics summary={qualitySummaryFixture()} />);
+    expect(screen.queryByTestId("by-role-grid")).toBeNull();
+  });
+
+  it("V4.6: renders six byRole tiles when summary.byRole is set", () => {
+    render(
+      <QualityAnalytics
+        summary={qualitySummaryFixture({
+          byRole: {
+            coderSuccessRate: 80,
+            reviewerApproveRate: 60,
+            reviewerCannotReviewRate: 20,
+            reviewerUnavailableRate: 0,
+            testEvidenceCompleteRate: 100,
+            testEvidencePartialRate: 0,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("by-role-grid")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("byRole-coderSuccessRate").textContent,
+    ).toContain("80%");
+    expect(
+      screen.getByTestId("byRole-reviewerApproveRate").textContent,
+    ).toContain("60%");
+    expect(
+      screen.getByTestId("byRole-testEvidenceCompleteRate").textContent,
+    ).toContain("100%");
+  });
+
+  it("V4.6: emits dash for undefined byRole field", () => {
+    render(
+      <QualityAnalytics
+        summary={qualitySummaryFixture({
+          byRole: {
+            coderSuccessRate: 100,
+          },
+        })}
+      />,
+    );
+    expect(
+      screen.getByTestId("byRole-reviewerApproveRate").textContent,
+    ).toContain("—");
+  });
 });

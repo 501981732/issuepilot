@@ -171,6 +171,158 @@
       "actionMarkRework": "打回返工",
       "actionReplan": "重新规划"
     },
+    "pipeline": {
+      "title": "多 Agent Pipeline",
+      "ariaLabel": "V4.6 Pipeline 进度",
+      "stepsAriaLabel": "Pipeline 步骤",
+      "emptyState": "尚未创建 PipelineRun。",
+      "pendingHint": "待生效 recipe：{recipe}",
+      "role": {
+        "coder": "Coder",
+        "reviewer": "Reviewer",
+        "test_evidence": "Test/Evidence"
+      },
+      "status": {
+        "running_coding": "Coder 运行中",
+        "running_reviewer": "Reviewer 运行中",
+        "running_test_evidence": "Test/Evidence 运行中",
+        "awaiting_human_review": "等待人工复核",
+        "awaiting_rework": "等待返工",
+        "partial": "部分完成",
+        "failed": "失败",
+        "cancelled": "已取消"
+      },
+      "recipe": {
+        "full_pipeline": "Full pipeline",
+        "coding_plus_reviewer": "Coder + Reviewer",
+        "coding_only": "仅 Coder"
+      },
+      "action": {
+        "retry": "重试",
+        "skip": "跳过",
+        "cancel": "取消",
+        "override_recipe": "覆盖 recipe",
+        "revoke_ai_review": "撤回 AI 评审"
+      },
+      "stepState": {
+        "pending": "待执行",
+        "running": "运行中",
+        "complete": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "incomplete": "未完整",
+        "skipped_by_recipe": "按 recipe 跳过"
+      },
+      "stepAriaLabel": {
+        "coder": "Coder 步骤，状态 {state}",
+        "reviewer": "Reviewer 步骤，状态 {state}",
+        "test_evidence": "Test/Evidence 步骤，状态 {state}"
+      }
+    },
+    "agentReportTab": {
+      "title": "Agent Report",
+      "ariaLabel": "Agent Report 三 Tab",
+      "tab": {
+        "coder": "Coder",
+        "reviewer": "Reviewer",
+        "test_evidence": "Test/Evidence"
+      },
+      "empty": "暂无该角色的 AgentReport。",
+      "decision": {
+        "approve_with_comments": "通过（含评论）",
+        "request_changes": "请求改动",
+        "cannot_review": "无法评审"
+      },
+      "findings": {
+        "title": "Findings",
+        "severity": {
+          "low": "低",
+          "medium": "中",
+          "high": "高",
+          "critical": "严重"
+        },
+        "empty": "无 finding。"
+      },
+      "inlineComments": {
+        "title": "Inline 评论",
+        "empty": "无 inline 评论。"
+      },
+      "mrPublication": {
+        "title": "MR 推送状态"
+      },
+      "evidenceItems": {
+        "title": "证据条目",
+        "empty": "无证据条目。"
+      },
+      "lastError": "最近错误"
+    },
+    "reviewer": {
+      "decision": {
+        "approve_with_comments": "通过（含评论）",
+        "request_changes": "请求改动",
+        "cannot_review": "无法评审"
+      }
+    },
+    "evidenceStatus": {
+      "complete": "完整",
+      "partial": "部分",
+      "skipped_by_recipe": "按 recipe 跳过",
+      "unavailable": "不可用"
+    },
+    "mr": {
+      "publish": {
+        "status": {
+          "pending": "待推送",
+          "published": "已推送",
+          "publish_failed": "推送失败",
+          "skipped_by_config": "按配置跳过",
+          "revoked": "已撤回"
+        }
+      }
+    },
+    "roleFailure": {
+      "coding_failed": "Coder 执行失败",
+      "reviewer_unavailable": "Reviewer 不可用",
+      "reviewer_cannot_review": "Reviewer 无法评审",
+      "reviewer_requested_changes": "Reviewer 要求返工",
+      "evidence_unavailable": "证据采集不可用",
+      "evidence_partial": "证据采集不完整",
+      "sandbox_violation": "沙箱越权",
+      "redaction_failed": "脱敏失败",
+      "storage_full": "存储空间不足",
+      "role_profile_invalid": "Role 配置无效"
+    },
+    "revoke": {
+      "buttonLabel": "撤回 AI 评审",
+      "disabledReason": {
+        "pending": "MR 推送尚未完成，无法撤回",
+        "publishFailed": "MR 推送失败，没有可撤回的评论",
+        "alreadyRevoked": "已撤回，无需重复操作",
+        "skippedByConfig": "按配置跳过 MR 推送，无评论可撤回"
+      },
+      "confirmTitle": "确认撤回？",
+      "confirmDescription": "将删除 AI Reviewer 发布到 MR 的所有评论。",
+      "confirm": "确认撤回",
+      "cancel": "取消",
+      "success": "已撤回 AI 评审",
+      "failure": "撤回失败：{message}",
+      "incompleteRun": "Review 未完整但 MR 已推送，撤回前请确认"
+    },
+    "recipeSelector": {
+      "title": "Recipe 配置",
+      "ariaLabel": "选择 pipeline recipe",
+      "locked": "Pipeline 已开始，recipe 锁定",
+      "lockedTooltip": "task 进入 running_coding 后不能再修改 recipe",
+      "lastUpdated": "上次更新：{at}",
+      "save": "保存",
+      "saving": "保存中…",
+      "pending": "待生效",
+      "currentSource": {
+        "workflow_default": "来自 workflow 默认",
+        "operator_override": "由操作员覆盖"
+      }
+    },
+    "roleSkipNotAllowed": "Coder 不允许跳过；请改用 retry",
     "taskGraph": {
       "title": "任务依赖图",
       "empty": "暂无可视化的任务。",
@@ -397,7 +549,16 @@
       "headLink": "",
       "openSource": "打开来源",
       "diagnostics": "{count, plural, other {跳过 # 份无法解析的报告}}",
-      "unknownCount": "{count} 未知"
+      "unknownCount": "{count} 未知",
+      "byRoleTitle": "V4.6 各角色切片",
+      "byRole": {
+        "coderSuccessRate": "Coder 成功率",
+        "reviewerApproveRate": "Reviewer approve 率",
+        "reviewerCannotReviewRate": "Reviewer cannot_review 率",
+        "reviewerUnavailableRate": "Reviewer 不可用率",
+        "testEvidenceCompleteRate": "Test/Evidence 完整率",
+        "testEvidencePartialRate": "Test/Evidence partial 率"
+      }
     },
     "recommendations": {
       "title": "改进建议",

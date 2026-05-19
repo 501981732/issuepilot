@@ -33,6 +33,10 @@ const STATUS_GROUPS: TaskNodeStatus[] = [
 const STATUS_KEY_MAP: Record<TaskNodeStatus, string> = {
   ready: "groupReady",
   running: "groupRunning",
+  running_coding: "groupRunning",
+  running_reviewer: "groupRunning",
+  running_test_evidence: "groupRunning",
+  awaiting_human_review: "groupCompleted",
   completed: "groupCompleted",
   failed: "groupFailed",
   blocked: "groupBlocked",
@@ -45,6 +49,10 @@ const STATUS_KEY_MAP: Record<TaskNodeStatus, string> = {
 const STATUS_TONE: Record<TaskNodeStatus, string> = {
   ready: "bg-warning-soft text-warning-fg",
   running: "bg-info-soft text-info-fg",
+  running_coding: "bg-info-soft text-info-fg",
+  running_reviewer: "bg-info-soft text-info-fg",
+  running_test_evidence: "bg-info-soft text-info-fg",
+  awaiting_human_review: "bg-success-soft text-success-fg",
   completed: "bg-success-soft text-success-fg",
   failed: "bg-danger-soft text-danger-fg",
   blocked: "bg-danger-soft text-danger-fg",

@@ -171,6 +171,158 @@
       "actionMarkRework": "Mark for rework",
       "actionReplan": "Replan"
     },
+    "pipeline": {
+      "title": "Multi-agent pipeline",
+      "ariaLabel": "V4.6 pipeline progress",
+      "stepsAriaLabel": "Pipeline steps",
+      "emptyState": "No PipelineRun has been created yet.",
+      "pendingHint": "Pending recipe: {recipe}",
+      "role": {
+        "coder": "Coder",
+        "reviewer": "Reviewer",
+        "test_evidence": "Test/Evidence"
+      },
+      "status": {
+        "running_coding": "Coder running",
+        "running_reviewer": "Reviewer running",
+        "running_test_evidence": "Test/Evidence running",
+        "awaiting_human_review": "Awaiting human review",
+        "awaiting_rework": "Awaiting rework",
+        "partial": "Partial",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "recipe": {
+        "full_pipeline": "Full pipeline",
+        "coding_plus_reviewer": "Coder + Reviewer",
+        "coding_only": "Coder only"
+      },
+      "action": {
+        "retry": "Retry",
+        "skip": "Skip",
+        "cancel": "Cancel",
+        "override_recipe": "Override recipe",
+        "revoke_ai_review": "Revoke AI review"
+      },
+      "stepState": {
+        "pending": "Pending",
+        "running": "Running",
+        "complete": "Complete",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "incomplete": "Incomplete",
+        "skipped_by_recipe": "Skipped by recipe"
+      },
+      "stepAriaLabel": {
+        "coder": "Coder step, state {state}",
+        "reviewer": "Reviewer step, state {state}",
+        "test_evidence": "Test/Evidence step, state {state}"
+      }
+    },
+    "agentReportTab": {
+      "title": "Agent Report",
+      "ariaLabel": "Agent report tabs",
+      "tab": {
+        "coder": "Coder",
+        "reviewer": "Reviewer",
+        "test_evidence": "Test/Evidence"
+      },
+      "empty": "No AgentReport for this role yet.",
+      "decision": {
+        "approve_with_comments": "Approve with comments",
+        "request_changes": "Request changes",
+        "cannot_review": "Cannot review"
+      },
+      "findings": {
+        "title": "Findings",
+        "severity": {
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High",
+          "critical": "Critical"
+        },
+        "empty": "No findings."
+      },
+      "inlineComments": {
+        "title": "Inline comments",
+        "empty": "No inline comments."
+      },
+      "mrPublication": {
+        "title": "MR publication"
+      },
+      "evidenceItems": {
+        "title": "Evidence items",
+        "empty": "No evidence items."
+      },
+      "lastError": "Last error"
+    },
+    "reviewer": {
+      "decision": {
+        "approve_with_comments": "Approve with comments",
+        "request_changes": "Request changes",
+        "cannot_review": "Cannot review"
+      }
+    },
+    "evidenceStatus": {
+      "complete": "Complete",
+      "partial": "Partial",
+      "skipped_by_recipe": "Skipped by recipe",
+      "unavailable": "Unavailable"
+    },
+    "mr": {
+      "publish": {
+        "status": {
+          "pending": "Pending",
+          "published": "Published",
+          "publish_failed": "Publish failed",
+          "skipped_by_config": "Skipped by config",
+          "revoked": "Revoked"
+        }
+      }
+    },
+    "roleFailure": {
+      "coding_failed": "Coder failed",
+      "reviewer_unavailable": "Reviewer unavailable",
+      "reviewer_cannot_review": "Reviewer cannot review",
+      "reviewer_requested_changes": "Reviewer requested changes",
+      "evidence_unavailable": "Evidence unavailable",
+      "evidence_partial": "Evidence partial",
+      "sandbox_violation": "Sandbox violation",
+      "redaction_failed": "Redaction failed",
+      "storage_full": "Storage full",
+      "role_profile_invalid": "Role profile invalid"
+    },
+    "revoke": {
+      "buttonLabel": "Revoke AI review",
+      "disabledReason": {
+        "pending": "MR publication still pending; cannot revoke",
+        "publishFailed": "MR publication failed; no comments to revoke",
+        "alreadyRevoked": "Already revoked",
+        "skippedByConfig": "MR publication skipped by config"
+      },
+      "confirmTitle": "Confirm revoke?",
+      "confirmDescription": "This will delete all AI reviewer comments from the MR.",
+      "confirm": "Confirm revoke",
+      "cancel": "Cancel",
+      "success": "AI review revoked",
+      "failure": "Revoke failed: {message}",
+      "incompleteRun": "Review run incomplete but MR was published; confirm before revoking"
+    },
+    "recipeSelector": {
+      "title": "Recipe configuration",
+      "ariaLabel": "Pick pipeline recipe",
+      "locked": "Pipeline already started; recipe locked",
+      "lockedTooltip": "Once the task moves to running_coding, the recipe cannot be changed",
+      "lastUpdated": "Last updated: {at}",
+      "save": "Save",
+      "saving": "Saving…",
+      "pending": "Pending",
+      "currentSource": {
+        "workflow_default": "From workflow default",
+        "operator_override": "Operator override"
+      }
+    },
+    "roleSkipNotAllowed": "Coder cannot be skipped; use retry instead",
     "taskGraph": {
       "title": "Task graph",
       "empty": "No tasks to visualize yet.",
@@ -397,7 +549,16 @@
       "headLink": "",
       "openSource": "open source",
       "diagnostics": "{count, plural, one {# invalid report skipped} other {# invalid reports skipped}}",
-      "unknownCount": "{count} unknown"
+      "unknownCount": "{count} unknown",
+      "byRoleTitle": "V4.6 By-role metrics",
+      "byRole": {
+        "coderSuccessRate": "Coder success",
+        "reviewerApproveRate": "Reviewer approve",
+        "reviewerCannotReviewRate": "Reviewer cannot_review",
+        "reviewerUnavailableRate": "Reviewer unavailable",
+        "testEvidenceCompleteRate": "Test/Evidence complete",
+        "testEvidencePartialRate": "Test/Evidence partial"
+      }
     },
       "recommendations": {
         "title": "Recommendations",

@@ -9,7 +9,9 @@ import {
   confirmWorkItemTaskEvidence,
   deferImprovementRecommendation,
   generateImprovementRecommendations,
+  getAgentReport,
   getImprovementRecommendation,
+  getPipeline,
   getQualitySummary,
   getRunDetail,
   getState,
@@ -20,8 +22,11 @@ import {
   getWorkItemReportMarkdown,
   listEvents,
   listImprovementRecommendations,
+  listPipelineRunAgentReports,
+  listPipelines,
   listReports,
   listRuns,
+  listTaskAgentReports,
   listWorkItems,
   markWorkItemTaskRework,
   planWorkItem,
@@ -30,12 +35,17 @@ import {
   rejectImprovementRecommendation,
   replanWorkItemTask,
   resolveApiBase,
+  retryAgentReport,
   retryRun,
   retryWorkItemTask,
+  revokeAiReview,
   setActiveWorkItemsProject,
+  setRecipeOverride,
+  skipAgentReport,
   skipWorkItemTask,
   stopRun,
   unskipWorkItemTask,
+  validateWorkflowRoles,
 } from "./api";
 
 const FAKE_BASE = "http://api.test";
@@ -834,5 +844,151 @@ describe("V4.5 Improvement recommendations API", () => {
       expect.stringContaining("/api/improvements/recommendations/generate"),
       expect.objectContaining({ method: "POST" }),
     );
+  });
+});
+
+describe("V4.6 pipeline/agent-report API helpers", () => {
+  it("getPipeline hits the correct URL with project header", async () => {
+    setActiveWorkItemsProject("proj-a");
+    const fetchMock = mockFetch({
+      pipelineRun: null,
+      agentReports: [],
+    });
+    await getPipeline("wi 1", "t/1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi%201/tasks/t%2F1/pipeline`,
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({ "x-issuepilot-project": "proj-a" }),
+      }),
+    );
+    setActiveWorkItemsProject(null);
+  });
+
+  it("listPipelines hits the plural URL", async () => {
+    const fetchMock = mockFetch({ pipelineRuns: [] });
+    await listPipelines("wi-1", "t-1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi-1/tasks/t-1/pipelines`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("getAgentReport encodes the id", async () => {
+    const fetchMock = mockFetch({ agentReport: {} });
+    await getAgentReport("ar 1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/agent-reports/ar%201`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("listTaskAgentReports appends role + include_superseded query", async () => {
+    const fetchMock = mockFetch({ agentReports: [] });
+    await listTaskAgentReports("wi-1", "t-1", {
+      role: "reviewer",
+      includeSuperseded: true,
+    });
+    const calledUrl = (fetchMock.mock.calls[0]?.[0] ?? "") as string;
+    expect(calledUrl).toContain(
+      "/api/work-items/wi-1/tasks/t-1/agent-reports?",
+    );
+    expect(calledUrl).toContain("role=reviewer");
+    expect(calledUrl).toContain("include_superseded=true");
+  });
+
+  it("listPipelineRunAgentReports uses pipeline-runs plural URL", async () => {
+    const fetchMock = mockFetch({ agentReports: [] });
+    await listPipelineRunAgentReports("p-1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/pipeline-runs/p-1/agent-reports`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("setRecipeOverride POSTs to /pipeline/recipe-override with body + operator header", async () => {
+    const fetchMock = mockFetch({
+      recipe: "coding_plus_reviewer",
+      recipeSource: "operator_override",
+      appliedTo: "pending",
+    });
+    await setRecipeOverride("wi-1", "t-1", "coding_plus_reviewer", {
+      operator: "alice",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/work-items/wi-1/tasks/t-1/pipeline/recipe-override`,
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "x-issuepilot-operator": "alice" }),
+      }),
+    );
+    const callBody = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    );
+    expect(callBody).toMatchObject({
+      recipe: "coding_plus_reviewer",
+      operator: "alice",
+    });
+  });
+
+  it("revokeAiReview POSTs to /revoke-ai-review with empty body", async () => {
+    const fetchMock = mockFetch({
+      agentReportId: "ar-1",
+      status: "revoked",
+      revokedAt: "2026-05-19T00:00:00.000Z",
+    });
+    await revokeAiReview("ar-1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/agent-reports/ar-1/revoke-ai-review`,
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+  });
+
+  it("retryAgentReport POSTs to /retry with reason", async () => {
+    const fetchMock = mockFetch({ pipelineRunId: "p-1" });
+    await retryAgentReport("ar-1", { reason: "force retry" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/agent-reports/ar-1/retry`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+    );
+    expect(body.reason).toBe("force retry");
+  });
+
+  it("skipAgentReport POSTs to /skip", async () => {
+    const fetchMock = mockFetch({
+      pipelineRunId: "p-1",
+      agentReportId: "ar-1",
+      nextRole: "test_evidence",
+    });
+    await skipAgentReport("ar-1");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/agent-reports/ar-1/skip`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("validateWorkflowRoles GETs /workflows/:id/roles/validate", async () => {
+    const fetchMock = mockFetch({ valid: true, errors: [] });
+    await validateWorkflowRoles("default-workflow");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${FAKE_BASE}/api/workflows/default-workflow/roles/validate`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("propagates ApiError with code/reason on 409 recipe_override_locked", async () => {
+    mockFetch(
+      {
+        code: "recipe_override_locked",
+        message: "task already running, override locked",
+      },
+      { status: 409 },
+    );
+    await expect(
+      setRecipeOverride("wi-1", "t-1", "coding_only"),
+    ).rejects.toThrow(ApiError);
   });
 });

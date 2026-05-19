@@ -108,8 +108,9 @@ pipeline。每段触发一次 Codex run，写一份 `AgentReport`。多角色都
 - 单 runner 单 worker，复杂度可控。
 - 与 V4.3 human-review 通道、V4.2 retry/skip 状态机、V4.4 QualityAnalytics
   采集自然对齐。
-- 通过 recipe（`full pipeline` / `coding+reviewer` / `coding-only`）让
-  operator 在不同场景下取舍。
+- 通过 recipe（`full_pipeline` / `coding_plus_reviewer` / `coding_only`）让
+  operator 在不同场景下取舍（UI label 为 "Full pipeline" / "Coding + Reviewer" /
+  "Coding only" 人类可读形式）。
 
 缺点：
 
@@ -268,8 +269,9 @@ coding → reviewer → test/evidence → awaiting_human_review
 | reviewer | agent 自身崩 (context、tool、timeout) | `blocked` | `reviewer_unavailable` | "reviewer agent 不可用，可重试" | retry reviewer |
 | reviewer | decision = request_changes | `needs_rework` | `reviewer_requested_changes` | "reviewer 要求返工，已写入 review summary" | retry coder |
 | reviewer | decision = cannot_review (例如 token scope 不足、prompt 渲染失败) | `blocked` | `reviewer_cannot_review` | "reviewer 跳过原因 X，可手动接管" | fix workflow & retry reviewer |
-| test_evidence | agent 自身崩 | `awaiting_human_review` | `evidence_unavailable` | AgentReport 标 `incomplete`，仍可送 human review | retry test_evidence（可选） |
-| test_evidence | 部分 evidence_request 失败 | `awaiting_human_review` | `evidence_partial` | dashboard 列出"未采集 evidence_request" 清单 | retry test_evidence（可选） |
+| test_evidence | agent 自身崩 | `awaiting_human_review` | `evidence_unavailable` | AgentReport 标 `incomplete`，仍可送 human review | retry test_evidence 或直接送 human review（evidence 不阻塞） |
+| test_evidence | 部分 evidence_request 失败 | `awaiting_human_review` | `evidence_partial` | dashboard 列出"未采集 evidence_request" 清单 | retry test_evidence 或直接送 human review（evidence 不阻塞） |
+| reviewer / test_evidence | 试图写源码 / 越界 | `failed` | `sandbox_violation` | "agent 试图越界，已停止；查看 audit log" | 修 prompt 或联系维护者 |
 
 reason code 的意义：
 
@@ -282,11 +284,14 @@ reason code 的意义：
 
 ### 7.4 边界：哪些情况不进 pipeline
 
-- TaskNode 状态非 `ready` 时，PipelineRun 不会被创建。
+- PipelineRun 仅在 TaskNode 进入 `ready` 时由 orchestrator 创建。
+  在 `planned` / `blocked_by_dependency` 阶段没有 PipelineRun 对象，
+  recipe override 通过 `TaskNode.pendingRecipe` 临时保存（见 §8.3），
+  PipelineRun 创建时灌入并清空该字段。
 - 当 recipe 解析失败（workflow YAML schema 错误、role profile 缺失），
   写 `pipeline_init_failed` event，TaskNode 不离开 `ready`，dashboard 弹
   workflow 配置错误提示。
-- 当 task 已经 `skipped` 或 `blocked_by_dependency`，pipeline 永远不创建。
+- 当 task 已经 `skipped` 或停在 `blocked_by_dependency`，pipeline 永远不创建。
 
 ## 8. 数据模型
 
@@ -295,7 +300,8 @@ reason code 的意义：
 V4.2 现有：`planned / blocked_by_dependency / ready / running / completed /
 failed / blocked / needs_rework / skipped`。
 
-V4.6 把 `running` 拆细，新增一个 `awaiting_human_review`：
+V4.6 把 `running` 拆细为 `running_coding` / `running_reviewer` /
+`running_test_evidence` 三态，并新增一个 `awaiting_human_review` 终态：
 
 | 状态 | 含义 |
 | --- | --- |
@@ -399,14 +405,21 @@ success rate 才能反映"人接受的成功"，而不是"AI 自我标记成功"
   - `evidenceItems[]`：每条对应 reviewer.evidenceRequest 的一项，
     `{ kind, target, source, status: 'collected' / 'failed' / 'skipped',
     artifactPath?, lastError? }`
-  - `baselineEvidence`：固定收集的"基线证据"（CI summary、lint summary、
-    test summary、覆盖率快照），即使 evidenceRequest 为空也会写。
+  - `baselineEvidence?`：固定收集的"基线证据"（CI summary、lint summary、
+    test summary、覆盖率快照），agent 启动并跑通基线收集后写入；agent 未启动
+    或基线收集本身失败时为 `null`，evidenceStatus 由 §16.1 / §8.4 规则决定。
 
 ### 8.3 TaskNode 字段扩展
 
 `TaskNode` 在 V4.2 基础上新增：
 
-- `currentPipelineRunId?`
+- `currentPipelineRunId?`：仅在 TaskNode 进入 `ready` 后由 orchestrator 创建
+  PipelineRun 时写入；进入 `running_coding` 之后不再变化（除 retry / replan 产生
+  新 PipelineRun 时切换）。
+- `pendingRecipe?` / `pendingRecipeSource?`：在 `planned` / `blocked_by_dependency`
+  阶段（PipelineRun 尚未创建）调用 §18.1 recipe-override 时写入。orchestrator
+  在 PipelineRun 创建时把 `pendingRecipe` 灌进 draft 并清空 TaskNode 上的两个
+  字段。
 - `roleFailureReason?` (string，§7.3 reason code)
 - `last_cancelled_at?` (ISO timestamp)：在 PipelineRun cancel 把 TaskNode 拉回 `ready`
   时写入；orchestrator auto_advance 跳过带该标记的 TaskNode，直到 operator 在
@@ -493,6 +506,12 @@ roles:
       - name: playwright.walkthrough
       - name: evidence.collect
     timeout_seconds: 1200
+
+# optional / P1: 显式声明 reviewer 需要的 GitLab token scope；不写时按粗粒度 `api` 探针
+tracker:
+  token_env: ISSUEPILOT_GITLAB_TOKEN
+  token_scope_requirements:
+    - api
 ```
 
 - `sandbox` 是受限枚举：
@@ -505,9 +524,13 @@ roles:
   - `name` 是受限枚举：`gitlab.create_mr` / `gitlab.update_mr` /
     `gitlab.read_mr` / `gitlab.note_inline` / `run.command` /
     `playwright.walkthrough` / `evidence.collect`。
-  - `allow[]` 只对 `name = run.command` 有效，列出允许的命令前缀
-    （支持 `*` 单段通配，但**不允许** `allow: ['*']` 这样的全通配；
-    sandbox 在执行前做前缀匹配）。
+  - `allow[]` 只对 `name = run.command` 有效，列出允许的命令模式：
+    sandbox 在执行前把待执行命令按空白切成 token 序列，再按 token 逐位与
+    allow 条目做前缀匹配。allow 条目内出现 `*` 表示在该 token 位置允许
+    `0..n` 个非空白字符（等价于一个 shell argument），**不跨 token**。
+    **不允许** `allow: ['*']`、`allow: ['*', '*']` 等全通配条目。例如
+    `pnpm --filter * test` 允许 `pnpm --filter @issuepilot/orchestrator test`
+    但不允许 `pnpm --filter * test && curl ...`。
   - 未列入 `tools[]` 的能力（包括 file system write、git push、
     GitLab labels 写、note write 之外的 API、未列出的 `run.command` 命令）
     一律由 sandbox 拒绝。
@@ -529,7 +552,8 @@ reviewer AgentReport 是 V4.6 的核心新对象。契约必须先定死，避�
 
 - `summary` (markdown)：≤ 4000 字符，给 human reviewer 的一段总览。
 - `decision`：见 §8.2。
-- `confidence`：0..1，浮点数，保留两位小数。
+- `confidence`：0..1，浮点数，序列化时保留两位小数（agent 未启动 / 失败场景下
+  仍写 `0`，序列化为 `0.00`）。
 - `risks[]`：每条 `{ severity, message }`，severity ∈ `low/medium/high/critical`。
 - `evidenceRequest[]`：可以为空数组；每条结构见 §8.2。
 - `findings[]`：包括非 inline-level 的发现（例如"整体测试覆盖率不足"）。
@@ -557,10 +581,12 @@ reviewer AgentReport 是 V4.6 的核心新对象。契约必须先定死，避�
 export type AgentRole = 'coder' | 'reviewer' | 'test_evidence';
 export type ReviewerDecision = 'approve_with_comments' | 'request_changes' | 'cannot_review';
 
-export interface AgentReportCommon { /* §8.2 公共字段 */ }
+export interface AgentReportCommon { /* §8.2 公共字段；runId/promptTemplateHash 可空 */ }
 export interface AgentReportCoder { /* §8.2 coder 字段 */ }
 export interface AgentReportReviewer { /* §8.2 reviewer 字段 */ }
-export interface AgentReportTestEvidence { /* §8.2 test_evidence 字段 */ }
+export interface AgentReportTestEvidence {
+  /* §8.2 test_evidence 字段；baselineEvidence 可空 */
+}
 
 export type AgentReport =
   | (AgentReportCommon & { role: 'coder'; coder: AgentReportCoder })
@@ -633,9 +659,11 @@ P0 不做：
 
 工程约束：
 
-- test/evidence agent 的 sandbox 是 `read_only_source_write_evidence`，
+- test_evidence agent 的 sandbox 是 `read_only_source_write_evidence`，
   任何写源码的尝试都会被 Codex sandbox 拒绝并写入 `sandbox_violation`
-  event；TaskNode 标 `failed` reason `evidence_sandbox_violation`。
+  event；TaskNode 标 `failed`、reason `sandbox_violation`（与 §16.2 单一
+  truth source 对齐）。reviewer agent 触发 sandbox violation 时 TaskNode
+  reason 同为 `sandbox_violation`，roleFailureReason 借助 AgentReport.role 区分。
 - evidence 写入路径必须落在 `<worktree>/.issuepilot/evidence/<taskId>/`
   之下；越界由 Codex sandbox 兜底。
 
@@ -688,9 +716,15 @@ failure pattern 拆分（一个反映 agent 配置质量，一个反映 coder �
 ### 14.6 PipelineRun cancel
 
 - operator 在 dashboard 上 cancel：orchestrator 通过现有 cancel registry
-  发信号给 Codex run，AgentReport.status = `cancelled`，TaskNode 回
-  `ready`（如果在第一步）或 `needs_rework`（如果中途），同时写入
-  `TaskNode.last_cancelled_at`。
+  发信号给 Codex run，AgentReport.status = `cancelled`。回写规则：
+  - 若 cancel 发生在 `running_coding` 之前（仅 PipelineRun draft 已创建），
+    TaskNode 回 `ready`，PipelineRun.status = `cancelled`；
+  - 若 cancel 发生在 `running_coding` / `running_reviewer` /
+    `running_test_evidence` 任一阶段，TaskNode 进 `needs_rework`，
+    PipelineRun.status = `cancelled`，roleFailureReason 标对应的
+    `*_cancelled` reason（V4.6 直接复用 `reviewer_unavailable` /
+    `evidence_unavailable` reason 集合，event key 区分 `*_cancelled`）。
+  - 两种情况都同时写入 `TaskNode.last_cancelled_at`。
 - orchestrator auto_advance 检查 `last_cancelled_at` 并跳过该 TaskNode，
   直到 operator 在 dashboard 上显式触发新一轮 pipeline（清空标记）。
   这一约束确保 cancel 行为符合 §7.2 "失败时不自动重跑"。
@@ -767,6 +801,32 @@ V4.6 复用 `workflow.tracker.token_env` 指向的 GitLab token：
 `runId = null` 的 AgentReport，`status = failed`、`testEvidence.evidenceItems = []`、
 `testEvidence.baselineEvidence = null`、`lastError.code` 区分原因。
 
+#### 16.2 lastError.code 枚举目录（单一 truth source）
+
+AgentReport.lastError.code、TaskNode.roleFailureReason、V4.4 FailurePatternId、
+event key 在 V4.6 层面共享同一组字面量，避免实施期混乱：
+
+| lastError.code | 触发场景 | TaskNode roleFailureReason | event key | FailurePatternId |
+| --- | --- | --- | --- | --- |
+| `scope_insufficient` | reviewer scope probe 失败 | `reviewer_cannot_review` | `reviewer_cannot_review` | `reviewer_cannot_review` |
+| `prompt_template_missing` | role prompt template 文件缺失 | `reviewer_cannot_review` / `role_profile_invalid` | `role_profile_invalid` | `role_profile_invalid` |
+| `prompt_render_failed` | prompt 渲染异常 | `reviewer_cannot_review` | `role_profile_invalid` | `role_profile_invalid` |
+| `reviewer_unavailable` | Codex run 崩 / timeout | `reviewer_unavailable` | `reviewer_unavailable` | `reviewer_unavailable` |
+| `runner_unavailable` | Codex app-server 启动失败 | `coding_failed` (coder) / `reviewer_unavailable` (reviewer) / `evidence_unavailable` (test_evidence) | `runner_unavailable` | `runner_unavailable` |
+| `parse_failed` | LLM 输出 schema 解析失败 | `reviewer_unavailable` | `reviewer_unavailable` | `reviewer_unavailable` |
+| `sandbox_violation` | 任一 agent 越界写文件 / 调未授权 tool | `coding_failed` (coder) / `reviewer_cannot_review` (reviewer) / `evidence_unavailable` (test_evidence) | `sandbox_violation` | `sandbox_violation` |
+| `redaction_failed` | redaction 模块异常（fail-closed） | `reviewer_cannot_review` | `redaction_failed` | `redaction_failed` |
+| `storage_full` | 磁盘写入失败 | `storage_full` (TaskNode → `blocked`) | `storage_full` | `storage_full` |
+| `gitlab_rate_limited` | MR publish 收到 429 | n/a（fail soft，不改 TaskNode） | n/a | n/a |
+| `coding_failed` | coder agent CI / build / runtime 失败 | `coding_failed` | `coding_failed` | `coding_failed` |
+| `evidence_unavailable` | test_evidence agent 崩 | `evidence_unavailable` | `evidence_unavailable` | `evidence_unavailable` |
+| `evidence_partial` | test_evidence 部分 request 失败 | `evidence_partial` | `evidence_partial` | `evidence_partial` |
+| `reviewer_requested_changes` | reviewer decision = request_changes | `reviewer_requested_changes` | `reviewer_requested_changes` | `reviewer_requested_changes` |
+
+实施层在写 AgentReport 时必须从这张表里选 lastError.code；event store、V4.4
+FailurePatternId、dashboard filter bucket（见 §21.1）严格按表对齐。新增 code
+必须先更新本表与 §21.1 才能在代码里使用。
+
 ## 17. UI / dashboard
 
 V4.6 在现有 dashboard 里做最小化改动：
@@ -825,6 +885,11 @@ endpoint。pipeline 进入 `running_coding` 后按钮 disabled，tooltip
 解释 "coding step 已启动，不可改 recipe"，与 §18.1 的 409 `recipe_override_locked`
 对应。
 
+recipe 标签的来源：
+- 若 `PipelineRun` 已创建（`ready` 之后），展示 `PipelineRun.recipe`；
+- 否则按 `TaskNode.pendingRecipe ?? workflow.default_recipe` 展示，并在
+  tooltip 注明 "尚未应用，PipelineRun 创建时生效"。
+
 ### 17.4 Reports 页面（V4.4）扩展
 
 - 在 V4.4 现有 success rate 指标基础上增加 by-role 切片：
@@ -877,9 +942,13 @@ orchestrator HTTP API 新增以下 endpoints。错误响应沿用 V4.5 已建立
 - `POST /api/work-items/:wid/tasks/:tid/pipeline/recipe-override`
   - body: `{ recipe }`。允许 task 状态 ∈ `{ planned, blocked_by_dependency, ready }`；
     进入 `running_coding` 或之后返回 409 `recipe_override_locked`。
-  - 写入 PipelineRun.recipeSource = `operator_override`（PipelineRun 在
-    `running_coding` 之前由 orchestrator 创建为 draft；在 `ready` 阶段调用本
-    endpoint 只更新尚未启动的 PipelineRun.recipe）。
+  - 写入对象按 TaskNode 当前状态分两种：
+    - `planned` / `blocked_by_dependency`：写入 `TaskNode.pendingRecipe` 与
+      `pendingRecipeSource = operator_override`，PipelineRun 仍未创建。
+    - `ready`：orchestrator 已经创建（或正在创建）draft PipelineRun，本 endpoint
+      直接更新 `PipelineRun.recipe` 与 `PipelineRun.recipeSource = operator_override`。
+  - 进入 `ready` 时 orchestrator 在 PipelineRun 创建流程里把
+    `TaskNode.pendingRecipe`（如有）灌进 draft，并清空 TaskNode 上的两个字段。
 
 ### 18.2 AgentReport
 
@@ -898,7 +967,9 @@ orchestrator HTTP API 新增以下 endpoints。错误响应沿用 V4.5 已建立
 - `POST /api/agent-reports/:id/retry`
   - 重新跑该角色的 step；orchestrator 创建新的 AgentReport，旧的保留
     并互相 supersede 引用。reviewer / test_evidence 单角色重跑不创建新
-    PipelineRun；coder 重跑会创建新 PipelineRun（见 §18.1）。
+    PipelineRun；coder 重跑会触发 orchestrator 在内部创建新 PipelineRun
+    （不通过额外 HTTP endpoint，复用本 retry 路径，role = coder 时实现
+    端切换到 "new PipelineRun" 分支）。
 - `POST /api/agent-reports/:id/skip`
   - 跳过该角色的 step（仅 reviewer / test_evidence 允许）。
 
@@ -920,16 +991,13 @@ orchestrator HTTP API 新增以下 endpoints。错误响应沿用 V4.5 已建立
 
 ### 19.2 与 V4.4 QualityAnalytics
 
-- V4.4 的 `quality summary` aggregator 在采集时新增 by-role 切片：
-  - `coder.success_rate`：(coder.status='complete') / total。
-  - `reviewer.approve_rate`：(decision='approve_with_comments') /
-    (decision !=  null)。
-  - `test_evidence.evidence_complete_rate`：(status='complete') /
-    (status != null)。
-- `FailurePatternId` 新增：`reviewer_unavailable`、
-  `reviewer_requested_changes`、`evidence_unavailable`、
-  `sandbox_violation`。
-- drill-down 增加按 role 过滤。
+- V4.4 的 `quality summary` aggregator 在采集时新增 by-role 切片：详见 §17.4，
+  包括 `coder.success_rate`、`reviewer.approve_rate`、
+  `reviewer.cannot_review_rate`、`reviewer.unavailable_rate`、
+  `test_evidence.evidence_complete_rate`、`test_evidence.partial_rate`。
+- 新增的 `FailurePatternId` 完整列表见 §21.1 event→pattern→bucket 表，
+  V4.4 实施时以该表为唯一 truth source。
+- drill-down 增加按 role / bucket 过滤。
 
 ### 19.3 与 V4.5 ImprovementRecommendation
 
@@ -967,7 +1035,7 @@ orchestrator HTTP API 新增以下 endpoints。错误响应沿用 V4.5 已建立
 - reviewer 和 test/evidence 都**不能写任何源码**。Codex sandbox 是
   唯一硬约束，违规直接 task `failed`。
 - pipeline 的状态机严格串行：不允许两个角色同时跑同一个 TaskNode。
-- pipeline 不允许跳过 coding：`coding-only` 是有效 recipe，
+- pipeline 不允许跳过 coding：`coding_only` 是有效 recipe，
   `reviewer-only` / `evidence-only` 不是。
 - reviewer 的 decision 不直接 merge 或切 GitLab label；human-review 仍
   是唯一 merge gate。
@@ -1008,6 +1076,7 @@ dashboard event filter bucket 的对应：
 | `pipeline_init_failed` | 仍 `ready` | n/a | `pipeline_init_failed` | configuration |
 | `role_profile_invalid` | 仍 `ready` | n/a | `role_profile_invalid` | configuration |
 | `runner_unavailable` | `failed` (coder) / `blocked` (reviewer 等) | `failed` | `runner_unavailable` | infrastructure |
+| `*_cancelled`（operator 主动 cancel） | `ready` / `needs_rework`（见 §14.6） | `cancelled` | `pipeline_cancelled` | n/a（不计入失败统计） |
 | `sandbox_violation` | `failed` | `failed` | `sandbox_violation` | safety |
 | `redaction_failed` | `blocked` | `failed` | `redaction_failed` | safety |
 | `storage_full` | `blocked` | n/a | `storage_full` | infrastructure |
@@ -1022,6 +1091,12 @@ dashboard event filter bucket 的对应：
 `configuration` / `infrastructure` / `safety` / `agent-quality` / `code-quality`
 五桶。 V4.5 在生成 ImprovementRecommendation 时按 bucket 选择目标面
 （`configuration` → role profile / workflow YAML；`code-quality` → coder prompt 等）。
+
+注：当 `runner_unavailable` 发生在 coder run 时，TaskNode reason 记 `coding_failed`，
+event key 记 `runner_unavailable`，FailurePatternId 记 `runner_unavailable`；
+reviewer / test_evidence 出现 `runner_unavailable` 时，TaskNode reason 直接
+记 `reviewer_unavailable` / `evidence_unavailable`，event key 与 FailurePatternId
+仍记 `runner_unavailable`。这样 event 维度保留根因，TaskNode 维度保留角色语义。
 
 ## 22. 测试策略
 
@@ -1059,12 +1134,19 @@ dashboard event filter bucket 的对应：
 - Playwright walkthrough 失败 → AgentReport.testEvidence.evidenceItems[]
   标 `failed` 但不阻塞 pipeline。
 
-### 22.5 API tests（`apps/orchestrator/src/server/__tests__/`）
+### 22.5 API tests（沿用现有 `apps/orchestrator/src` 下的 server 测试目录）
 
 - 新增的 `GET /api/work-items/:wid/tasks/:tid/pipeline` 等 routes 全部
   覆盖 200 / 404 / 400 / 409 路径。
-- recipe-override 在非 `ready` 状态下返回 409。
-- revoke-ai-review 在非 reviewer role 返回 400 `role_mismatch`。
+- `recipe-override` 在 `planned` / `blocked_by_dependency` / `ready` 上 200；
+  在 `running_coding` 及之后返回 409 `recipe_override_locked`；task 不存在
+  返回 404。
+- `recipe-override` 在 `planned` / `blocked_by_dependency` 阶段写入
+  `TaskNode.pendingRecipe`；在 `ready` 阶段写入 `PipelineRun.recipe`，
+  两条独立单元测试覆盖。
+- revoke-ai-review 在非 reviewer role 返回 400 `role_mismatch`；在
+  `mrPublication.status != published` 时返回 409 `not_revocable`；
+  published 时返回 200 + AgentReport.mrPublication.status = `revoked`。
 
 ### 22.6 UI tests（dashboard component tests）
 
@@ -1116,13 +1198,14 @@ V4.6 至少满足：
    `awaiting_human_review`。
 2. **Recipe 生效**：workflow YAML `default_recipe = full_pipeline` 与
    `coding_only` 都能正确解析；plan-accept 时 per-task override 改写
-   `coding+reviewer` 后只产生 coder + reviewer 两份 AgentReport。
+   `coding_plus_reviewer` 后只产生 coder + reviewer 两份 AgentReport。
 3. **AgentReport 数据完整**：reviewer.decision、confidence、risks、
    evidenceRequest、findings、inlineComments、mrPublication 字段都按
    contract 写入；schema 通过 contract tests。
 4. **MR 联动护栏**：reviewer 的 1 主 note + N inline 推到 fake GitLab
-   MR；severity_threshold / max_inline_comments / prefix /
-   revoke / redaction 五条都通过 unit + E2E 验证。
+   MR；§12 的 6 条护栏（聚合主 note / severity_threshold /
+   max_inline_comments / prefix / revoke / fail soft / redaction）都通过
+   unit + E2E 验证。
 5. **失败 reason 显式**：reviewer_unavailable / reviewer_requested_changes
    / reviewer_cannot_review / evidence_unavailable / coding_failed /
    sandbox_violation 各自的 dashboard 展示和 V4.4 quality summary 切片
@@ -1164,9 +1247,9 @@ P0 不要求 operator 手工迁移：
 
 正式上线建议：
 
-1. 启用 V4.6 后先用 `coding-only` recipe 跑一个 sprint，验证 pipeline 编排
+1. 启用 V4.6 后先用 `coding_only` recipe 跑一个 sprint，验证 pipeline 编排
    稳定；
-2. 再切到 `coding+reviewer`，关注 reviewer publish_to_mr 的 false positive；
+2. 再切到 `coding_plus_reviewer`，关注 reviewer publish_to_mr 的 false positive；
 3. 最后切到 `full_pipeline`，让 test/evidence 介入。
 
 ## 附录 C：未来工作（V4.7+ / V3）

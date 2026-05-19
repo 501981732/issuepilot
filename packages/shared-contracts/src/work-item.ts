@@ -129,6 +129,28 @@ export const isWorkItemReportStatus = (
   (WORK_ITEM_REPORT_STATUS_VALUES as readonly string[]).includes(value);
 
 /**
+ * V4.6 spec §8.4：WorkItemReport.taskSummaries[].evidenceStatus。
+ *
+ * - `complete`：test_evidence 全部 collected。
+ * - `partial`：test_evidence 部分 collected。
+ * - `skipped_by_recipe`：recipe 不含 test_evidence step（coding_only /
+ *   coding_plus_reviewer）。
+ * - `unavailable`：旧 task（pre-V4.6）或 test_evidence agent 未启动；
+ *   parser 在缺字段时 fallback 到此值。
+ */
+export const EVIDENCE_STATUS_VALUES = [
+  "complete",
+  "partial",
+  "skipped_by_recipe",
+  "unavailable",
+] as const;
+export type EvidenceStatus = (typeof EVIDENCE_STATUS_VALUES)[number];
+
+export const isEvidenceStatus = (value: unknown): value is EvidenceStatus =>
+  typeof value === "string" &&
+  (EVIDENCE_STATUS_VALUES as readonly string[]).includes(value);
+
+/**
  * 与现有 `RunReportArtifact` 共享的风险分级口径。
  *
  * 我们重新导出 report.ts 里已经存在的 `RISK_LEVEL_VALUES` 与
@@ -445,6 +467,39 @@ export interface WorkItemTaskSummary {
   /** 简单字符串，避免在 V4.1 引入 `PipelineStatus` 依赖。 */
   ciStatus?: string;
   nextAction?: string;
+  /**
+   * V4.6 spec §8.4：本 task 最新一次 PipelineRun 与三角色 AgentReport
+   * 的索引。dashboard / Parent Review Packet 据此跳转到 AgentReport tab。
+   *
+   * `evidenceStatus` 缺省时（pre-V4.6 任务）必须 fallback 到 `unavailable`，
+   * 而不是 `skipped_by_recipe`（后者要求 PipelineRun 明确 coding-only 配置）。
+   */
+  pipelineRunId?: string;
+  coderReportId?: string;
+  reviewerReportId?: string;
+  testEvidenceReportId?: string;
+  /** 字符串以避免 work-item.ts → agent-report.ts 双向 import；运行时由调用方校验。 */
+  reviewerDecision?: string;
+  reviewerConfidence?: number;
+  /**
+   * V4.6 spec §8.4：本字段在新 task summary 中由 aggregator 显式写入；
+   * 旧 task summary（V4.5 之前 aggregate 出的）缺字段时 reader 必须
+   * fallback 到 `unavailable`（spec §8.4），用 `effectiveEvidenceStatus`
+   * helper 取值。
+   */
+  evidenceStatus?: EvidenceStatus;
+  /**
+   * V4.6 spec §11 / §17.2：reviewer.summary 摘要，dashboard 在 Parent
+   * Review Packet 与 task summary card 中渲染。
+   */
+  reviewerSummary?: string;
+  /**
+   * V4.6：本 task 的 reviewer agent report 在 MR 上的推送状态摘要，
+   * dashboard 用于在 task list 渲染 banner（pending / published /
+   * publish_failed / skipped_by_config / revoked）。
+   * 字符串以避免双向 import。
+   */
+  mrPublicationStatus?: string;
 }
 
 export interface WorkItemReport {
@@ -464,3 +519,63 @@ export interface WorkItemReport {
   testSummary?: WorkItemTestSummary;
   generatedAt: string;
 }
+
+/**
+ * V4.6 spec §8.4：判定 WorkItemReport 是否可推 `ready_to_merge`
+ * recommended next action。
+ *
+ * 规则：如果任一 task 的 `evidenceStatus = unavailable` 且 reviewer
+ * decision 不是 `approve_with_comments`（白名单），则不可推
+ * `ready_to_merge`。decision 为 `cannot_review` / `request_changes` /
+ * 未知（undefined）都视为未点头。
+ *
+ * 兼容 V4.1：本 helper 仅在 V4.6 dashboard / aggregate 引入 evidence
+ * status 后启用；V4.1 aggregate 路径在 spec §17 早就规定不允许返回
+ * `ready_to_merge`，本规则与之叠加而不是替换。
+ */
+export interface ComputeOverallStatusResult {
+  overallStatus: WorkItemReportStatus;
+  readyToMerge: boolean;
+  veto: Array<{
+    taskId: string;
+    evidenceStatus: EvidenceStatus;
+    reviewerDecision?: string;
+    reason: "evidence_unavailable_without_reviewer_approval";
+  }>;
+}
+
+/** spec §8.4：缺字段时 fallback 到 `unavailable`。 */
+export const effectiveEvidenceStatus = (
+  summary: Pick<WorkItemTaskSummary, "evidenceStatus">,
+): EvidenceStatus => summary.evidenceStatus ?? "unavailable";
+
+export const computeOverallStatus = (
+  summaries: ReadonlyArray<
+    Pick<
+      WorkItemTaskSummary,
+      "taskId" | "taskStatus" | "evidenceStatus" | "reviewerDecision"
+    >
+  >,
+  current: WorkItemReportStatus,
+): ComputeOverallStatusResult => {
+  const veto: ComputeOverallStatusResult["veto"] = [];
+  for (const s of summaries) {
+    const status = effectiveEvidenceStatus(s);
+    if (
+      status === "unavailable" &&
+      s.reviewerDecision !== "approve_with_comments"
+    ) {
+      veto.push({
+        taskId: s.taskId,
+        evidenceStatus: status,
+        ...(s.reviewerDecision ? { reviewerDecision: s.reviewerDecision } : {}),
+        reason: "evidence_unavailable_without_reviewer_approval",
+      });
+    }
+  }
+  return {
+    overallStatus: current,
+    readyToMerge: veto.length === 0,
+    veto,
+  };
+};

@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EVIDENCE_STATUS_VALUES,
   TASK_NODE_STATUS_VALUES,
   TASK_PLAN_STATUS_VALUES,
   WORK_ITEM_REPORT_STATUS_VALUES,
   WORK_ITEM_STATUS_VALUES,
   TASK_ROLE_FAILURE_REASON_VALUES,
+  computeOverallStatus,
+  effectiveEvidenceStatus,
+  isEvidenceStatus,
   isTaskNodeStatus,
   isTaskRoleFailureReason,
   isWorkItemStatus,
@@ -17,6 +21,7 @@ import {
   type TaskRunLink,
   type WorkItem,
   type WorkItemReport,
+  type WorkItemTaskSummary,
 } from "../work-item.js";
 
 describe("work-item contracts", () => {
@@ -247,5 +252,93 @@ describe("work-item contracts", () => {
       generatedAt: "2026-05-17T00:10:00.000Z",
     };
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
+  });
+
+  it("EVIDENCE_STATUS_VALUES 严格四项", () => {
+    expect([...EVIDENCE_STATUS_VALUES]).toEqual([
+      "complete",
+      "partial",
+      "skipped_by_recipe",
+      "unavailable",
+    ]);
+    expect(isEvidenceStatus("complete")).toBe(true);
+    expect(isEvidenceStatus("missing")).toBe(false);
+  });
+
+  it("effectiveEvidenceStatus 在缺字段时 fallback 到 unavailable", () => {
+    expect(effectiveEvidenceStatus({})).toBe("unavailable");
+    expect(effectiveEvidenceStatus({ evidenceStatus: "partial" })).toBe(
+      "partial",
+    );
+  });
+
+  it("computeOverallStatus: approve_with_comments + unavailable → 允许 ready_to_merge", () => {
+    const summaries: WorkItemTaskSummary[] = [
+      {
+        taskId: "t1",
+        title: "T1",
+        taskStatus: "awaiting_human_review",
+        validation: [],
+        risks: [],
+        followUps: [],
+        evidenceStatus: "unavailable",
+        reviewerDecision: "approve_with_comments",
+      },
+    ];
+    const result = computeOverallStatus(summaries, "complete");
+    expect(result.readyToMerge).toBe(true);
+    expect(result.veto).toEqual([]);
+  });
+
+  it("computeOverallStatus: cannot_review + unavailable → 否决", () => {
+    const summaries: WorkItemTaskSummary[] = [
+      {
+        taskId: "t1",
+        title: "T1",
+        taskStatus: "blocked",
+        validation: [],
+        risks: [],
+        followUps: [],
+        evidenceStatus: "unavailable",
+        reviewerDecision: "cannot_review",
+      },
+    ];
+    const result = computeOverallStatus(summaries, "incomplete");
+    expect(result.readyToMerge).toBe(false);
+    expect(result.veto[0]?.taskId).toBe("t1");
+    expect(result.veto[0]?.reviewerDecision).toBe("cannot_review");
+  });
+
+  it("computeOverallStatus: request_changes + unavailable → 否决", () => {
+    const summaries: WorkItemTaskSummary[] = [
+      {
+        taskId: "t1",
+        title: "T1",
+        taskStatus: "needs_rework",
+        validation: [],
+        risks: [],
+        followUps: [],
+        evidenceStatus: "unavailable",
+        reviewerDecision: "request_changes",
+      },
+    ];
+    const result = computeOverallStatus(summaries, "partial");
+    expect(result.readyToMerge).toBe(false);
+  });
+
+  it("computeOverallStatus: evidence partial + approve → 允许", () => {
+    const summaries: WorkItemTaskSummary[] = [
+      {
+        taskId: "t1",
+        title: "T1",
+        taskStatus: "awaiting_human_review",
+        validation: [],
+        risks: [],
+        followUps: [],
+        evidenceStatus: "partial",
+        reviewerDecision: "approve_with_comments",
+      },
+    ];
+    expect(computeOverallStatus(summaries, "partial").readyToMerge).toBe(true);
   });
 });

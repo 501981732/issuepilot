@@ -27,6 +27,31 @@ runner via `@issuepilot/runner-codex-app-server`。
 
 ---
 
+## Prerequisites
+
+- **V4.5 Improvement Loop 必须先落地**：本计划 Phase 10 Task 10.3 假设
+  `packages/shared-contracts/src/improvement.ts` 与
+  `apps/orchestrator/src/improvements/{templates,engine,store,patch-preview,service,routes}.ts`
+  都已存在（即 V4.5 plan `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
+  的实施 PR 已合并到 `origin/main`）。截至本 plan 提交时，仓库主线只有
+  V4.5 spec + plan 的 docs 提交，**实现代码尚未合并**。
+- 在 V4.5 实现 PR 合并之前，Phase 10 Task 10.3 自动降级：
+  - `packages/shared-contracts/src/improvement.ts`、
+    `apps/orchestrator/src/improvements/templates.ts`、
+    `engine.ts` 在 File Structure 表中应被理解为 `(new) [V4.5 fallback]`，
+    本 plan 不在 V4.6 内一并交付，而是在 V4.6 PR 描述中加 `Blocked-by: V4.5 PR #<n>`
+    注记，由 V4.5 实施完成后单独补丁。
+  - Phase 10 Task 10.3 step 1 写测试时，先做 `it.skipIf(!fs.existsSync(...))`
+    动态条件 skip；测试体仍保留以便 V4.5 合并后启用。
+- **YAML on-disk vs TS in-memory 命名规范**：workflow YAML 配置使用
+  snake_case（spec §10 示例 `prompt_template` / `sandbox` /
+  `severity_threshold` / `max_inline_comments` 等），TS 解析后映射成
+  camelCase（`WorkflowRoleConfig.promptTemplate` /
+  `severityThreshold` / `maxInlineComments`）。所有 plan task 中的测试
+  断言、字面值都以 TS camelCase 为准；YAML fixture 中保持 snake_case。
+
+---
+
 ## Scope Check
 
 本计划只实现
@@ -101,10 +126,13 @@ runner via `@issuepilot/runner-codex-app-server`。
   / `reviewer.approve_rate` / `reviewer.cannot_review_rate` /
   `reviewer.unavailable_rate` / `test_evidence.evidence_complete_rate`
   / `test_evidence.partial_rate`）。
-- V4.5 联动：升级
+- V4.5 联动（**前置条件**：V4.5 实现 PR 已合并到 `origin/main`；详见
+  本计划顶部 Prerequisites 节）：升级
   `packages/shared-contracts/src/improvement.ts:ImprovementTargetKind`
   增加 `role_configuration`；engine 在 V4.6 patterns 上分桶生成新建议；
   patch preview 支持 reviewer / test_evidence prompt 模板的 inert diff。
+  若 V4.5 实现 PR 尚未合并，本条降级为 placeholder（Task 10.3 全部
+  skipIf）。
 - Dashboard：
   - `apps/dashboard/components/work-items/pipeline-progress.tsx` +
     `agent-report-tabs.tsx`（含 coder / reviewer / test_evidence
@@ -431,13 +459,34 @@ import {
 } from "../agent-report.js";
 
 describe("agent-report contracts", () => {
-  it("AGENT_ROLE_VALUES 至少包含 coder / reviewer / test_evidence", () => {
+  it("AGENT_ROLE_VALUES 严格按 spec §8.2 三个枚举", () => {
     expect(AGENT_ROLE_VALUES).toEqual(["coder", "reviewer", "test_evidence"]);
   });
 
-  it("AGENT_REPORT_STATUS_VALUES 覆盖 running/complete/failed/cancelled/incomplete", () => {
+  it("AGENT_REPORT_STATUS_VALUES 覆盖 running/complete/incomplete/failed/cancelled", () => {
     expect(new Set(AGENT_REPORT_STATUS_VALUES)).toEqual(
-      new Set(["running", "complete", "failed", "cancelled", "incomplete"]),
+      new Set(["running", "complete", "incomplete", "failed", "cancelled"]),
+    );
+  });
+
+  it("LAST_ERROR_CODE_VALUES 严格按 spec §16.2 的 14 项 truth source", () => {
+    expect(new Set(LAST_ERROR_CODE_VALUES)).toEqual(
+      new Set([
+        "pipeline_init_failed",
+        "role_profile_invalid",
+        "prompt_template_missing",
+        "runner_unavailable",
+        "coding_failed",
+        "reviewer_unavailable",
+        "reviewer_cannot_review",
+        "reviewer_requested_changes",
+        "evidence_unavailable",
+        "evidence_partial",
+        "sandbox_violation",
+        "redaction_failed",
+        "storage_full",
+        "pipeline_cancelled",
+      ]),
     );
   });
 
@@ -446,27 +495,33 @@ describe("agent-report contracts", () => {
     expect(isLastErrorCode("totally_unknown")).toBe(false);
   });
 
-  it("AgentReport discriminated union by role", () => {
+  it("AgentReport discriminated union by role（reviewer 形态）", () => {
     const r: AgentReport = {
-      reportId: "r1",
+      agentReportId: "r1",
       pipelineRunId: "p1",
-      workItemId: "w1",
       taskId: "t1",
       role: "reviewer",
+      roleProfileId: "reviewer@v1",
       status: "complete",
-      attempt: 1,
-      createdAt: "2026-05-19T00:00:00Z",
-      updatedAt: "2026-05-19T00:00:10Z",
+      startedAt: "2026-05-19T00:00:00Z",
+      completedAt: "2026-05-19T00:00:10Z",
       runId: "run1",
       promptTemplateHash: "abc",
-      decision: "approve",
-      confidence: 0.91,
-      risks: [],
-      evidenceRequest: [],
-      findings: [],
-      inlineComments: [],
+      evidenceLinks: [],
+      redactedFields: [],
+      reviewer: {
+        summary: "LGTM",
+        decision: "approve_with_comments",
+        confidence: 0.91,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+        mrPublication: { status: "skipped_by_config", noteIds: [] },
+      },
     } as const;
     expect(r.role).toBe("reviewer");
+    expect(r.reviewer.decision).toBe("approve_with_comments");
   });
 });
 ```
@@ -484,9 +539,24 @@ Create `packages/shared-contracts/src/agent-report.ts`：定义
 `isLastErrorCode` / `AgentLastError` / `CoderAgentReport` /
 `ReviewerAgentReport`（含 `findings` 与 `inlineComments` 与
 `mrPublication`）/ `TestEvidenceAgentReport` / 顶层 `AgentReport`
-discriminated union；导出 `AgentReportBase` 公共字段：`reportId`、
-`pipelineRunId`、`workItemId`、`taskId`、`role`、`status`、`attempt`、
-`createdAt`、`updatedAt`、`runId?`、`promptTemplateHash?`、`lastError?`。
+discriminated union；导出 `AgentReportBase` 公共字段（严格按 spec §8.2）：
+
+- `agentReportId`
+- `pipelineRunId`
+- `taskId`
+- `role`
+- `roleProfileId`
+- `status`（`running` / `complete` / `incomplete` / `failed` / `cancelled`）
+- `startedAt`
+- `completedAt?`
+- `runId?` (Codex run id；agent 未启动可为 null)
+- `promptTemplateHash?`（agent 未启动可为 null）
+- `lastError?`（必填条件见 spec §8.2）
+- `evidenceLinks: string[]`
+- `redactedFields: string[]`
+
+注：sentry 字段 `workItemId` **不**写在 AgentReport 上（spec §8.2 不要求；
+workItemId 通过 `TaskNode` 上溯）；不要为了 plan 方便而加。
 
 参考 spec §8.2 / §11 / §16.2，严格按表写枚举。
 
@@ -518,14 +588,17 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - Test: `packages/shared-contracts/src/__tests__/pipeline.test.ts`
 - Modify: `packages/shared-contracts/src/index.ts`
 
-- [ ] **Step 1: Write failing test** 覆盖：
-  - `PIPELINE_RUN_STATUS_VALUES = ["draft","running","awaiting_rework","partial","succeeded","failed","cancelled"]`。
-  - `WORKFLOW_RECIPE_VALUES = ["full_pipeline","coding_plus_reviewer","coding_only"]`。
-  - `isPipelineRunStatus` / `isWorkflowRecipe` 拒绝未知值。
-  - `PipelineRun` 字段：`pipelineRunId`、`workItemId`、`taskId`、
-    `recipe`、`status`、`steps[]`（每步 `role` + `agentReportId?` +
-    `status`）、`createdAt` / `updatedAt` / `supersededBy?`、`source`
-    （`auto` / `operator`）。
+- [ ] **Step 1: Write failing test** 覆盖（**严格按 spec §8.1**）：
+  - `PIPELINE_RUN_STATUS_VALUES` = `["running_coding","running_reviewer","running_test_evidence","awaiting_human_review","awaiting_rework","partial","failed","cancelled"]`（8 项，不含 `draft` / `running` / `succeeded`）。
+  - `WORKFLOW_RECIPE_VALUES` = `["full_pipeline","coding_plus_reviewer","coding_only"]`。
+  - `RECIPE_SOURCE_VALUES` = `["workflow_default","operator_override"]`。
+  - `isPipelineRunStatus` / `isWorkflowRecipe` / `isRecipeSource` 拒绝未知值。
+  - `PipelineRun` 字段（spec §8.1）：`pipelineRunId`、`workItemId`、`taskId`、
+    `recipe`、`recipeSource`、`agentReportIds: Record<AgentRole, string | null>`、
+    `status`、`currentRole: AgentRole | null`、`createdAt` / `updatedAt`
+    / `completedAt?`、`supersedes?` / `supersededBy?`。
+    （注：spec 用 by-role 索引而不是 `steps[]` 数组；测试断言要直接读
+    `agentReportIds.reviewer` 等。）
 - [ ] **Step 2: Run test** Expected: FAIL。
 - [ ] **Step 3: Implement** `pipeline.ts`。
 - [ ] **Step 4: Re-export from `index.ts`**。
@@ -540,12 +613,22 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - Test: `packages/shared-contracts/src/__tests__/workflow-role.test.ts`
 - Modify: `packages/shared-contracts/src/index.ts`
 
-- [ ] **Step 1: Write failing test** 覆盖：
+- [ ] **Step 1: Write failing test** 覆盖（严格按 spec §10）：
   - `WorkflowRoleConfig`：必填 `promptTemplate` / `sandbox`，可选
-    `tools[]` / `timeoutSeconds` / `tokenScopeRequirements[]`。
-  - `WorkflowToolGrant`：`{ name: string, allow?: string[] }`，并断言
-    `allow` 中 `"*"` 必须配 `name`（非空），不允许顶层通配。
-  - `WORKFLOW_SANDBOX_VALUES = ["workspace-write","read-only-source-write-evidence","read-only-source"]`。
+    `tools[]` / `timeoutSeconds` / `tokenScopeRequirements[]`；reviewer
+    还可选 `publishToMr` / `severityThreshold` / `maxInlineComments`。
+  - `WORKFLOW_SANDBOX_VALUES` = `["read_write_worktree","read_only_worktree","read_only_source_write_evidence"]`（严格 snake_case，与 spec §10 / §15 一致）。
+  - `WORKFLOW_TOOL_NAME_VALUES` = `["gitlab.create_mr","gitlab.update_mr","gitlab.read_mr","gitlab.note_inline","run.command","playwright.walkthrough","evidence.collect"]`。
+  - `WorkflowToolGrant`：`{ name: WorkflowToolName, allow?: string[] }`，
+    `allow` 仅在 `name = "run.command"` 时被允许；断言 `allow: ["*"]`
+    / `allow: ["*", "*"]` 等全通配条目 → 抛 `WorkflowConfigError`；
+    `allow` 中单 token 内出现 `*` 合法（spec §10 example
+    `pnpm --filter * test`）。
+  - `REVIEWER_SEVERITY_THRESHOLD_VALUES` = `["low","medium","high","critical"]`，
+    默认 `medium`。
+  - `parseRoleConfig({ yaml })` 把 YAML snake_case (`prompt_template`
+    / `severity_threshold` / `max_inline_comments` / `timeout_seconds`
+    / `publish_to_mr` / `token_scope_requirements`) 映射成 TS camelCase。
 - [ ] **Step 2-6**：同样 TDD 五步。
 - [ ] commit 信息：`feat(shared-contracts): add workflow role / tool / sandbox enums`。
 
@@ -559,14 +642,22 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - [ ] **Step 1: Write failing test** 覆盖：
   - 新增 4 个 status `running_coding` / `running_reviewer` /
     `running_test_evidence` / `awaiting_human_review` 在
-    `TASK_NODE_STATUS_VALUES` 里。
+    `TASK_NODE_STATUS_VALUES` 里（已有 9 项保留，合计 13 项）。
   - `legacyRunningStateToV46("running")` 返回 `"running_coding"`，对其
     他状态返回原值。
-  - `TaskNode` 接收 `pendingRecipe?` / `pendingRecipeSource?` /
-    `last_cancelled_at?` / `roleFailureReason?` 不报错；旧字段全部
-    保留。
+  - `TaskNode` 接收 `pendingRecipe?: WorkflowRecipe` /
+    `pendingRecipeSource?: RecipeSource` /
+    `last_cancelled_at?: string` / `roleFailureReason?: LastErrorCode` /
+    `currentPipelineRunId?: string` 不报错；旧字段全部保留。
   - `effectiveTaskStatus` 把 `running_coding` / `running_reviewer` /
-    `running_test_evidence` 映射到旧 `running`（向后兼容 UI）。
+    `running_test_evidence` 映射到旧 `running`（向后兼容 UI）；
+    `awaiting_human_review` 单独保留。
+  - `TASK_ROLE_FAILURE_REASON_VALUES` 与 spec §16.2 表中 `TaskNode
+    roleFailureReason` 列保持一致（`coding_failed` / `reviewer_unavailable`
+    / `reviewer_cannot_review` / `reviewer_requested_changes` /
+    `evidence_unavailable` / `evidence_partial` / `sandbox_violation`
+    / `redaction_failed` / `storage_full` / `role_profile_invalid`），
+    `isTaskRoleFailureReason` 拒绝未知值。
 - [ ] **Step 2-5**：实现 + 测试。
 - [ ] **Step 6: Commit**：
   `feat(shared-contracts): extend TaskNodeStatus and TaskNode fields for V4.6`。
@@ -578,12 +669,16 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - Modify: `packages/shared-contracts/src/review.ts`
 - Test: `packages/shared-contracts/src/__tests__/review.test.ts`
 
-- [ ] **Step 1**：写测试覆盖
-  - `REVIEWER_DECISION_VALUES = ["approve","request_changes","cannot_review"]`。
-  - `ReviewerFinding`：`{ id, severity, category, file?, line?, summary, suggestion?, status }`，其中
-    `severity ∈ ["info","minor","major","blocker"]`。
-  - `ReviewerInlineComment`：`{ findingId, file, line, body, gitlabNoteId? }`。
-  - `MrPublication`：`{ status: "skipped"|"queued"|"published"|"publish_failed"|"revoked", noteIds?[], publishedAt?, error? }` + helper `isMrPublicationPublished`。
+- [ ] **Step 1**：写测试覆盖（严格按 spec §8.2 / §11 / §12）
+  - `REVIEWER_DECISION_VALUES` = `["approve_with_comments","request_changes","cannot_review"]`。
+  - `FINDING_SEVERITY_VALUES` = `["low","medium","high","critical"]`。
+  - `INLINE_COMMENT_SEVERITY_VALUES` = `["medium","high","critical"]`（spec §11：low 不进 inline，只进主 note）。
+  - `ReviewerFinding`：`{ severity: FindingSeverity, category: string, message: string, locationHint?: { filePath, lineRange? } }`。
+  - `ReviewerInlineComment`：`{ filePath: string, lineRange: { start: number, end: number }, severity: InlineCommentSeverity, category: string, message: string, suggestedFix?: string }`。
+  - `MR_PUBLICATION_STATUS_VALUES` = `["pending","published","publish_failed","skipped_by_config","revoked"]`。
+  - `MrPublication`: `{ status: MrPublicationStatus, noteIds: string[], publishedAt?: string, lastError?: AgentLastError }` + helper `isMrPublicationRevocable(status)` 只在 `published` 时返回 true。
+  - `ReviewerAgentReport.reviewer` 必填字段：`summary` (markdown，最大 4000 字符)、`decision`、`confidence`、`risks[]`、`evidenceRequest[]`、`findings[]`、`inlineComments[]`、`mrPublication`。
+  - `summary` 超过 4000 字符 → contract 校验抛 `ReviewerSummaryTooLongError`。
 - [ ] **Step 2-6**：TDD 五步 + commit
   `feat(shared-contracts): add reviewer findings/inline comments/MR publication types`。
 
@@ -594,10 +689,15 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - Modify: `packages/shared-contracts/src/report.ts`
 - Test: `packages/shared-contracts/src/__tests__/report.test.ts`
 
-- [ ] **Step 1**：写测试覆盖
-  - `WorkItemTaskSummary.agentReports?` 是 `Array<{ reportId, role, status, decision?, evidenceStatus? }>`。
-  - `WorkItemReport.taskSummaries[].evidenceStatus` 新增
-    `skipped_by_recipe` 选项，旧值向后兼容。
+- [ ] **Step 1**：写测试覆盖（严格按 spec §8.4 / §11）
+  - `EVIDENCE_STATUS_VALUES` = `["complete","partial","skipped_by_recipe","unavailable"]`。
+  - `WorkItemTaskSummary.agentReports?` 是 `Array<{ agentReportId: string, role: AgentRole, status: AgentReportStatus, decision?: ReviewerDecision, evidenceStatus?: EvidenceStatus }>`（注意是 `agentReportId`，不是 `reportId`）。
+  - `WorkItemReport.taskSummaries[].evidenceStatus` 4 个值全覆盖；旧
+    report (缺字段) parse 时 fallback 到 `unavailable`。
+  - `WorkItemReport.taskSummaries[].readyToMerge` 否决规则（spec §11）：
+    `evidenceStatus = unavailable` 且 reviewer decision 不是
+    `cannot_review` 时，`readyToMerge` 必须 false。写一条 unit 测试
+    断言 helper `computeReadyToMerge(summary)`。
 - [ ] **Step 2-6**：TDD + commit。
 
 ### Task 1.7：扩展 `api.ts` 的 V4.6 request / response
@@ -608,11 +708,27 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - Test: `packages/shared-contracts/src/__tests__/api.test.ts`（如不存在则
   create）
 
-- [ ] **Step 1**：写测试断言以下类型可被 import：
-  - `GetPipelineResponse`、`GetAgentReportsResponse`、
-    `SetRecipeOverrideRequest`、`SetRecipeOverrideResponse`、
-    `RevokeAiReviewRequest`、`RevokeAiReviewResponse`、
-    `PipelineRouteErrors`（统一 error code）。
+- [ ] **Step 1**：写测试断言以下类型可被 import（与 spec §18 endpoint 一一对应）：
+  - `GetPipelineResponse` (`/api/work-items/:wid/tasks/:tid/pipeline`)
+  - `ListPipelinesResponse` (`/api/work-items/:wid/tasks/:tid/pipelines`，含 supersede 关系)
+  - `SetRecipeOverrideRequest` / `SetRecipeOverrideResponse`
+    (`/api/work-items/:wid/tasks/:tid/pipeline/recipe-override`，路径
+    必须含 `/pipeline/` 段)
+  - `GetAgentReportResponse` (`/api/agent-reports/:id`)
+  - `ListTaskAgentReportsResponse` (`/api/work-items/:wid/tasks/:tid/agent-reports`，支持 `role` / `include_superseded` query)
+  - `ListPipelineRunAgentReportsResponse` (`/api/pipeline-runs/:id/agent-reports`，注意是 `pipeline-runs` 复数)
+  - `RevokeAiReviewResponse` (`/api/agent-reports/:id/revoke-ai-review`)
+  - `RetryAgentReportRequest` / `RetryAgentReportResponse`
+    (`/api/agent-reports/:id/retry`)
+  - `SkipAgentReportRequest` / `SkipAgentReportResponse`
+    (`/api/agent-reports/:id/skip`)
+  - `ValidateWorkflowRolesResponse`
+    (`/api/workflows/:workflowId/roles/validate`)
+  - `PipelineRouteErrors` 统一 error code：`recipe_override_locked`
+    / `unknown_recipe` / `role_mismatch` / `not_revocable` /
+    `project_required` / `project_query_not_allowed` / `task_not_found`
+    / `pipeline_run_not_found` / `agent_report_not_found` /
+    `role_skip_not_allowed`。
 - [ ] **Step 2-6**：实现 + commit。
 
 ### Task 1.8：`index.ts` 总导出测试 + Phase 1 收口
@@ -656,7 +772,9 @@ git commit --allow-empty -m "chore: V4.6 phase 1 (shared contracts) checkpoint"
 - [ ] **Step 1: Write failing test** 在 parse.test.ts 加用例：
   - YAML 顶层带 `default_recipe: full_pipeline`，parse 后输出
     `config.defaultRecipe === "full_pipeline"`。
-  - 缺省时默认 `coding_only`（向后兼容 V4.1-V4.5）。
+  - 缺省时默认 `full_pipeline`（与 spec §10 示例一致，V4.6 把三角色
+    pipeline 作为新默认；现有 workflow 升级到 V4.6 需要显式声明
+    `coding_only` 才能保留旧行为，parser emit `warnings` 提示升级）。
   - 非法 `default_recipe: nope` → 抛 `WorkflowParseError` 且 message
     含 `default_recipe`。
 - [ ] **Step 2: Run test** Expected: FAIL。
@@ -673,12 +791,12 @@ git commit --allow-empty -m "chore: V4.6 phase 1 (shared contracts) checkpoint"
 - Modify: `packages/workflow/src/parse.ts`
 - Test: `packages/workflow/src/__tests__/parse.test.ts`
 
-- [ ] **Step 1: Write failing test** 覆盖：
-  - `roles: { coder: { promptTemplate: ..., sandbox: workspace-write }, reviewer: {...}, test_evidence: {...} }` 全部 parsed。
-  - 缺 role → fallback 到一份内置默认 profile，并 emit warning（
-    `result.warnings[]`）。
-  - `tools: [{ name: run.command, allow: ["pnpm", "git"] }]` 解析；
-    顶层 `tools: ["*"]` → 抛 `WorkflowParseError` (`global_wildcard_disallowed`)。
+- [ ] **Step 1: Write failing test** 覆盖（YAML 用 snake_case；TS 字段 camelCase）：
+  - YAML `roles: { coder: { prompt_template: ..., sandbox: read_write_worktree, tools: [...], timeout_seconds: 1800 }, reviewer: { ..., publish_to_mr: true, severity_threshold: medium, max_inline_comments: 25 }, test_evidence: { ... sandbox: read_only_source_write_evidence } }` 解析后 TS 字段是 `WorkflowConfig.roles.coder.promptTemplate` / `.sandbox` / `.tools` / `.timeoutSeconds`，reviewer 多出 `publishToMr` / `severityThreshold` / `maxInlineComments`。
+  - 缺 role → fallback 到一份内置默认 profile（与 spec §10 示例完全一致），并 emit warning（`result.warnings[]`）。
+  - `tools: [{ name: run.command, allow: ["pnpm test", "pnpm --filter * test"] }]` 解析；
+    顶层 `tools: ["*"]`、`tools: [{ name: run.command, allow: ["*"] }]`、`tools: [{ name: gitlab.note_inline, allow: ["..."] }]`（allow 仅允许配 `run.command`）三种非法都抛 `WorkflowParseError`，错误码分别是 `global_wildcard_disallowed` / `tool_allow_wildcard_disallowed` / `tool_allow_only_for_run_command`。
+  - 非法 sandbox 值（如 `workspace-write` / `read-only-source`）抛 `WorkflowParseError`（`unknown_sandbox`）。
 - [ ] **Step 2-5**：TDD 实现。
 - [ ] **Step 6: Commit**：`feat(workflow): parse roles config and tool allow lists`。
 
@@ -728,18 +846,22 @@ git commit --allow-empty -m "chore: V4.6 phase 1 (shared contracts) checkpoint"
 - Create: `apps/orchestrator/src/pipelines/store.ts`
 - Create: `apps/orchestrator/src/pipelines/__tests__/store.test.ts`
 
-- [ ] **Step 1: Write failing test** 覆盖：
+- [ ] **Step 1: Write failing test** 覆盖（严格按 spec §9 目录布局）：
   - `PipelineStore.savePipelineRun()` 把 JSON 写到
-    `<root>/pipelines/<workItemId>/<pipelineRunId>.json`；写之前过
-    redact，断言任意被注入的 `xxx-token` 字符串都被替换成
-    `[redacted]`。
+    `<root>/pipelines/<workItemId>/<taskId>/<pipelineRunId>.json`；写
+    之前过 redact，断言任意被注入的 `xxx-token` 字符串都被替换成
+    `[redacted]`，且 `redactedFields[]` 字段记录哪些字段被替换。
   - `PipelineStore.saveAgentReport()` 把 JSON 写到
-    `<root>/agent-reports/<workItemId>/<reportId>.json`。
+    `<root>/agent-reports/<taskId>/<role>/<agentReportId>.json`，并
+    同步更新 `<root>/agent-reports/<taskId>/<role>/index.json`（含
+    supersede 链与最新 agentReportId）。
   - `PipelineStore.listForTask({ workItemId, taskId })` 返回按
     `createdAt` 倒序的 PipelineRun，并把 `supersededBy` 链最新一条
     标 `latest: true`。
   - 读出错（损坏 JSON）→ 抛 `PipelineStoreReadError`（带文件路径，
     不暴露内部 trace）。
+  - 路径含非法字符（如 `..`）→ 抛 `PipelineStorePathError`，防越权
+    写入。
 - [ ] **Step 2: Run test** Expected: FAIL。
 - [ ] **Step 3-4**：实现 store.ts；reuse
   `@issuepilot/observability/redact`。
@@ -869,13 +991,33 @@ describe("resolveEffectiveRecipe", () => {
 - Create: `apps/orchestrator/src/pipelines/failure-mapping.ts`
 - Create: `apps/orchestrator/src/pipelines/__tests__/failure-mapping.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖
-  - 给定 `(role, lastErrorCode)`，`failureMapping.toTaskNodeReason()`
-    返回 spec §16.2 表中对应值；不存在的组合 → `UnsupportedFailureMapping`。
+- [ ] **Step 1**：写失败测试覆盖（用 `it.each` 把 spec §16.2 + §21.1
+  整张表展开）
+  - `it.each([ ... 14 项 lastErrorCode ... ])` 给定 `(role, lastErrorCode)`，
+    `failureMapping.toTaskNodeReason()` 返回 spec §16.2 表中对应值；
+    不存在的组合 → `UnsupportedFailureMapping`。
   - `failureMapping.toEventKey()` / `toFailurePatternId()` 同样按表。
-  - `runner_unavailable` 在 coder 上 → `roleFailureReason = "coding_failed"`、
-    `eventKey = "runner_unavailable"`、`patternId = "runner_unavailable"`，
-    与 spec §14.6 footnote 完全一致。
+  - 特殊矩阵：
+    - `runner_unavailable` × 3 角色（coder / reviewer / test_evidence）
+      → roleFailureReason 分别为 `coding_failed` / `reviewer_unavailable`
+      / `evidence_unavailable`，event key 与 patternId 都为
+      `runner_unavailable`（spec §14.6 footnote）。
+    - `pipeline_cancelled` × 4 阶段（cancel 发生在 PipelineRun draft
+      / running_coding / running_reviewer / running_test_evidence）
+      → event key 分别为 `coder_cancelled` / `coder_cancelled` /
+      `reviewer_cancelled` / `test_evidence_cancelled`，TaskNode
+      roleFailureReason 分别为 `n/a` (draft 不写) / `coding_failed` /
+      `reviewer_unavailable` / `evidence_unavailable`（spec §14.6 /
+      §16.2 表 `pipeline_cancelled` 行）。
+    - `prompt_template_missing` 在 role profile 初始化阶段 vs.
+      reviewer 启动前 fail 两个场景的 TaskNode reason 不同
+      （`role_profile_invalid` vs. `reviewer_cannot_review`，spec
+      §16.2 表脚注）。
+    - `sandbox_violation` 无论 role 都映射到 `sandbox_violation`，
+      role 信息从 `AgentReport.role` 读取（spec §16.2 表脚注 +
+      §13 / §14.4）。
+  - 编译期断言：`LAST_ERROR_CODE_VALUES.length === 14`，新增 code
+    必须先扩这张表才能编译过（用 TS `satisfies` + exhaustive switch）。
 - [ ] **Step 2-5**：实现 mapping 表（用 `as const` + record type）。
 - [ ] **Step 6: Commit**：`feat(orchestrator): centralize lastError → TaskNode / event / pattern mapping`。
 
@@ -1043,13 +1185,22 @@ describe("resolveEffectiveRecipe", () => {
 - Create: `apps/orchestrator/src/agents/reviewer.ts`
 - Create: `apps/orchestrator/src/agents/__tests__/reviewer.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖
+- [ ] **Step 1**：写失败测试覆盖（严格按 spec §11）
   - mock lifecycle 返回带 JSON 输出 fence 的 reviewer message，
-    `reviewer.run()` 解析出 `decision = "approve"` + `confidence = 0.91`
-    + `findings = []` + `inlineComments = []`。
+    `reviewer.run()` 解析出 `decision = "approve_with_comments"` +
+    `confidence = 0.91`（序列化必须保留两位小数：`"0.91"`，
+    `confidence = 0` 也序列化成 `"0.00"`）+ `summary` 字符串非空 +
+    `findings = []` + `inlineComments = []` + `risks = []` +
+    `evidenceRequest = []`。
   - 解析失败 → AgentReport `status = "failed"`
     `lastError.code = "reviewer_cannot_review"`，
     message 注明 `prompt_output_schema_mismatch`。
+  - `summary` 长度超过 4000 字符 → `lastError.code = "reviewer_cannot_review"`
+    (`message = "reviewer_summary_too_long"`)。
+  - `decision = "request_changes"` 时 reviewer 写
+    AgentReport `complete` + lastError 可省（这是正常完成的"要求返工"），
+    并让 coordinator 把 PipelineRun.status → `awaiting_rework` /
+    TaskNode → `needs_rework`。
 - [ ] **Step 2-5**：实现 parser + reviewer.ts；`confidence` 字段
   序列化到两位小数（spec §11.1）。
 - [ ] **Step 6: Commit**：`feat(orchestrator): reviewer agent parses structured output`。
@@ -1061,11 +1212,15 @@ describe("resolveEffectiveRecipe", () => {
 - Modify: `apps/orchestrator/src/agents/reviewer.ts`
 - Modify: `apps/orchestrator/src/agents/__tests__/reviewer.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖
-  - 给定 reviewer 输出 6 个 finding（含 1 个 info / 2 minor / 2 major
-    / 1 blocker），`severity_threshold = "minor"` 时 inline 列表过滤
-    出 5 个；`max_inline_comments = 3` 时 inline 截断到 3，主 note
-    中带聚合 `+2 more findings hidden`。
+- [ ] **Step 1**：写失败测试覆盖（严格按 spec §11 / §12）
+  - 给定 reviewer 输出 6 个 finding（含 1 个 `low` / 2 `medium` /
+    2 `high` / 1 `critical`），`severityThreshold = "medium"` 时 inline
+    列表过滤出 5 个（`low` 永不入 inline）；`maxInlineComments = 3`
+    时 inline 截断到 3，主 note 中带聚合 `+2 more findings hidden`。
+  - `severityThreshold = "high"` 时 inline 只保留 `high` + `critical`
+    共 3 条；`severityThreshold = "critical"` 只保留 1 条。
+  - 即使所有 finding 都被过滤掉，reviewer.summary 主 note 仍发送（
+    包含 decision + confidence + 完整 findings 列表的 markdown 渲染）。
 - [ ] **Step 2-5**：实现 reviewer 内部 findings → inlineComments 转换
   helper。
 - [ ] **Step 6: Commit**：`feat(orchestrator): apply severity_threshold and max_inline_comments`。
@@ -1093,18 +1248,26 @@ describe("resolveEffectiveRecipe", () => {
 - Create: `apps/orchestrator/src/gitlab/mr-comments.ts`
 - Create: `apps/orchestrator/src/gitlab/__tests__/mr-comments.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖（fake GitLab + redact）
+- [ ] **Step 1**：写失败测试覆盖（fake GitLab + redact，严格按 spec §12）
   - `publishReviewerToMr({ reviewerReport, mrRef, options })` 推 1 主
-    note + N inline，全部带 `[issuepilot-bot]` prefix；返回的
-    `MrPublication` 包含 `noteIds`，`publishedAt`。
-  - body 中的 token / key / URL 在 publish 前全部 redact。
+    note + N inline，全部带 `[ai-reviewer]` prefix（spec §12 规定 prefix
+    统一为 `[ai-reviewer]`，**不要**用 `[issuepilot-bot]`）；返回的
+    `MrPublication` 包含 `noteIds`，`publishedAt`，初始
+    `status = "pending"` → 写入后 `status = "published"`。
+  - body 中的 token / key / URL 在 publish 前全部 redact，并把被
+    redact 的字段名追加到 AgentReport.redactedFields。
   - publish 失败 → `MrPublication.status = "publish_failed"` +
-    `error`；reviewer AgentReport 不报 failed（fail soft），但记录
-    error 供 UI 提示。
+    `lastError: AgentLastError`；reviewer AgentReport 不报 failed
+    （fail soft），但记录 lastError 供 UI 提示；reviewer.summary 仍
+    写入本地 AgentReport，dashboard 可见（spec §12）。
+  - `reviewer.publishToMr = false` → 跳过推送，直接写
+    `MrPublication.status = "skipped_by_config"`。
   - `revokeReviewerMrComments({ noteIds })` 删除全部 note；如果某
-    noteId 已被删除 → 视为成功（idempotent）。
-  - GitLab scope 不足 → 转成 `cannot_review` 让 reviewer 写
-    AgentReport `failed lastError.code = "reviewer_cannot_review"`。
+    noteId 已被删除 → 视为成功（idempotent），AgentReport.mrPublication.status
+    → `"revoked"`。
+  - GitLab scope 不足（probe `tracker.token_scope_requirements`） →
+    转成 `cannot_review` 让 reviewer 写 AgentReport
+    `status = "failed"`，`lastError.code = "reviewer_cannot_review"`。
 - [ ] **Step 2-5**：实现。
 - [ ] **Step 6: Commit**：`feat(orchestrator): publish reviewer findings to GitLab MR with six safety rails`。
 
@@ -1186,19 +1349,35 @@ describe("resolveEffectiveRecipe", () => {
 - Create: `apps/orchestrator/src/pipelines/service.ts`
 - Create: `apps/orchestrator/src/pipelines/__tests__/service.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖
+- [ ] **Step 1**：写失败测试覆盖（对应 spec §18 所有 endpoints）
   - `service.getPipelineForTask({ workItemId, taskId })` 返回最新
     PipelineRun + `pendingRecipe` + agentReports 摘要。
+  - `service.listPipelinesForTask({ workItemId, taskId })` 返回历史列表
+    （含 supersede 关系）。
   - `service.setRecipeOverride({ workItemId, taskId, recipe })`：
-    - task `planned` / `blocked_by_dependency` → 写 `pendingRecipe`。
-    - task `ready` → 在最新 PipelineRun 中写 `recipe`（如还没创建
-      PipelineRun 就 lazy 创建 draft）。
+    - task `planned` / `blocked_by_dependency` → 写 `pendingRecipe`
+      + `pendingRecipeSource = operator_override`。
+    - task `ready` 且 PipelineRun 已创建 → 在最新 PipelineRun 中写
+      `recipe` + `recipeSource = operator_override`。
+    - task `ready` 但未创建 PipelineRun → 仍写 `pendingRecipe`，由
+      coordinator 在创建 PipelineRun 时灌入。
     - task `running_coding` 之后 → 抛 `RecipeOverrideLockedError`。
-  - `service.revokeAiReview({ reportId, operator })`：
+  - `service.revokeAiReview({ agentReportId, operator })`：
     - 不是 reviewer role → 抛 `RoleMismatchError`。
     - `mrPublication.status != "published"` → 抛 `NotRevocableError`。
     - 成功 → 调 `revokeReviewerMrComments`、AgentReport
       `mrPublication.status = "revoked"`。
+  - `service.retryAgentReport({ agentReportId, operator })`：
+    - reviewer / test_evidence → 复用当前 PipelineRun，创建新 AgentReport
+      （supersede 链）。
+    - coder → 创建新 PipelineRun（supersede 旧 PipelineRun），更新
+      `TaskNode.currentPipelineRunId`，清空 `TaskNode.last_cancelled_at`。
+  - `service.skipAgentReport({ agentReportId, operator })`：
+    - reviewer / test_evidence → 当前 AgentReport `cancelled`，
+      coordinator 推进到下一 role 或 `awaiting_human_review`。
+    - coder → 抛 `RoleSkipNotAllowedError`。
+  - `service.validateWorkflowRoles({ workflowId })` 调
+    `parseWorkflow` + role-profile 校验，输出 `{ valid, errors[] }`。
 - [ ] **Step 2-5**：实现。
 - [ ] **Step 6: Commit**：`feat(orchestrator): pipelines service exposes get/override/revoke`。
 
@@ -1210,24 +1389,53 @@ describe("resolveEffectiveRecipe", () => {
 - Modify: `apps/orchestrator/src/server/index.ts`
 - Modify: `apps/orchestrator/src/server/__tests__/server.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖（V4.6 routes 全部 200 / 400 / 404 / 409）：
-  - `GET /api/work-items/:wid/tasks/:tid/pipeline` → 200，缺 task →
-    404。
-  - `GET /api/pipelines/:pid` / `GET /api/work-items/:wid/tasks/:tid/agent-reports`
-    / `GET /api/pipelines/:pid/agent-reports` → 200 / 404。
-  - `POST /api/work-items/:wid/tasks/:tid/recipe-override` body =
+- [ ] **Step 1**：写失败测试覆盖（V4.6 routes 全部 200 / 400 / 404 / 409，
+  严格按 spec §18）：
+  - `GET /api/work-items/:wid/tasks/:tid/pipeline` → 200（含
+    `pipelineRun: null` 当未创建）；缺 task → 404 `task_not_found`。
+  - `GET /api/work-items/:wid/tasks/:tid/pipelines` → 200 返回历史列表
+    （含 supersede 关系）。
+  - `GET /api/agent-reports/:id` → 200 / 404。
+  - `GET /api/work-items/:wid/tasks/:tid/agent-reports` 支持
+    `?role=reviewer&include_superseded=true` query。
+  - `GET /api/pipeline-runs/:id/agent-reports`（注意 URL 用复数
+    `pipeline-runs`，与 spec §18.2 一致） → 200 / 404。
+  - `POST /api/work-items/:wid/tasks/:tid/pipeline/recipe-override`
+    （**路径必须含 `/pipeline/` 段**）body =
     `{ recipe: "coding_plus_reviewer" }`：
-    - 任务 `planned` → 200 + `pendingRecipe` updated。
+    - 任务 `planned` / `blocked_by_dependency` → 200 + `pendingRecipe` updated +
+      `pendingRecipeSource = "operator_override"`。
     - 任务 `ready` 且 PipelineRun draft 存在 → 200 + PipelineRun.recipe
-      updated。
-    - 任务 `running_coding` → 409 `recipe_override_locked`。
+      updated + `recipeSource = "operator_override"`。
+    - 任务 `ready` 但 PipelineRun 尚未创建 → 仍写 `pendingRecipe`，
+      orchestrator 在创建 PipelineRun 时灌入并清空 pendingRecipe。
+    - 任务 `running_coding` 或之后 → 409 `recipe_override_locked`。
     - 未知 recipe → 400 `unknown_recipe`。
-  - `POST /api/agent-reports/:rid/revoke-ai-review`：
-    - reviewer role + published → 200。
+  - `POST /api/agent-reports/:id/revoke-ai-review`：
+    - reviewer role + `mrPublication.status = "published"` → 200，
+      AgentReport.mrPublication.status → `"revoked"`，noteIds 在
+      GitLab 上被删除。
     - 非 reviewer role → 400 `role_mismatch`。
-    - 非 published → 409 `not_revocable`。
+    - 非 published（`pending` / `publish_failed` / `revoked` /
+      `skipped_by_config`）→ 409 `not_revocable`。
+  - `POST /api/agent-reports/:id/retry`：
+    - reviewer / test_evidence retry → 200，**复用同一个 PipelineRun**，
+      新 AgentReport 与旧的 supersede 互相引用。
+    - coder retry → 200，**创建新的 PipelineRun**（supersede 旧
+      PipelineRun）；旧 PipelineRun.status 保持 `cancelled` /
+      `awaiting_rework` / `failed`；TaskNode.currentPipelineRunId
+      更新；同时清空 `TaskNode.last_cancelled_at`（允许 auto_advance）。
+  - `POST /api/agent-reports/:id/skip`：
+    - reviewer / test_evidence → 200，AgentReport.status `cancelled`
+      lastError.code = `pipeline_cancelled` message
+      `skipped_by_operator`；coordinator 把当前 role step 视为完成并
+      自动进入下一 role（或 `awaiting_human_review`）。
+    - coder skip → 400 `role_skip_not_allowed`。
+  - `GET /api/workflows/:workflowId/roles/validate` → 200 +
+    `{ valid: boolean, errors: Array<{ code, message }> }`。
   - team 模式：缺 `x-issuepilot-project` → 400 `project_required`；显式
-    传 `project` query → 400 `project_query_not_allowed`。
+    传 `project` query → 400 `project_query_not_allowed`（沿用 V4.4 /
+    V4.5 团队隔离规则）。
 - [ ] **Step 2-5**：实现 routes + server wiring。
 - [ ] **Step 6: Commit**：`feat(orchestrator): expose V4.6 pipeline routes via Fastify`。
 
@@ -1299,7 +1507,17 @@ describe("resolveEffectiveRecipe", () => {
 
 ### Task 10.3：V4.5 `ImprovementTargetKind` 加 `role_configuration`
 
-**Files:**
+> **依赖警告**：本 task 假设 V4.5 Improvement Loop 实现 PR 已合并到
+> `origin/main`（即 `packages/shared-contracts/src/improvement.ts` 与
+> `apps/orchestrator/src/improvements/` 存在）。截至本 plan 提交时
+> 仓库主线只有 V4.5 docs，因此：
+>
+> - 若 V4.5 实现 PR 尚未合并，本 task 整体降级为 `it.skipIf(!fs.existsSync(...))`
+>   的占位测试，不阻塞 Phase 10 收口；V4.6 PR 描述需要加
+>   `Blocked-by: V4.5 implementation PR`，并在合并后单独补丁。
+> - 若 V4.5 已合并，按下述 step 1 写正常的失败测试。
+
+**Files（V4.5 已合并时为 `(modify)`，未合并时本 task 整体推迟）:**
 
 - Modify: `packages/shared-contracts/src/improvement.ts`
 - Modify: `packages/shared-contracts/src/__tests__/improvement.test.ts`
@@ -1308,7 +1526,7 @@ describe("resolveEffectiveRecipe", () => {
 - Modify: `apps/orchestrator/src/improvements/__tests__/templates.test.ts`
 - Modify: `apps/orchestrator/src/improvements/__tests__/engine.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖
+- [ ] **Step 1**：写失败测试覆盖（如 V4.5 未合并则全部 skipIf）
   - contract：`ImprovementTargetKind` 接受 `role_configuration`，
     type guard 同步更新；旧值仍合法。
   - templates：reviewer prompt / test_evidence prompt / role profile
@@ -1316,8 +1534,8 @@ describe("resolveEffectiveRecipe", () => {
   - engine：给定 quality summary 中 `reviewer_cannot_review` 出现 ≥3
     次 → 输出一条 `target.kind = "role_configuration"` 的
     `ImprovementRecommendation`。
-- [ ] **Step 2-5**：实现。
-- [ ] **Step 6: Commit**：`feat(improvements): support role_configuration target for V4.6 patterns`。
+- [ ] **Step 2-5**：实现（如 V4.5 未合并，仅占位）。
+- [ ] **Step 6: Commit**：`feat(improvements): support role_configuration target for V4.6 patterns`（如 V4.5 未合并，本 commit 留待 V4.5 落地后补）。
 
 ### Task 10.4：Phase 10 checkpoint
 
@@ -1335,13 +1553,29 @@ describe("resolveEffectiveRecipe", () => {
 - Modify: `apps/dashboard/lib/api.ts`
 - Modify: `apps/dashboard/lib/api.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖
-  - `getPipeline({ workItemId, taskId })` GET 正确 URL，带
+- [ ] **Step 1**：写失败测试覆盖（URL 严格按 spec §18）
+  - `getPipeline({ workItemId, taskId })` GET
+    `/api/work-items/:wid/tasks/:tid/pipeline`，带
     `x-issuepilot-project` header；错误时抛带 code 的 ApiError。
-  - `getAgentReports({ workItemId, taskId | pipelineId })` 两种形式
-    都覆盖。
-  - `setRecipeOverride({ workItemId, taskId, recipe })` POST + body。
-  - `revokeAiReview({ reportId })` POST。
+  - `listPipelines({ workItemId, taskId })` GET
+    `/api/work-items/:wid/tasks/:tid/pipelines`。
+  - `getAgentReport({ agentReportId })` GET `/api/agent-reports/:id`。
+  - `listTaskAgentReports({ workItemId, taskId, role?, includeSuperseded? })`
+    GET `/api/work-items/:wid/tasks/:tid/agent-reports`，含 query。
+  - `listPipelineRunAgentReports({ pipelineRunId })` GET
+    `/api/pipeline-runs/:id/agent-reports`（URL 用复数 `pipeline-runs`）。
+  - `setRecipeOverride({ workItemId, taskId, recipe })` POST
+    `/api/work-items/:wid/tasks/:tid/pipeline/recipe-override`（路径
+    含 `/pipeline/` 段）+ body。
+  - `revokeAiReview({ agentReportId })` POST
+    `/api/agent-reports/:id/revoke-ai-review`。
+  - `retryAgentReport({ agentReportId })` POST
+    `/api/agent-reports/:id/retry`。
+  - `skipAgentReport({ agentReportId })` POST
+    `/api/agent-reports/:id/skip`。
+  - `validateWorkflowRoles({ workflowId })` GET
+    `/api/workflows/:workflowId/roles/validate`。
+  - 全部带统一 `x-issuepilot-project` 处理 + 错误码到 i18n key 的映射。
 - [ ] **Step 2-5**：实现。
 - [ ] **Step 6: Commit**：`feat(dashboard): add V4.6 pipeline / agent-report / recipe / revoke API helpers`。
 
@@ -1406,12 +1640,24 @@ describe("resolveEffectiveRecipe", () => {
 - Create: `apps/dashboard/components/work-items/revoke-ai-review-button.tsx`
 - Create: `apps/dashboard/components/work-items/revoke-ai-review-button.test.tsx`
 
-- [ ] **Step 1**：写失败测试覆盖
-  - 仅 reviewer role 且 `mrPublication.status = "published"` 时按钮可见
-    + 可点。
+- [ ] **Step 1**：写失败测试覆盖（按钮可见性矩阵，spec §17.2）
+  - 仅 reviewer role 且 `mrPublication.status = "published"` 时按钮
+    可见 + 可点。
+  - `mrPublication.status` 在 `pending` / `publish_failed` / `revoked`
+    / `skipped_by_config` 四种情况时按钮**可见但 disabled**，且
+    tooltip 文案对应 i18n key：
+    - `pending` → `workItemPage.revoke.disabledReason.pending`
+    - `publish_failed` → `workItemPage.revoke.disabledReason.publishFailed`
+    - `revoked` → `workItemPage.revoke.disabledReason.alreadyRevoked`
+    - `skipped_by_config` → `workItemPage.revoke.disabledReason.skippedByConfig`
+  - `AgentReport.status ∈ {cancelled, failed, incomplete}` 但仍带
+    `mrPublication.status = published`（极端边界）→ 按钮可见可点，
+    单独 i18n tooltip 说明 "review run 不完整但 MR 已推送，撤回前请
+    确认"。
+  - 非 reviewer role → 按钮不渲染。
   - happy: 点击 → 调 `revokeAiReview` → 成功 → toast + button 变
     `revoked` 灰态。
-  - 失败：API 抛 409 not_revocable → toast 提示。
+  - 失败：API 抛 409 not_revocable → toast 提示对应 i18n 文案。
 - [ ] **Step 2-5**：实现。
 - [ ] **Step 6: Commit**：`feat(dashboard): add RevokeAiReviewButton with confirmation flow`。
 
@@ -1424,7 +1670,13 @@ describe("resolveEffectiveRecipe", () => {
 
 - [ ] **Step 1**：写失败测试覆盖
   - 当前 task 详情下方先 PipelineProgress，再 RecipeSelector + Recipe
-    helper tooltip，再 AgentReportTabs。
+    helper tooltip，再 AgentReportTabs + 每个 tab 内的 retry / skip 按钮
+    （reviewer / test_evidence 可 skip；coder 不可 skip → 按钮 disabled
+    并 i18n tooltip `roleSkipNotAllowed`）。
+  - retry 按钮在 AgentReport `failed` / `cancelled` / `complete` 时
+    都可见可点（coder retry 会创建新 PipelineRun，UI toast 显示
+    "已创建新 PipelineRun #<id>"；reviewer / test_evidence retry 复用
+    当前 PipelineRun）。
   - 若 task 没有 V4.6 数据（旧 task） → 渲染回退到旧 evidence tab
     + 提示「V4.6 数据不可用」。
 - [ ] **Step 2-5**：实现。
@@ -1465,10 +1717,27 @@ describe("resolveEffectiveRecipe", () => {
 - Modify: `apps/dashboard/i18n/messages/en.json`
 - Modify: 之前 task 中各组件的 test（覆盖 i18n key 渲染）
 
-- [ ] **Step 1**：写失败测试覆盖
-  - `workItemPage.pipeline.recipe.full_pipeline` 等 spec §17.6 列出的
-    全部 key 中英文都存在（用 vitest snapshot）。
-  - 缺 key → 测试 fail。
+- [ ] **Step 1**：写失败测试覆盖（spec §17.6 命名空间）
+  - 以下 key 在 `zh.json` 与 `en.json` 都存在，缺一即测试 fail：
+    - `workItemPage.pipeline.role.coder` / `reviewer` / `test_evidence`
+    - `workItemPage.pipeline.status.running_coding` /
+      `running_reviewer` / `running_test_evidence` /
+      `awaiting_human_review` / `awaiting_rework` / `partial` /
+      `failed` / `cancelled`
+    - `workItemPage.pipeline.recipe.full_pipeline` /
+      `coding_plus_reviewer` / `coding_only`
+    - `workItemPage.pipeline.action.retry` / `skip` / `cancel` /
+      `override_recipe` / `revoke_ai_review`
+    - `workItemPage.reviewer.decision.approve_with_comments` /
+      `request_changes` / `cannot_review`
+    - `workItemPage.evidence.status.complete` / `partial` /
+      `skipped_by_recipe` / `unavailable`
+    - `workItemPage.mr.publish.status.pending` / `published` /
+      `publish_failed` / `skipped_by_config` / `revoked`
+    - `workItemPage.roleFailure.<reason>`（与
+      `TASK_ROLE_FAILURE_REASON_VALUES` 全部对应）
+    - `workItemPage.revoke.disabledReason.pending` / `publishFailed`
+      / `alreadyRevoked` / `skippedByConfig`
 - [ ] **Step 2-5**：补齐 key。
 - [ ] **Step 6: Commit**：`feat(i18n): add V4.6 dashboard strings (zh + en)`。
 
@@ -1487,16 +1756,43 @@ describe("resolveEffectiveRecipe", () => {
 
 - Create: `apps/orchestrator/src/__tests__/v4-6-multi-agent-e2e.test.ts`
 
-- [ ] **Step 1**：写失败测试覆盖 spec §22.7 七个场景：
-  1. full_pipeline happy path → 三 AgentReport + awaiting_human_review。
-  2. reviewer request_changes 返工 → coder retry → reviewer approve。
-  3. test_evidence partial → evidenceStatus = partial。
-  4. reviewer cannot_review (token scope) → blocked + dashboard 指引。
-  5. sandbox_violation → failed + audit log。
-  6. cancel mid-pipeline → needs_rework + last_cancelled_at + auto_advance
-     skip。
-  7. coding_only recipe → coder only + WorkItemReport.evidenceStatus
-     = skipped_by_recipe。
+- [ ] **Step 1**：写失败测试覆盖 spec §22.7 七个核心场景 + V4.6 plan
+  补充的 retry / skip 分支：
+  1. full_pipeline happy path → 三 AgentReport + awaiting_human_review
+     + WorkItemReport.taskSummaries[].evidenceStatus = `complete`。
+  2. reviewer request_changes 返工 → reviewer AgentReport `complete`
+     + decision = `request_changes` + PipelineRun.status =
+     `awaiting_rework` + TaskNode `needs_rework` → operator 调
+     `/api/agent-reports/:id/retry` (role = coder) → 新 PipelineRun
+     supersede 旧 → reviewer 第二轮 approve_with_comments → 完成。
+  3. test_evidence partial → evidenceStatus = `partial`，
+     PipelineRun.status `partial`，TaskNode `awaiting_human_review`。
+  4. reviewer cannot_review (token scope 不足) → reviewer AgentReport
+     `failed` lastError.code `reviewer_cannot_review` → TaskNode
+     `blocked` reason `reviewer_cannot_review` → dashboard 指引 fix
+     token；§16.1 约定的 AgentReport 字段齐全（runId / promptTemplateHash
+     可为 null）。
+  5. sandbox_violation（reviewer agent 尝试写源码）→ Codex sandbox
+     拒绝 → AgentReport `failed` lastError.code `sandbox_violation`
+     → TaskNode `failed` reason `sandbox_violation`，dashboard 提示
+     查看 audit log。
+  6. cancel mid-pipeline（cancel 发生在 reviewer 跑期间）→ AgentReport
+     `cancelled` + event key `reviewer_cancelled` + TaskNode
+     `needs_rework` + `last_cancelled_at` 写入 + auto_advance skip 直
+     到 operator 显式触发新 PipelineRun（验证 retry coder 时
+     `last_cancelled_at` 被清空）。
+  7. coding_only recipe → coder only AgentReport 即进入
+     `awaiting_human_review`，WorkItemReport.taskSummaries[].evidenceStatus
+     = `skipped_by_recipe`。
+  额外场景（plan 补充，覆盖 retry / skip 路径）：
+  8. reviewer skip → operator 调 `/api/agent-reports/:id/skip`
+     (role = reviewer) → 当前 reviewer AgentReport `cancelled` →
+     coordinator 自动推进到 test_evidence；reviewer.summary 字段为
+     空，但 PipelineRun.status = `running_test_evidence`。
+  9. test_evidence retry → 在 test_evidence partial 之后 operator
+     调 `/api/agent-reports/:id/retry` (role = test_evidence) → 复用
+     同一 PipelineRun，新 AgentReport supersede 旧；第二轮全 collected
+     → evidenceStatus 从 `partial` 升级到 `complete`。
 - [ ] **Step 2-5**：用 fake codex lifecycle + fake GitLab adapter，
   share fixtures 与 V4.3 / V4.4 / V4.5 e2e。
 - [ ] **Step 6: Commit**：`test(orchestrator): V4.6 multi-agent pipeline e2e suite`。

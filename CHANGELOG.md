@@ -6,6 +6,54 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 10（V4.4 quality + V4.5 improvements 接入）**：
+  - `packages/shared-contracts/src/quality.ts`：`FAILURE_PATTERN_ID_VALUES`
+    新增 13 个 V4.6 增量值（`reviewer_unavailable` /
+    `reviewer_requested_changes` / `reviewer_cannot_review` /
+    `evidence_unavailable` / `evidence_partial` / `pipeline_cancelled` /
+    `pipeline_init_failed` / `role_profile_invalid` /
+    `runner_unavailable` / `coding_failed` / `sandbox_violation` /
+    `redaction_failed` / `storage_full`，与
+    `apps/orchestrator/src/pipelines/failure-mapping.ts` 保持一致）；
+    新增 `QualityByRoleSlice` 类型与可选 `QualitySummaryResponse.byRole`
+    字段（spec §17.4）。
+  - `apps/orchestrator/src/quality/patterns.ts`：新增
+    `classifyAgentFailure(report: AgentReport)`，按 spec §16.2 + reviewer
+    decision 输出 `{ patternId, bucket, reason }`；reviewer
+    `approve_with_comments` 视为非失败，`request_changes` / `cannot_review`
+    单独映射；test_evidence `incomplete` 无 lastError 兜底为
+    `evidence_partial`；其他 lastError 走 `toFailurePatternId`。
+  - `apps/orchestrator/src/quality/aggregate.ts`：新增
+    `buildByRoleSlice(agentReports)`，统计 coder / reviewer /
+    test_evidence 各 role 的成功率 / approve / cannot_review /
+    evidence_complete 等切片（spec §17.4 计算公式）；
+    `buildQualitySummary` 透传 `byRole`；新增 `PATTERN_LABELS` 13 项
+    V4.6 增量 label。
+  - `packages/shared-contracts/src/improvement.ts`：
+    `IMPROVEMENT_TARGET_KIND_VALUES` 加 `role_configuration`，对应 type
+    guard 接受新值（plan Task 10.3）。
+  - `apps/orchestrator/src/improvements/templates.ts`：补齐 13 条 V4.6
+    pattern 的 deterministic improvement template；reviewer / evidence
+    /sandbox / coder / role_profile_invalid 等 7 条把 `targetKind` 设为
+    `role_configuration`，其余兜底 `workflow_front_matter`。
+  - 测试：
+    - `packages/shared-contracts/src/__tests__/quality.test.ts` 扩展
+      `FAILURE_PATTERN_ID_VALUES` 全集断言 + `byRole` round-trip。
+    - `packages/shared-contracts/src/__tests__/improvement.test.ts`
+      增 `role_configuration` 断言。
+    - `apps/orchestrator/src/quality/__tests__/patterns.test.ts` 新增
+      7 例 `classifyAgentFailure` 覆盖（reviewer approve / cannot_review
+      / request_changes / scope_insufficient lastError /
+      test_evidence incomplete / sandbox_violation / coding_failed）。
+    - `apps/orchestrator/src/quality/__tests__/aggregate.test.ts` 新增
+      3 例 byRole 切片（5 reviewer 报告 / coder+test_evidence 混合 /
+      buildQualitySummary 透传）。
+    - `apps/orchestrator/src/improvements/__tests__/templates.test.ts`
+      新增 4 例覆盖 reviewer_cannot_review / role_profile_invalid /
+      sandbox_violation / pipeline_cancelled。
+  - 验证：`tsc -b` 干净；orchestrator 全套 857/857 ✓ + shared-contracts
+    144/144 ✓。Dashboard UI（Phase 11）紧接进行。
+
 - 2026-05-19 — **V4.6 Phase 9 Task 9.3（daemon 注入 pipeline service）**：
   - `apps/orchestrator/src/daemon.ts`：在 single 模式 daemon 中按需构造
     `PipelineStore` + `Coordinator`（agent runners 暂为 deterministic

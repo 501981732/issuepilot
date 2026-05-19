@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyQualityPatterns } from "../patterns.js";
+import { classifyAgentFailure, classifyQualityPatterns } from "../patterns.js";
 import type { QualitySourceItem } from "../types.js";
+import type {
+  AgentReport,
+  ReviewerAgentReport,
+  TestEvidenceAgentReport,
+  CoderAgentReport,
+} from "@issuepilot/shared-contracts";
 
 function runSource(
   over: Partial<Extract<QualitySourceItem, { kind: "run" }>>,
@@ -212,5 +218,166 @@ describe("classifyQualityPatterns", () => {
         }),
       ).map((p) => p.patternId),
     ).not.toContain("missing-tests");
+  });
+});
+
+function reviewerReport(
+  over: Partial<ReviewerAgentReport>,
+): ReviewerAgentReport {
+  return {
+    agentReportId: "ar-1",
+    pipelineRunId: "p-1",
+    taskId: "t-1",
+    role: "reviewer",
+    roleProfileId: "reviewer@v1",
+    status: "complete",
+    startedAt: "2026-05-19T00:00:00.000Z",
+    completedAt: "2026-05-19T00:00:10.000Z",
+    evidenceLinks: [],
+    redactedFields: [],
+    reviewer: {
+      summary: "LGTM",
+      decision: "approve_with_comments",
+      confidence: 0.91,
+      risks: [],
+      evidenceRequest: [],
+      findings: [],
+      inlineComments: [],
+      mrPublication: { status: "skipped_by_config", noteIds: [] },
+    },
+    ...over,
+  } as ReviewerAgentReport;
+}
+
+function testEvidenceReport(
+  over: Partial<TestEvidenceAgentReport>,
+): TestEvidenceAgentReport {
+  return {
+    agentReportId: "ar-2",
+    pipelineRunId: "p-1",
+    taskId: "t-1",
+    role: "test_evidence",
+    roleProfileId: "test_evidence@v1",
+    status: "complete",
+    startedAt: "2026-05-19T00:00:00.000Z",
+    completedAt: "2026-05-19T00:00:10.000Z",
+    evidenceLinks: [],
+    redactedFields: [],
+    testEvidence: { evidenceItems: [], baselineEvidence: null },
+    ...over,
+  } as TestEvidenceAgentReport;
+}
+
+function coderReport(over: Partial<CoderAgentReport>): CoderAgentReport {
+  return {
+    agentReportId: "ar-3",
+    pipelineRunId: "p-1",
+    taskId: "t-1",
+    role: "coder",
+    roleProfileId: "coder@v1",
+    status: "complete",
+    startedAt: "2026-05-19T00:00:00.000Z",
+    completedAt: "2026-05-19T00:00:10.000Z",
+    evidenceLinks: [],
+    redactedFields: [],
+    coder: { summary: "ok" },
+    ...over,
+  } as unknown as CoderAgentReport;
+}
+
+describe("classifyAgentFailure (V4.6)", () => {
+  it("returns null on reviewer approve_with_comments", () => {
+    expect(classifyAgentFailure(reviewerReport({}))).toBeNull();
+  });
+
+  it("maps reviewer cannot_review to reviewer_cannot_review pattern + configuration bucket", () => {
+    const result = classifyAgentFailure(
+      reviewerReport({
+        reviewer: {
+          summary: "scope insufficient",
+          decision: "cannot_review",
+          confidence: 0,
+          risks: [],
+          evidenceRequest: [],
+          findings: [],
+          inlineComments: [],
+          mrPublication: { status: "skipped_by_config", noteIds: [] },
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      patternId: "reviewer_cannot_review",
+      bucket: "configuration",
+    });
+  });
+
+  it("maps reviewer request_changes to reviewer_requested_changes pattern + reviewer bucket", () => {
+    const result = classifyAgentFailure(
+      reviewerReport({
+        reviewer: {
+          summary: "needs fix",
+          decision: "request_changes",
+          confidence: 0.42,
+          risks: [],
+          evidenceRequest: [],
+          findings: [],
+          inlineComments: [],
+          mrPublication: { status: "skipped_by_config", noteIds: [] },
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      patternId: "reviewer_requested_changes",
+      bucket: "reviewer",
+    });
+  });
+
+  it("maps lastError.scope_insufficient on reviewer-failed to reviewer_cannot_review", () => {
+    const result = classifyAgentFailure(
+      reviewerReport({
+        status: "failed",
+        lastError: {
+          code: "scope_insufficient",
+          message: "missing GitLab scope api",
+        },
+      }) as AgentReport,
+    );
+    expect(result?.patternId).toBe("reviewer_cannot_review");
+  });
+
+  it("maps test_evidence incomplete (no lastError) to evidence_partial", () => {
+    const result = classifyAgentFailure(
+      testEvidenceReport({ status: "incomplete" }),
+    );
+    expect(result?.patternId).toBe("evidence_partial");
+  });
+
+  it("maps sandbox_violation lastError on coder to sandbox_violation pattern + pipeline bucket", () => {
+    const result = classifyAgentFailure(
+      coderReport({
+        status: "failed",
+        lastError: {
+          code: "sandbox_violation",
+          message: "tried to write outside worktree",
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      patternId: "sandbox_violation",
+      bucket: "pipeline",
+    });
+  });
+
+  it("maps coding_failed lastError on coder to coding_failed + coder bucket", () => {
+    const result = classifyAgentFailure(
+      coderReport({
+        status: "failed",
+        lastError: { code: "coding_failed", message: "patch did not apply" },
+      }),
+    );
+    expect(result).toMatchObject({
+      patternId: "coding_failed",
+      bucket: "coder",
+    });
   });
 });

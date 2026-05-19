@@ -6,8 +6,14 @@ import type {
   QualitySummaryResponse,
 } from "@issuepilot/shared-contracts";
 
-import { buildQualitySummary } from "../aggregate.js";
+import { buildByRoleSlice, buildQualitySummary } from "../aggregate.js";
 import type { QualitySourceItem } from "../types.js";
+import type {
+  AgentReport,
+  CoderAgentReport,
+  ReviewerAgentReport,
+  TestEvidenceAgentReport,
+} from "@issuepilot/shared-contracts";
 
 function runSource(
   over: Partial<Extract<QualitySourceItem, { kind: "run" }>>,
@@ -280,5 +286,130 @@ describe("buildQualitySummary", () => {
       diagnostics: { invalidReportCount: 3 },
     });
     expect(result.diagnostics.invalidReportCount).toBe(3);
+  });
+
+  it("V4.6 byRole slice: 5 reviewer reports (3 approve / 1 request_changes / 1 cannot_review)", () => {
+    const reviewerBase: ReviewerAgentReport = {
+      agentReportId: "r-base",
+      pipelineRunId: "p-1",
+      taskId: "t-1",
+      role: "reviewer",
+      roleProfileId: "reviewer@v1",
+      status: "complete",
+      startedAt: "2026-05-19T00:00:00.000Z",
+      completedAt: "2026-05-19T00:00:10.000Z",
+      evidenceLinks: [],
+      redactedFields: [],
+      reviewer: {
+        summary: "LGTM",
+        decision: "approve_with_comments",
+        confidence: 0.91,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+        mrPublication: { status: "skipped_by_config", noteIds: [] },
+      },
+    };
+    const make = (
+      id: string,
+      decision: "approve_with_comments" | "request_changes" | "cannot_review",
+    ): ReviewerAgentReport => ({
+      ...reviewerBase,
+      agentReportId: id,
+      reviewer: { ...reviewerBase.reviewer, decision },
+    });
+    const reports: AgentReport[] = [
+      make("r1", "approve_with_comments"),
+      make("r2", "approve_with_comments"),
+      make("r3", "approve_with_comments"),
+      make("r4", "request_changes"),
+      make("r5", "cannot_review"),
+    ];
+    const slice = buildByRoleSlice(reports);
+    expect(slice.reviewerApproveRate).toBe(60);
+    expect(slice.reviewerCannotReviewRate).toBe(20);
+    expect(slice.reviewerUnavailableRate).toBe(0);
+    expect(slice.counts?.reviewerApprove).toBe(3);
+    expect(slice.counts?.reviewerRequestChanges).toBe(1);
+    expect(slice.counts?.reviewerCannotReview).toBe(1);
+    expect(slice.coderSuccessRate).toBeUndefined();
+    expect(slice.testEvidenceCompleteRate).toBeUndefined();
+  });
+
+  it("V4.6 byRole slice: coder + test_evidence mixed", () => {
+    const coder = (id: string, status: CoderAgentReport["status"]): CoderAgentReport => ({
+      agentReportId: id,
+      pipelineRunId: "p-1",
+      taskId: "t-1",
+      role: "coder",
+      roleProfileId: "coder@v1",
+      status,
+      startedAt: "2026-05-19T00:00:00.000Z",
+      completedAt: "2026-05-19T00:00:10.000Z",
+      evidenceLinks: [],
+      redactedFields: [],
+      coder: { summary: "ok" },
+    } as unknown as CoderAgentReport);
+    const te = (
+      id: string,
+      status: TestEvidenceAgentReport["status"],
+    ): TestEvidenceAgentReport => ({
+      agentReportId: id,
+      pipelineRunId: "p-1",
+      taskId: "t-1",
+      role: "test_evidence",
+      roleProfileId: "test_evidence@v1",
+      status,
+      startedAt: "2026-05-19T00:00:00.000Z",
+      completedAt: "2026-05-19T00:00:10.000Z",
+      evidenceLinks: [],
+      redactedFields: [],
+      testEvidence: { evidenceItems: [], baselineEvidence: null },
+    } as TestEvidenceAgentReport);
+    const reports: AgentReport[] = [
+      coder("c1", "complete"),
+      coder("c2", "complete"),
+      coder("c3", "failed"),
+      te("t1", "complete"),
+      te("t2", "incomplete"),
+    ];
+    const slice = buildByRoleSlice(reports);
+    expect(slice.coderSuccessRate).toBe(67);
+    expect(slice.testEvidenceCompleteRate).toBe(50);
+    expect(slice.testEvidencePartialRate).toBe(50);
+  });
+
+  it("V4.6 buildQualitySummary echoes byRole when agentReports is provided", () => {
+    const reviewer: ReviewerAgentReport = {
+      agentReportId: "r1",
+      pipelineRunId: "p-1",
+      taskId: "t-1",
+      role: "reviewer",
+      roleProfileId: "reviewer@v1",
+      status: "complete",
+      startedAt: "2026-05-19T00:00:00.000Z",
+      completedAt: "2026-05-19T00:00:10.000Z",
+      evidenceLinks: [],
+      redactedFields: [],
+      reviewer: {
+        summary: "ok",
+        decision: "approve_with_comments",
+        confidence: 0.9,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+        mrPublication: { status: "skipped_by_config", noteIds: [] },
+      },
+    };
+    const result = buildQualitySummary({
+      items: [],
+      filters: baseFilters,
+      scope: { mode: "single-project" },
+      diagnostics: { invalidReportCount: 0 },
+      agentReports: [reviewer],
+    });
+    expect(result.byRole?.reviewerApproveRate).toBe(100);
   });
 });

@@ -1,14 +1,18 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, it, expect } from "vitest";
 
-import { parseWorkflowFile } from "../parse.js";
+import { parseWorkflowFile, parseWorkflowString } from "../parse.js";
 import {
   expandHomePath,
   expandWorkflowPaths,
+  resolveRolePromptHashes,
   resolveTrackerSecret,
+  resolveWorkflow,
+  RoleProfileInvalidError,
   validateWorkflowEnv,
   WorkflowConfigError,
 } from "../resolve.js";
@@ -132,5 +136,131 @@ describe("resolveTrackerSecret", () => {
       expect(e).toBeInstanceOf(WorkflowConfigError);
       expect((e as WorkflowConfigError).path).toBe("tracker.token_env");
     }
+  });
+});
+
+describe("V4.6 role prompt template hashing", () => {
+  const baseWorkflowRaw = (rolesYaml: string): string => `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+${rolesYaml}---
+prompt body
+`;
+
+  const writeAllRolePrompts = async (
+    dir: string,
+    overrides: Partial<Record<"coder" | "reviewer" | "test_evidence", string>> = {},
+  ): Promise<void> => {
+    const all = {
+      coder: { rel: "coder.md", body: "coder default" },
+      reviewer: { rel: "reviewer.md", body: "reviewer default" },
+      test_evidence: { rel: "test-evidence.md", body: "evidence default" },
+      ...overrides,
+    } as Record<string, { rel: string; body: string } | string>;
+    for (const value of Object.values(all)) {
+      if (typeof value === "string") continue;
+      await writeFile(path.join(dir, value.rel), value.body, "utf8");
+    }
+  };
+
+  it("给同一文件两次 resolve 返回稳定 sha256", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "issuepilot-resolve-"));
+    const reviewerPath = path.join(dir, "reviewer.md");
+    await writeFile(reviewerPath, "Review the following diff strictly.\n", "utf8");
+    // 为默认 coder / test_evidence profile 准备相对路径文件，避免它们因 fallback 触发缺失。
+    await writeFile(path.join(dir, "prompts-coder.md"), "coder", "utf8");
+    const cfg = parseWorkflowString(
+      baseWorkflowRaw(`roles:
+  coder:
+    prompt_template: "prompts-coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    prompt_template: "reviewer.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    prompt_template: "evidence.md"
+    sandbox: read_only_source_write_evidence
+`),
+      path.join(dir, "WORKFLOW.md"),
+    );
+    await writeFile(path.join(dir, "evidence.md"), "evidence", "utf8");
+    const r1 = await resolveRolePromptHashes(cfg, dir);
+    const r2 = await resolveRolePromptHashes(cfg, dir);
+    expect(r1.reviewer?.promptTemplateHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(r1.reviewer?.promptTemplateHash).toBe(
+      r2.reviewer?.promptTemplateHash,
+    );
+    expect(path.isAbsolute(r1.reviewer?.promptTemplate ?? "")).toBe(true);
+  });
+
+  it("缺失 prompt template 抛 RoleProfileInvalidError 带 role + 绝对路径", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "issuepilot-resolve-"));
+    await writeFile(path.join(dir, "coder.md"), "coder", "utf8");
+    await writeFile(path.join(dir, "test-evidence.md"), "evidence", "utf8");
+    const cfg = parseWorkflowString(
+      baseWorkflowRaw(`roles:
+  coder:
+    prompt_template: "coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    prompt_template: "missing.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    prompt_template: "test-evidence.md"
+    sandbox: read_only_source_write_evidence
+`),
+      path.join(dir, "WORKFLOW.md"),
+    );
+    try {
+      await resolveRolePromptHashes(cfg, dir);
+      expect.fail("expected RoleProfileInvalidError");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(RoleProfileInvalidError);
+      const err = cause as RoleProfileInvalidError;
+      expect(err.role).toBe("reviewer");
+      expect(path.isAbsolute(err.promptTemplatePath)).toBe(true);
+      expect(err.promptTemplatePath).toContain("missing.md");
+    }
+  });
+
+  it("resolveWorkflow 一次返回带 promptTemplateHash 与展开路径的 cfg", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "issuepilot-resolve-"));
+    await writeFile(path.join(dir, "coder.md"), "coder prompt", "utf8");
+    await writeFile(path.join(dir, "reviewer.md"), "reviewer prompt", "utf8");
+    await writeFile(
+      path.join(dir, "test-evidence.md"),
+      "evidence prompt",
+      "utf8",
+    );
+    const cfg = parseWorkflowString(
+      baseWorkflowRaw(`roles:
+  coder:
+    prompt_template: "coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    prompt_template: "reviewer.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    prompt_template: "test-evidence.md"
+    sandbox: read_only_source_write_evidence
+`),
+      path.join(dir, "WORKFLOW.md"),
+    );
+    const resolved = await resolveWorkflow(cfg, dir);
+    expect(resolved.roles.coder?.promptTemplateHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(resolved.roles.reviewer?.promptTemplateHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+    expect(resolved.roles.test_evidence?.promptTemplateHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+    // 路径已展开为绝对
+    expect(path.isAbsolute(resolved.roles.coder?.promptTemplate ?? "")).toBe(
+      true,
+    );
   });
 });

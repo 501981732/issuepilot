@@ -72,6 +72,12 @@ export const isReviewerSeverityThreshold = (
 export interface WorkflowRoleConfigBase {
   role: AgentRole;
   promptTemplate: string;
+  /**
+   * Resolve 阶段计算并填入的 prompt template sha256。orchestrator 在
+   * AgentReport 中写入此 hash 供复现追溯（spec §8.2 / §10）。
+   * parse 阶段为 undefined，由 `packages/workflow/resolve.ts` 填充。
+   */
+  promptTemplateHash?: string;
   sandbox: WorkflowSandbox;
   tools?: WorkflowToolGrant[];
   timeoutSeconds?: number;

@@ -1,9 +1,35 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
+
+import type {
+  AgentRole,
+  WorkflowRoleConfig,
+  WorkflowRolesConfig,
+} from "@issuepilot/shared-contracts";
 
 import { WorkflowConfigError } from "./parse.js";
 import type { WorkflowConfig } from "./types.js";
 
 export { WorkflowConfigError } from "./parse.js";
+
+/**
+ * V4.6 spec §10：role profile 缺失或不可读时抛出，
+ * orchestrator 据此把 TaskNode 标 `role_profile_invalid`。
+ */
+export class RoleProfileInvalidError extends Error {
+  override readonly name = "RoleProfileInvalidError";
+
+  constructor(
+    message: string,
+    public readonly role: AgentRole,
+    public readonly promptTemplatePath: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
 
 export type EnvLike = Record<string, string | undefined>;
 
@@ -116,4 +142,66 @@ export function resolveTrackerSecret(
     );
   }
   return { token: value };
+}
+
+/**
+ * V4.6 spec §10 / Task 2.4：读取每个 role 的 prompt_template 文件并计算
+ * sha256。
+ *
+ * - `configRoot` 是 workflow YAML 所在目录的绝对路径（用于解析相对
+ *   `prompt_template` 路径）。
+ * - 缺失文件抛 `RoleProfileInvalidError`（带 role + 绝对路径）。
+ * - 同一文件两次调用返回相同 hash（稳定）。
+ */
+export async function resolveRolePromptHashes(
+  cfg: WorkflowConfig,
+  configRoot: string,
+): Promise<WorkflowRolesConfig> {
+  const out: WorkflowRolesConfig = {};
+  const order: AgentRole[] = ["coder", "reviewer", "test_evidence"];
+  for (const role of order) {
+    const profile = cfg.roles[role];
+    if (!profile) continue;
+    const resolvedPath = path.isAbsolute(profile.promptTemplate)
+      ? profile.promptTemplate
+      : path.resolve(configRoot, profile.promptTemplate);
+    let contents: string;
+    try {
+      contents = await readFile(resolvedPath, "utf8");
+    } catch (cause) {
+      throw new RoleProfileInvalidError(
+        `role ${role} prompt_template not readable: ${resolvedPath}`,
+        role,
+        resolvedPath,
+        { cause },
+      );
+    }
+    const hash = createHash("sha256").update(contents, "utf8").digest("hex");
+    const enriched = {
+      ...profile,
+      promptTemplate: resolvedPath,
+      promptTemplateHash: hash,
+    } as unknown as WorkflowRoleConfig;
+    if (enriched.role === "coder") {
+      out.coder = enriched;
+    } else if (enriched.role === "reviewer") {
+      out.reviewer = enriched;
+    } else if (enriched.role === "test_evidence") {
+      out.test_evidence = enriched;
+    }
+  }
+  return out;
+}
+
+/**
+ * 一次性 resolve：把路径展开 + role prompt hash 都填好的 WorkflowConfig
+ * 返回。`configRoot` 留给上层自行决定（central / single 模式各取一处）。
+ */
+export async function resolveWorkflow(
+  cfg: WorkflowConfig,
+  configRoot: string,
+): Promise<WorkflowConfig> {
+  const expanded = expandWorkflowPaths(cfg);
+  const roles = await resolveRolePromptHashes(expanded, configRoot);
+  return { ...expanded, roles };
 }

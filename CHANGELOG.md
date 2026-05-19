@@ -6,6 +6,31 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 2（workflow YAML 扩展）**：
+  - `packages/workflow/src/types.ts`：`WorkflowConfig` 新增
+    `defaultRecipe` / `roles` / `warnings`；`TrackerConfig` 新增
+    `tokenScopeRequirements`；新增 `WorkflowConfigWarning`。
+  - `packages/workflow/src/parse.ts`：`WorkflowFrontMatterSchema` 加
+    `default_recipe` / `roles` / `tracker.token_scope_requirements`；
+    构造期通过 shared-contracts 的 `parseRoleConfig` 把 YAML
+    snake_case 映射成 TS camelCase；缺 `roles.*` 时 fallback 到内置
+    `DEFAULT_ROLES_CONFIG` 并 emit `role_default_used` warning；
+    `default_recipe` 缺省时 fallback 到 `full_pipeline` 并 emit
+    `default_recipe_missing` warning；非法 sandbox / tool / allow
+    通配等 shared-contracts 抛出的 `WorkflowConfigError` 被包成
+    `WorkflowConfigError(path = roles.<role>)`。
+  - `packages/workflow/src/resolve.ts`：新增 `RoleProfileInvalidError`、
+    `resolveRolePromptHashes(cfg, configRoot)` 把 role profile 中的
+    `promptTemplate` 路径解析为绝对路径并写 `promptTemplateHash`
+    （sha256，稳定）；新增 `resolveWorkflow(cfg, configRoot)` 一次
+    完成路径展开 + role prompt hash。
+  - `packages/shared-contracts/src/workflow-role.ts`：`WorkflowRoleConfigBase`
+    新增 `promptTemplateHash?: string`（resolve 阶段填充）。
+  - 测试：`packages/workflow/src/__tests__/parse.test.ts` 新增 9 条
+    V4.6 用例覆盖 default_recipe / roles / tools.allow / sandbox /
+    tracker.token_scope_requirements；`resolve.test.ts` 新增 3 条
+    覆盖 prompt template hashing + RoleProfileInvalidError。`tsc -b`
+    干净，`vitest run` 全 71 用例绿。
 - 2026-05-19 — **V4.6 Phase 1（shared contracts 基础）**：
   - `packages/shared-contracts/src/agent-report.ts`：新增 `AgentRole` /
     `AgentReportStatus` / `LastErrorCode`（15 项 truth source）/

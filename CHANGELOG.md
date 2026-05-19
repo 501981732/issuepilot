@@ -2,6 +2,10 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.5 Workflow / Skills Improvement Loop
+
+- Added the V4.5 implementation plan for evidence-backed improvement recommendations, operator review actions, and inert patch previews.
+
 ## [Unreleased] V4.4 Quality Analytics
 
 ### Added

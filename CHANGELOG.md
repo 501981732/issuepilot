@@ -6,6 +6,31 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 6 Task 6.1（Coder Agent 包装）**：
+  - `apps/orchestrator/src/agents/coder.ts`：实现 `createCoderAgent({lifecycle})`
+    把 `CoderLifecycleRunner`（DI）的执行结果折叠成
+    `CoderAgentReport`。状态映射：
+    - lifecycle completed → AgentReport `status="complete"`，写入
+      `runId` / `promptTemplateHash` / `coder.{diffSummary,branch,
+      buildStatus,testStatus,lintStatus,mergeRequest,runReportArtifactId}`，
+      并把 RunReportArtifact 链接挂在 `evidenceLinks[]`。
+    - lifecycle failed（带 `lastErrorCode + partial`）→ AgentReport
+      `status="failed"` 透传部分字段。
+    - lifecycle 抛 `RunnerUnavailableError` / `SandboxViolationError` /
+      其他 Error → AgentReport `status="failed"`，`lastError.code`
+      分别映射为 `runner_unavailable` / `sandbox_violation` /
+      `coding_failed`（spec §16.2）。
+    - lifecycle cancelled → `AgentRunResult.kind="cancelled"`，由
+      coordinator 把 PipelineRun 标 cancelled。
+  - 测试：`apps/orchestrator/src/agents/__tests__/coder.test.ts` 6 例
+    覆盖 happy / runner_unavailable / sandbox_violation / 普通错误
+    / outcome.failed 含 partial / cancellation。orchestrator 整套
+    744 用例全绿；`tsc --noEmit` + `eslint src/agents --max-warnings 0`
+    干净。
+  - Task 6.2（V4.2 dispatch 切换到 coordinator）涉及 daemon.ts / dispatch
+    / orchestration 大幅重构，与 Phase 9 daemon wiring 合并实施；本
+    commit 暂未替换 V4.2 dispatch 入口。
+
 - 2026-05-19 — **V4.6 Phase 5（Pipeline Coordinator + Auto Advance + TaskNode 迁移）**：
   - `apps/orchestrator/src/work-items/store.ts`：读路径加 V4.6 TaskNode
     migration（`legacyRunningStateToV46`），把旧版 `status="running"` 升级到

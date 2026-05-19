@@ -6,6 +6,40 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 4（Recipe + Role Profile + Failure Mapping）**：
+  - `apps/orchestrator/src/pipelines/recipe.ts`：
+    `resolveEffectiveRecipe({workflowDefault, pendingRecipe, pipelineRecipe})`
+    返回 in-memory 三态 `{recipe, source}`：`workflow_default` /
+    `task_pending` / `pipeline_locked`；`toPipelineRunRecipeSource` 把
+    `task_pending` 折成落盘的 `operator_override`，`pipeline_locked`
+    显式抛错避免重复落盘；`recipeRoles` / `recipeFinalRole` 给出三个
+    recipe 的有序角色列表。未知 recipe 抛 `UnknownRecipeError`。
+  - `apps/orchestrator/src/pipelines/role-profile.ts`：
+    `renderPromptTemplate` 支持最小 Mustache 风格 `{{path.to.var}}`，
+    snake_case key 自动映射 camelCase（`work_item.iid` → `workItem.iid`），
+    缺失变量保留 `[missing: …]` 占位；`buildRoleProfile({role, workItem,
+    task, extra})` 读 prompt 文件 + 渲染 + 组装 sandbox / toolAllow /
+    timeoutSeconds / tokenScopeRequirements / promptTemplateHash /
+    roleProfileId（格式 `<role>@<hash7>`）；reviewer 角色透传 publishToMr
+    / severityThreshold / maxInlineComments 并补默认值（`true` /
+    `medium` / `25`）；缺 prompt 文件、文件不可读、resolve 未跑导致
+    hash 缺失 → `RoleProfileInvalidError`（带 role / reason 字段）。
+  - `apps/orchestrator/src/pipelines/failure-mapping.ts`：spec §16.2 /
+    §21.1 单一 truth source。`toTaskNodeReason(code, role, ctx)` /
+    `toEventKey(code, role, ctx)` / `toFailurePatternId(code)` 把 15 项
+    `LastErrorCode` 映射到 TaskNode reason / event key / pattern id；
+    `prompt_template_missing` 按 phase 拆分（role_profile_init →
+    `role_profile_invalid`，agent_start → `reviewer_cannot_review`），
+    `runner_unavailable` 按 role 拆分，`pipeline_cancelled` 按
+    PipelineRun.status 拆分 event key 与 TaskNode reason（draft 阶段
+    cancel 不写 reason），`gitlab_rate_limited` 全部返回 null（fail-soft），
+    `sandbox_violation` 全 role 都映射 `sandbox_violation`；未知 code
+    → `UnsupportedFailureMappingError`；exhaustive switch + `never`
+    哨兵保证新增 code 必须先扩 mapping 才能编译过。
+  - 测试：`recipe.test.ts`（10 例）、`role-profile.test.ts`（8 例）、
+    `failure-mapping.test.ts`（49 例）。orchestrator 整套 713 用例全
+    绿，`tsc --noEmit`、`eslint src/pipelines --max-warnings 0` 干净。
+
 - 2026-05-19 — **V4.6 Phase 3（Pipeline Store + AgentReport Store）**：
   - `apps/orchestrator/src/pipelines/store.ts` 新增 `PipelineStore`、
     `createPipelineStore`、`createPipelineStoresByProject`、

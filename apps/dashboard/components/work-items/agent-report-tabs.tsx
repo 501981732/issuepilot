@@ -129,7 +129,7 @@ function CoderPanel({ report }: { report: CoderAgentReport }) {
         <Badge tone={statusTone(report.status)}>{report.status}</Badge>
       </header>
       <p className="whitespace-pre-wrap text-sm text-fg">
-        {(report.coder as { summary?: string })?.summary ?? ""}
+        {report.coder.diffSummary}
       </p>
       {report.lastError ? (
         <p className="text-xs text-danger-fg" data-testid="coder-lastError">

@@ -28,7 +28,7 @@ function coderReport(over: Partial<CoderAgentReport> = {}): CoderAgentReport {
     ...baseFields,
     role: "coder",
     status: "complete",
-    coder: { summary: "wrote tests + diff" } as unknown,
+    coder: { diffSummary: "wrote tests + diff" } as unknown,
     ...over,
   } as CoderAgentReport;
 }
@@ -158,6 +158,21 @@ describe("AgentReportTabs (V4.6)", () => {
     expect(screen.getByTestId("coder-panel")).toBeInTheDocument();
     expect(screen.getByTestId("coder-lastError").textContent).toMatch(
       /coding_failed/,
+    );
+  });
+
+  it("V4.6 fix: CoderPanel reads CoderAgentReportPayload.diffSummary", () => {
+    render(
+      <AgentReportTabs
+        reports={{
+          coder: coderReport({
+            coder: { diffSummary: "wrote 12 files + tests" } as unknown,
+          } as Partial<CoderAgentReport>),
+        }}
+      />,
+    );
+    expect(screen.getByTestId("coder-panel").textContent).toMatch(
+      /wrote 12 files \+ tests/,
     );
   });
 });

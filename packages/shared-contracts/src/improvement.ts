@@ -82,6 +82,7 @@ export type ImprovementAction =
   | "accepted"
   | "rejected"
   | "deferred"
+  | "superseded"
   | "patch_preview_generated";
 
 export interface ImprovementActionHistoryEntry {

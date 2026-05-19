@@ -4,12 +4,14 @@ import type {
   FailurePatternId,
   ImprovementEvidenceRef,
   ImprovementRecommendation,
+  ImprovementRecommendationStatus,
   QualityDrilldownItem,
 } from "@issuepilot/shared-contracts";
 
 import { templateForPattern } from "./templates.js";
 import type {
   BuildImprovementRecommendationsInput,
+  BuildImprovementRecommendationsResult,
   PatternCluster,
 } from "./types.js";
 
@@ -87,9 +89,38 @@ function clustersFor(
   return [...clusters.values()];
 }
 
+type DedupeBehavior = "merge" | "supersede" | "skip";
+
+/**
+ * Decide how an existing recommendation should interact with a freshly
+ * generated one in the same cluster (spec §9.2).
+ *
+ * - `open` / `deferred` / `blocked` / `stale`: still actionable, merge the
+ *   new evidence into the existing record (keep id, keep history).
+ * - `accepted` / `rejected`: terminal operator decision. Emit a brand new
+ *   recommendation that `supersedes` the old one so the audit trail and the
+ *   operator's prior choice are preserved.
+ * - `superseded`: already replaced by a newer record; skip emit (the newer
+ *   record will be re-emitted by the same loop pass if it's still relevant).
+ */
+function behaviorFor(status: ImprovementRecommendationStatus): DedupeBehavior {
+  switch (status) {
+    case "open":
+    case "deferred":
+    case "blocked":
+    case "stale":
+      return "merge";
+    case "accepted":
+    case "rejected":
+      return "supersede";
+    case "superseded":
+      return "skip";
+  }
+}
+
 export function buildImprovementRecommendations(
   input: BuildImprovementRecommendationsInput,
-): ImprovementRecommendation[] {
+): BuildImprovementRecommendationsResult {
   const now = input.now ?? (() => new Date());
   const timestamp = iso(now);
   const existingByKey = new Map<string, ImprovementRecommendation>();
@@ -101,15 +132,19 @@ export function buildImprovementRecommendations(
       targetKind: recommendation.target.kind,
       patternId: recommendation.problemPattern,
     });
+    // Newer records win when multiple share a cluster key (the store sorts by
+    // updatedAt desc on list, but defensively prefer the latest here too).
+    const current = existingByKey.get(key);
     if (
-      recommendation.status === "open" ||
-      recommendation.status === "deferred"
+      !current ||
+      current.updatedAt.localeCompare(recommendation.updatedAt) < 0
     ) {
       existingByKey.set(key, recommendation);
     }
   }
 
   const next: ImprovementRecommendation[] = [];
+  const supersededIds: string[] = [];
   for (const pattern of input.summary.failurePatterns) {
     const template = templateForPattern(pattern.patternId);
     for (const cluster of clustersFor(
@@ -126,18 +161,37 @@ export function buildImprovementRecommendations(
         patternId: pattern.patternId,
       });
       const existing = existingByKey.get(key);
-      const refs = uniqueEvidence([
-        ...(existing?.evidenceRefs ?? []),
-        ...cluster.items.map(evidenceRef),
-      ]);
+      const behavior = existing ? behaviorFor(existing.status) : "merge";
+      if (behavior === "skip") continue;
+
+      const targetPath = input.resolveTargetPath
+        ? input.resolveTargetPath({ template, cluster, projectId })
+        : undefined;
+      const isSupersede = behavior === "supersede";
+      const baseRefs = isSupersede
+        ? cluster.items.map(evidenceRef)
+        : [...(existing?.evidenceRefs ?? []), ...cluster.items.map(evidenceRef)];
+      const refs = uniqueEvidence(baseRefs);
       const recommendationId =
-        existing?.recommendationId ??
-        stableId([
-          projectId,
-          cluster.workflow ?? "",
-          cluster.taskType ?? "",
-          key,
-        ]);
+        !isSupersede && existing
+          ? existing.recommendationId
+          : stableId([
+              projectId,
+              cluster.workflow ?? "",
+              cluster.taskType ?? "",
+              key,
+              isSupersede ? `superseding:${existing!.recommendationId}` : "",
+              isSupersede ? timestamp : "",
+            ]);
+      const carriedSupersedes: string[] = [];
+      if (isSupersede && existing) {
+        carriedSupersedes.push(existing.recommendationId);
+        for (const id of existing.supersedes ?? []) {
+          if (!carriedSupersedes.includes(id)) carriedSupersedes.push(id);
+        }
+        supersededIds.push(existing.recommendationId);
+      }
+      const reuseExisting = !isSupersede && existing;
       next.push({
         recommendationId,
         projectId,
@@ -155,23 +209,38 @@ export function buildImprovementRecommendations(
         target: {
           kind: template.targetKind,
           description: template.title,
+          ...(targetPath ? { path: targetPath } : {}),
         },
         evidenceRefs: refs,
         suggestedChange: template.suggestedChange,
-        patchPreview: existing?.patchPreview ?? {
-          status: "not_generated",
-          targetDescription: template.title,
-        },
+        patchPreview: reuseExisting
+          ? existing!.patchPreview
+          : {
+              status: "not_generated",
+              targetDescription: template.title,
+            },
         confidence: confidence(refs.length),
         risk: template.risk,
-        status: existing?.status ?? "open",
-        actionHistory: existing?.actionHistory ?? [
-          { action: "generated", actor: "system", at: timestamp },
-        ],
-        createdAt: existing?.createdAt ?? timestamp,
+        status: reuseExisting ? existing!.status : "open",
+        actionHistory: reuseExisting
+          ? existing!.actionHistory
+          : [
+              {
+                action: "generated",
+                actor: "system",
+                at: timestamp,
+                ...(isSupersede && existing
+                  ? { note: `supersedes ${existing.recommendationId}` }
+                  : {}),
+              },
+            ],
+        createdAt: reuseExisting ? existing!.createdAt : timestamp,
         updatedAt: timestamp,
+        ...(carriedSupersedes.length > 0
+          ? { supersedes: carriedSupersedes }
+          : {}),
       });
     }
   }
-  return next;
+  return { recommendations: next, supersededIds };
 }

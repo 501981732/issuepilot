@@ -50,7 +50,7 @@ function summary(items: QualityDrilldownItem[]): QualitySummaryResponse {
 
 describe("buildImprovementRecommendations", () => {
   it("clusters repeated quality drilldown items into one recommendation", () => {
-    const recommendations = buildImprovementRecommendations({
+    const result = buildImprovementRecommendations({
       summary: summary([
         item({ itemId: "task:wi-1:t-1:missing-evidence" }),
         item({ itemId: "task:wi-2:t-2:missing-evidence" }),
@@ -58,33 +58,107 @@ describe("buildImprovementRecommendations", () => {
       now: () => new Date("2026-05-18T01:00:00.000Z"),
     });
 
-    expect(recommendations).toHaveLength(1);
-    expect(recommendations[0]).toMatchObject({
+    expect(result.recommendations).toHaveLength(1);
+    expect(result.recommendations[0]).toMatchObject({
       problemPattern: "missing-evidence",
       target: { kind: "prompt_template" },
       confidence: "medium",
       risk: "low",
       status: "open",
     });
-    expect(recommendations[0]?.evidenceRefs).toHaveLength(2);
+    expect(result.recommendations[0]?.evidenceRefs).toHaveLength(2);
+    expect(result.supersededIds).toEqual([]);
   });
 
   it("dedupes against existing open recommendations and appends evidence", () => {
-    const [existing] = buildImprovementRecommendations({
+    const first = buildImprovementRecommendations({
       summary: summary([item({ itemId: "task:wi-1:t-1:missing-evidence" })]),
       now: () => new Date("2026-05-18T01:00:00.000Z"),
     });
-    const recommendations = buildImprovementRecommendations({
+    const existing = first.recommendations[0]!;
+    const result = buildImprovementRecommendations({
       summary: summary([item({ itemId: "task:wi-2:t-2:missing-evidence" })]),
-      existing: [existing!],
+      existing: [existing],
       now: () => new Date("2026-05-18T02:00:00.000Z"),
     });
 
-    expect(recommendations).toHaveLength(1);
-    expect(recommendations[0]?.recommendationId).toBe(existing?.recommendationId);
-    expect(recommendations[0]?.evidenceRefs.map((ref) => ref.id)).toEqual([
-      "task:wi-1:t-1:missing-evidence",
+    expect(result.recommendations).toHaveLength(1);
+    expect(result.recommendations[0]?.recommendationId).toBe(
+      existing.recommendationId,
+    );
+    expect(result.recommendations[0]?.evidenceRefs.map((ref) => ref.id)).toEqual(
+      ["task:wi-1:t-1:missing-evidence", "task:wi-2:t-2:missing-evidence"],
+    );
+    expect(result.supersededIds).toEqual([]);
+  });
+
+  it("supersedes accepted recommendations with a new id and supersedes ref", () => {
+    const first = buildImprovementRecommendations({
+      summary: summary([item({ itemId: "task:wi-1:t-1:missing-evidence" })]),
+      now: () => new Date("2026-05-18T01:00:00.000Z"),
+    });
+    const accepted = {
+      ...first.recommendations[0]!,
+      status: "accepted" as const,
+      actionHistory: [
+        ...first.recommendations[0]!.actionHistory,
+        {
+          action: "accepted" as const,
+          actor: "operator" as const,
+          at: "2026-05-18T01:05:00.000Z",
+        },
+      ],
+      updatedAt: "2026-05-18T01:05:00.000Z",
+    };
+    const result = buildImprovementRecommendations({
+      summary: summary([item({ itemId: "task:wi-2:t-2:missing-evidence" })]),
+      existing: [accepted],
+      now: () => new Date("2026-05-18T02:00:00.000Z"),
+    });
+
+    expect(result.recommendations).toHaveLength(1);
+    const fresh = result.recommendations[0]!;
+    expect(fresh.recommendationId).not.toBe(accepted.recommendationId);
+    expect(fresh.status).toBe("open");
+    expect(fresh.supersedes).toEqual([accepted.recommendationId]);
+    expect(fresh.evidenceRefs.map((ref) => ref.id)).toEqual([
       "task:wi-2:t-2:missing-evidence",
     ]);
+    expect(result.supersededIds).toEqual([accepted.recommendationId]);
+  });
+
+  it("skips emit when the existing recommendation is already superseded", () => {
+    const first = buildImprovementRecommendations({
+      summary: summary([item({ itemId: "task:wi-1:t-1:missing-evidence" })]),
+      now: () => new Date("2026-05-18T01:00:00.000Z"),
+    });
+    const supersededRecord = {
+      ...first.recommendations[0]!,
+      status: "superseded" as const,
+      updatedAt: "2026-05-18T01:05:00.000Z",
+    };
+    const result = buildImprovementRecommendations({
+      summary: summary([item({ itemId: "task:wi-2:t-2:missing-evidence" })]),
+      existing: [supersededRecord],
+      now: () => new Date("2026-05-18T02:00:00.000Z"),
+    });
+
+    expect(result.recommendations).toEqual([]);
+    expect(result.supersededIds).toEqual([]);
+  });
+
+  it("resolves target.path via resolveTargetPath when provided", () => {
+    const result = buildImprovementRecommendations({
+      summary: summary([item({ itemId: "task:wi-1:t-1:missing-evidence" })]),
+      now: () => new Date("2026-05-18T01:00:00.000Z"),
+      resolveTargetPath: ({ template }) =>
+        template.targetKind === "prompt_template"
+          ? "/tmp/issuepilot/workflow.md"
+          : undefined,
+    });
+
+    expect(result.recommendations[0]?.target.path).toBe(
+      "/tmp/issuepilot/workflow.md",
+    );
   });
 });

@@ -17,10 +17,12 @@ function memoryStore(): ImprovementStore {
       return records.get(id);
     },
     async list(filters) {
-      return [...records.values()].filter((r) => {
-        if (filters?.status && r.status !== filters.status) return false;
-        return true;
-      });
+      return [...records.values()]
+        .filter((r) => {
+          if (filters?.status && r.status !== filters.status) return false;
+          return true;
+        })
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     },
   };
 }
@@ -94,5 +96,42 @@ describe("createImprovementService", () => {
       actor: "operator",
       note: "valid",
     });
+  });
+
+  it("supersedes accepted recommendations on re-generate without clobbering the audit trail", async () => {
+    const store = memoryStore();
+    let nowValue = new Date("2026-05-18T01:00:00.000Z");
+    const service = createImprovementService({
+      store,
+      buildQualitySummary: async () => quality,
+      now: () => nowValue,
+    });
+
+    const initial = await service.generate({});
+    const original = initial.recommendations[0]!;
+    const acceptResult = await service.accept(original.recommendationId, {
+      operator: "alice",
+    });
+    if ("error" in acceptResult) {
+      throw new Error(acceptResult.error.message);
+    }
+    expect(acceptResult.recommendation.status).toBe("accepted");
+
+    nowValue = new Date("2026-05-19T02:00:00.000Z");
+    const second = await service.generate({});
+
+    expect(second.generated).toBe(1);
+    expect(second.skipped).toBe(1);
+    const successor = second.recommendations[0]!;
+    expect(successor.recommendationId).not.toBe(original.recommendationId);
+    expect(successor.status).toBe("open");
+    expect(successor.supersedes).toEqual([original.recommendationId]);
+
+    const previous = await store.get(original.recommendationId);
+    expect(previous?.status).toBe("superseded");
+    expect(previous?.actionHistory.map((entry) => entry.action)).toContain(
+      "accepted",
+    );
+    expect(previous?.actionHistory.at(-1)?.action).toBe("superseded");
   });
 });

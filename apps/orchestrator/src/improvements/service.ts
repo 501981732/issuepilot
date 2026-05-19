@@ -12,6 +12,7 @@ import type {
 import { buildImprovementRecommendations } from "./engine.js";
 import { generatePatchPreview } from "./patch-preview.js";
 import type { ImprovementStore } from "./store.js";
+import type { TargetPathResolver } from "./types.js";
 
 export type ImprovementServiceError = {
   error: { code: string; message: string };
@@ -47,6 +48,21 @@ export function createImprovementService(deps: {
     input: ImprovementGenerateRequest,
   ) => Promise<QualitySummaryResponse>;
   now?: () => Date;
+  /**
+   * Optional hook used by the recommendation engine to materialise the
+   * `target.path` for newly emitted recommendations. Returning `undefined`
+   * keeps the recommendation patch preview in `blocked: target_path_missing`
+   * — the dashboard surfaces that as a hint and patch preview is a no-op.
+   */
+  resolveTargetPath?: TargetPathResolver;
+  /**
+   * Whitelist of absolute path prefixes the inert patch preview is allowed to
+   * read from disk. Anything outside these prefixes is reported as
+   * `blocked: target_outside_sandbox` — preventing operator-influenced
+   * `target.path` values (or a manually edited recommendation file) from
+   * tricking the orchestrator into reading e.g. `~/.issuepilot/credentials`.
+   */
+  allowedPathPrefixes?: string[];
 }): ImprovementService {
   const now = deps.now ?? (() => new Date());
 
@@ -90,26 +106,47 @@ export function createImprovementService(deps: {
     async generate(input) {
       const summary = await deps.buildQualitySummary(input);
       const existing = await deps.store.list();
-      const recommendations = buildImprovementRecommendations({
+      const result = buildImprovementRecommendations({
         summary,
         existing,
         now,
+        ...(deps.resolveTargetPath
+          ? { resolveTargetPath: deps.resolveTargetPath }
+          : {}),
       });
+      const existingIds = new Set(existing.map((r) => r.recommendationId));
       let generated = 0;
       let updated = 0;
-      for (const recommendation of recommendations) {
-        if (
-          existing.some(
-            (r) => r.recommendationId === recommendation.recommendationId,
-          )
-        ) {
+      let superseded = 0;
+      for (const recommendation of result.recommendations) {
+        if (existingIds.has(recommendation.recommendationId)) {
           updated += 1;
         } else {
           generated += 1;
         }
         await deps.store.save(recommendation);
       }
-      return { recommendations, generated, updated, skipped: 0 };
+      for (const supersededId of result.supersededIds) {
+        const previous = await deps.store.get(supersededId);
+        if (!previous || previous.status === "superseded") continue;
+        const ts = now().toISOString();
+        await deps.store.save({
+          ...previous,
+          status: "superseded",
+          updatedAt: ts,
+          actionHistory: [
+            ...previous.actionHistory,
+            { action: "superseded", actor: "system", at: ts },
+          ],
+        });
+        superseded += 1;
+      }
+      return {
+        recommendations: result.recommendations,
+        generated,
+        updated,
+        skipped: superseded,
+      };
     },
     accept(id, input) {
       return action(id, "accepted", "accepted", input);
@@ -130,6 +167,9 @@ export function createImprovementService(deps: {
       const preview = await generatePatchPreview({
         recommendation: current,
         now,
+        ...(deps.allowedPathPrefixes
+          ? { allowedPathPrefixes: deps.allowedPathPrefixes }
+          : {}),
       });
       const next: ImprovementRecommendation = {
         ...current,

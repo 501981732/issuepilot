@@ -43,6 +43,8 @@ import {
 } from "@issuepilot/workspace";
 import { execa } from "execa";
 
+import { createImprovementService } from "./improvements/service.js";
+import { createImprovementStore } from "./improvements/store.js";
 import { runWorkspaceCleanupOnce } from "./maintenance/workspace-cleanup.js";
 import {
   archiveRun,
@@ -65,8 +67,6 @@ import {
   reconcile,
 } from "./orchestrator/reconcile.js";
 import { sweepReviewFeedbackOnce } from "./orchestrator/review-feedback.js";
-import { createImprovementService } from "./improvements/service.js";
-import { createImprovementStore } from "./improvements/store.js";
 import { buildQualitySummary } from "./quality/aggregate.js";
 import { collectQualitySources } from "./quality/collect.js";
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";

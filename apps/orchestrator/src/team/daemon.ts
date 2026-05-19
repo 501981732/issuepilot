@@ -4,17 +4,17 @@ import * as path from "node:path";
 import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
+import { createImprovementService } from "../improvements/service.js";
+import { createImprovementStore } from "../improvements/store.js";
+import { buildQualitySummary } from "../quality/aggregate.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
+import { collectQualitySources } from "../quality/collect.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
 } from "../runtime/leases.js";
 import { createRuntimeState, type RuntimeState } from "../runtime/state.js";
-import { createImprovementService } from "../improvements/service.js";
-import { createImprovementStore } from "../improvements/store.js";
-import { buildQualitySummary } from "../quality/aggregate.js";
-import { collectQualitySources } from "../quality/collect.js";
 import { createServer, type WorkItemService } from "../server/index.js";
 import {
   createWorkItemPlanner,

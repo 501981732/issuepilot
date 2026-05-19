@@ -78,8 +78,10 @@ runner via `@issuepilot/runner-codex-app-server`。
   `agentReports[]` 摘要 + `evidenceStatus` 扩展枚举；`ReviewFeedback`
   / `RunReportArtifact` 保持向后兼容，新增 `mrPublication` 子结构。
 - Orchestrator `pipelines` 模块（`apps/orchestrator/src/pipelines/`）：
-  `store.ts`（`~/.issuepilot/<scope>/pipelines/<wid>/<pid>.json`、
-  `agent-reports/<wid>/<rid>.json` 持久化 + redact wrapper）、
+  `store.ts`（spec §9：`~/.issuepilot/<scope>/pipelines/<workItemId>/<taskId>/<pipelineRunId>.json`、
+  `~/.issuepilot/<scope>/agent-reports/<taskId>/<role>/<agentReportId>.json`
+  + `agent-reports/<taskId>/<role>/index.json` 含 supersede 链）、
+  redact wrapper、
   `recipe.ts`（workflow YAML 解析 + per-task override + pendingRecipe
   搬运）、`coordinator.ts`（按 recipe 串行调度 coder → reviewer →
   test_evidence、写 AgentReport、推 TaskNode 状态机、运行 ID supersede）、
@@ -204,10 +206,15 @@ runner via `@issuepilot/runner-codex-app-server`。
     `TestEvidenceAgentReport`、`AgentReport` discriminated union、type
     guards。
 - `packages/shared-contracts/src/pipeline.ts` (new)
-  - `PipelineRunStatus`（`draft`/`running`/`awaiting_rework`/`partial`
-    /`succeeded`/`failed`/`cancelled`）、`WorkflowRecipe`（默认
-    `full_pipeline` / `coding_plus_reviewer` / `coding_only`）、
-    `PipelineRun` 结构、type guards、stable JSON round-trip helpers。
+  - `PipelineRunStatus`（spec §8.1：8 项 `running_coding` /
+    `running_reviewer` / `running_test_evidence` /
+    `awaiting_human_review` / `awaiting_rework` / `partial` /
+    `failed` / `cancelled`）、`WorkflowRecipe`（默认 `full_pipeline` /
+    `coding_plus_reviewer` / `coding_only`）、`RecipeSource`
+    （`workflow_default` / `operator_override`）、`PipelineRun`
+    结构（含 `agentReportIds: Record<AgentRole, string | null>` /
+    `currentRole` / `supersedes?` / `supersededBy?`）、type guards、
+    stable JSON round-trip helpers。
 - `packages/shared-contracts/src/workflow-role.ts` (new)
   - `WorkflowRoleConfig`（promptTemplate / sandbox / tools / timeout /
     token_scope_requirements）、升级版 `WorkflowToolGrant`（`tools[]`
@@ -218,14 +225,19 @@ runner via `@issuepilot/runner-codex-app-server`。
     `awaiting_human_review`；保留 `running` 但标 `@deprecated` 注释，
     提供 `legacyRunningStateToV46(status)` helper。
   - `TaskNode` interface 新增 `pendingRecipe?` / `pendingRecipeSource?`
-    / `last_cancelled_at?` / `roleFailureReason?`；
-    `effectiveTaskStatus` 与 `WorkItemTaskSummary` 同步更新。
+    / `last_cancelled_at?` / `roleFailureReason?` /
+    `currentPipelineRunId?`；新增 `TASK_ROLE_FAILURE_REASON_VALUES`
+    枚举与 type guard；`effectiveTaskStatus` 与 `WorkItemTaskSummary`
+    同步更新。
 - `packages/shared-contracts/src/report.ts` (modify)
   - `WorkItemReport.taskSummaries[]` 新增 `agentReports?[]`（摘要）和
     `evidenceStatus` 枚举扩展（保留向后兼容）。
 - `packages/shared-contracts/src/review.ts` (modify)
-  - `ReviewerDecision`（`approve` / `request_changes` / `cannot_review`）
-    + `ReviewerFinding` / `ReviewerInlineComment` + `MrPublication`。
+  - `ReviewerDecision`（spec §8.2：`approve_with_comments` /
+    `request_changes` / `cannot_review`）
+    + `ReviewerFinding` (severity `low|medium|high|critical`) /
+    `ReviewerInlineComment` (severity `medium|high|critical`) +
+    `MrPublication`（status `pending|published|publish_failed|skipped_by_config|revoked`）。
 - `packages/shared-contracts/src/index.ts` (modify)
   - 重新导出 `./agent-report.js` / `./pipeline.js` / `./workflow-role.js`。
 - `packages/shared-contracts/src/api.ts` (modify)
@@ -264,10 +276,11 @@ runner via `@issuepilot/runner-codex-app-server`。
 - `apps/orchestrator/src/pipelines/types.ts` (new)
   - 内部类型与 stable persistence shape。
 - `apps/orchestrator/src/pipelines/store.ts` (new)
-  - `~/.issuepilot/<scope>/pipelines/<workItemId>/<pipelineRunId>.json`、
-    `~/.issuepilot/<scope>/agent-reports/<workItemId>/<reportId>.json`
-    双目录持久化，写入前过 redact wrapper；提供 supersede
-    `supersededBy` 链。
+  - `~/.issuepilot/<scope>/pipelines/<workItemId>/<taskId>/<pipelineRunId>.json`
+    + `~/.issuepilot/<scope>/agent-reports/<taskId>/<role>/<agentReportId>.json`
+    + `~/.issuepilot/<scope>/agent-reports/<taskId>/<role>/index.json`
+    （spec §9 三层目录布局），写入前过 redact wrapper；提供 supersede
+    `supersededBy` 链与 `redactedFields[]` 记录。
 - `apps/orchestrator/src/pipelines/recipe.ts` (new)
   - 解析 workflow `default_recipe` + `TaskNode.pendingRecipe` + per-task
     override；输出最终生效 recipe 字符串与一份角色列表。
@@ -316,8 +329,8 @@ runner via `@issuepilot/runner-codex-app-server`。
 
 - `apps/orchestrator/src/gitlab/mr-comments.ts` (new)
   - 把 reviewer `findings` / `inlineComments` 转成 1 主 note + N inline，
-    带 `[issuepilot-bot]` prefix，过 redact，应用 `max_inline_comments`
-    截断和 `severity_threshold` 过滤。
+    带 `[ai-reviewer]` prefix（spec §12 规定的统一 prefix），过 redact，
+    应用 `maxInlineComments` 截断和 `severityThreshold` 过滤。
 - `apps/orchestrator/src/gitlab/__tests__/mr-comments.test.ts` (new)
 - `packages/tracker-gitlab/src/notes.ts` (modify)
   - 暴露 `createMrInlineNote` / `deleteMrNotes` 两个最小封装，复用现有
@@ -429,6 +442,13 @@ runner via `@issuepilot/runner-codex-app-server`。
 每个 Phase 内部按 TDD 切成 task；每个 task 一个 commit。Phase 之间在
 sub-agent 模式下建议夹一次 code-reviewer。
 
+**CHANGELOG 节奏**（user rule "每次修改后记录到 CHANGELOG.md"）：每个
+Phase checkpoint task 在 empty commit 之前，**必须**在
+`CHANGELOG.md [Unreleased] V4.6 Multi-Agent Collaboration` 段下追加
+一条简短的 phase 摘要（覆盖范围：本 phase 哪些 contract / module /
+UI 落地、哪些测试加入），并一起 commit。Task 12.5（CHANGELOG 终稿）
+负责汇总成最终条目。
+
 ---
 
 ## Phase 1：Shared Contracts 基础
@@ -469,22 +489,23 @@ describe("agent-report contracts", () => {
     );
   });
 
-  it("LAST_ERROR_CODE_VALUES 严格按 spec §16.2 的 14 项 truth source", () => {
+  it("LAST_ERROR_CODE_VALUES 严格按 spec §16.2 第一列的 15 项 truth source", () => {
     expect(new Set(LAST_ERROR_CODE_VALUES)).toEqual(
       new Set([
-        "pipeline_init_failed",
-        "role_profile_invalid",
+        "scope_insufficient",
         "prompt_template_missing",
-        "runner_unavailable",
-        "coding_failed",
+        "prompt_render_failed",
         "reviewer_unavailable",
-        "reviewer_cannot_review",
-        "reviewer_requested_changes",
-        "evidence_unavailable",
-        "evidence_partial",
+        "runner_unavailable",
+        "parse_failed",
         "sandbox_violation",
         "redaction_failed",
         "storage_full",
+        "gitlab_rate_limited",
+        "coding_failed",
+        "evidence_unavailable",
+        "evidence_partial",
+        "reviewer_requested_changes",
         "pipeline_cancelled",
       ]),
     );
@@ -689,15 +710,24 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 - Modify: `packages/shared-contracts/src/report.ts`
 - Test: `packages/shared-contracts/src/__tests__/report.test.ts`
 
-- [ ] **Step 1**：写测试覆盖（严格按 spec §8.4 / §11）
+- [ ] **Step 1**：写测试覆盖（严格按 spec §8.4）
   - `EVIDENCE_STATUS_VALUES` = `["complete","partial","skipped_by_recipe","unavailable"]`。
-  - `WorkItemTaskSummary.agentReports?` 是 `Array<{ agentReportId: string, role: AgentRole, status: AgentReportStatus, decision?: ReviewerDecision, evidenceStatus?: EvidenceStatus }>`（注意是 `agentReportId`，不是 `reportId`）。
+  - `WorkItemTaskSummary` 新增字段（spec §8.4）：`pipelineRunId?` /
+    `coderReportId?` / `reviewerReportId?` / `testEvidenceReportId?`
+    / `reviewerDecision?: ReviewerDecision` / `reviewerConfidence?: number`
+    / `evidenceStatus: EvidenceStatus`。
   - `WorkItemReport.taskSummaries[].evidenceStatus` 4 个值全覆盖；旧
     report (缺字段) parse 时 fallback 到 `unavailable`。
-  - `WorkItemReport.taskSummaries[].readyToMerge` 否决规则（spec §11）：
-    `evidenceStatus = unavailable` 且 reviewer decision 不是
-    `cannot_review` 时，`readyToMerge` 必须 false。写一条 unit 测试
-    断言 helper `computeReadyToMerge(summary)`。
+  - `WorkItemReport.overallStatus` 否决规则（spec §8.4）：
+    `evidenceStatus = "unavailable"` 且 reviewer decision **不是**
+    `"approve_with_comments"` 时，overallStatus 不允许 `ready_to_merge`
+    （注意：spec 用 `approve_with_comments` 作为放行白名单，不是
+    `cannot_review`）。写一条 unit 测试断言 helper
+    `computeOverallStatus(taskSummaries)`：
+    - decision = `approve_with_comments` + evidenceStatus = `unavailable`
+      → `ready_to_merge` 允许（reviewer 已点头）。
+    - decision = `cannot_review` / `request_changes` + evidenceStatus
+      = `unavailable` → 否决（不可 `ready_to_merge`）。
 - [ ] **Step 2-6**：TDD + commit。
 
 ### Task 1.7：扩展 `api.ts` 的 V4.6 request / response
@@ -705,8 +735,7 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
 **Files:**
 
 - Modify: `packages/shared-contracts/src/api.ts`
-- Test: `packages/shared-contracts/src/__tests__/api.test.ts`（如不存在则
-  create）
+- Modify: `packages/shared-contracts/src/__tests__/api.test.ts`
 
 - [ ] **Step 1**：写测试断言以下类型可被 import（与 spec §18 endpoint 一一对应）：
   - `GetPipelineResponse` (`/api/work-items/:wid/tasks/:tid/pipeline`)
@@ -717,7 +746,8 @@ git commit -m "feat(shared-contracts): add AgentReport contracts and enums"
   - `GetAgentReportResponse` (`/api/agent-reports/:id`)
   - `ListTaskAgentReportsResponse` (`/api/work-items/:wid/tasks/:tid/agent-reports`，支持 `role` / `include_superseded` query)
   - `ListPipelineRunAgentReportsResponse` (`/api/pipeline-runs/:id/agent-reports`，注意是 `pipeline-runs` 复数)
-  - `RevokeAiReviewResponse` (`/api/agent-reports/:id/revoke-ai-review`)
+  - `RevokeAiReviewResponse` (`/api/agent-reports/:id/revoke-ai-review`，
+    无 body request)
   - `RetryAgentReportRequest` / `RetryAgentReportResponse`
     (`/api/agent-reports/:id/retry`)
   - `SkipAgentReportRequest` / `SkipAgentReportResponse`
@@ -1016,7 +1046,7 @@ describe("resolveEffectiveRecipe", () => {
     - `sandbox_violation` 无论 role 都映射到 `sandbox_violation`，
       role 信息从 `AgentReport.role` 读取（spec §16.2 表脚注 +
       §13 / §14.4）。
-  - 编译期断言：`LAST_ERROR_CODE_VALUES.length === 14`，新增 code
+  - 编译期断言：`LAST_ERROR_CODE_VALUES.length === 15`，新增 code
     必须先扩这张表才能编译过（用 TS `satisfies` + exhaustive switch）。
 - [ ] **Step 2-5**：实现 mapping 表（用 `as const` + record type）。
 - [ ] **Step 6: Commit**：`feat(orchestrator): centralize lastError → TaskNode / event / pattern mapping`。
@@ -1052,16 +1082,19 @@ describe("resolveEffectiveRecipe", () => {
 - Create: `apps/orchestrator/src/pipelines/coordinator.ts`
 - Create: `apps/orchestrator/src/pipelines/__tests__/coordinator.test.ts`
 
-- [ ] **Step 1**：写测试覆盖：
+- [ ] **Step 1**：写测试覆盖（严格按 spec §8.1 / §16.2）：
   - `coordinator.startPipeline({ workItem, task })` 当 recipe =
-    `coding_only` 时，创建 PipelineRun（status `running`，steps =
-    `[coder]`），调 mock `agents.coder.run()`；mock 返回 success → 写
-    CoderAgentReport，PipelineRun.status → `succeeded`，TaskNode →
+    `coding_only` 时，创建 PipelineRun（status = `running_coding`，
+    `currentRole = "coder"`，`agentReportIds.coder` 在 coder 开跑前
+    可能为 null，开跑后写入），调 mock `agents.coder.run()`；mock
+    返回 success → 写 CoderAgentReport，PipelineRun.status →
+    `awaiting_human_review`（spec §8.1 终态），TaskNode →
     `awaiting_human_review`。
   - mock coder 失败 → PipelineRun.status `failed`，TaskNode `failed`
     reason `coding_failed`。
   - mock coder cancel → PipelineRun.status `cancelled`，TaskNode
-    `needs_rework` + `last_cancelled_at` 写入。
+    `needs_rework` + `last_cancelled_at` 写入，event key
+    `coder_cancelled`。
 - [ ] **Step 2-5**：实现 coordinator 与上述 happy / fail / cancel 分支。
   注意把 agents 通过依赖注入（factory）传入，方便 mock。
 - [ ] **Step 6: Commit**：`feat(orchestrator): coordinator runs coder-only pipeline`。
@@ -1092,15 +1125,16 @@ describe("resolveEffectiveRecipe", () => {
 - Modify: `apps/orchestrator/src/pipelines/coordinator.ts`
 - Modify: `apps/orchestrator/src/pipelines/__tests__/coordinator.test.ts`
 
-- [ ] **Step 1**：写测试覆盖
+- [ ] **Step 1**：写测试覆盖（严格按 spec §8.1 / §16.2）
   - recipe = `full_pipeline`，全部 success → 3 份 AgentReport，
-    PipelineRun.status `succeeded`，TaskNode `awaiting_human_review`，
+    PipelineRun.status `awaiting_human_review`（spec §8.1 终态，不存在
+    `succeeded`），TaskNode `awaiting_human_review`，
     `WorkItemReport.taskSummaries[].evidenceStatus = "complete"`。
   - test_evidence `incomplete` 时 PipelineRun `partial`，TaskNode
     `awaiting_human_review`（不阻塞 human review），
     `evidenceStatus = "partial"`。
   - test_evidence `failed (sandbox_violation)` 时 TaskNode `failed`
-    reason `sandbox_violation`。
+    reason `sandbox_violation`，PipelineRun `failed`。
 - [ ] **Step 2-5**：实现。
 - [ ] **Step 6: Commit**：`feat(orchestrator): coordinator drives coder→reviewer→test-evidence`。
 
@@ -1143,9 +1177,11 @@ describe("resolveEffectiveRecipe", () => {
     `summary`、`patchSnapshotRef`、`status` 等。
   - lifecycle 抛 `RunnerUnavailableError` → AgentReport
     `status = "failed"` `lastError.code = "runner_unavailable"`。
-  - sandbox 拒绝写源码 → 不可能（coder 是 workspace-write），但
-    sandbox_violation event 由 lifecycle 抛出时，coder 仍尝试落
-    AgentReport `status = "failed"` `lastError.code = "sandbox_violation"`。
+  - sandbox 拒绝写源码 → 正常路径下不可能（coder 是
+    `read_write_worktree`，等价于 Codex workspace-write policy），但
+    sandbox_violation event 由 lifecycle 抛出时（如 coder 试图写
+    `~/.issuepilot` 之外路径），coder 仍尝试落 AgentReport
+    `status = "failed"` `lastError.code = "sandbox_violation"`。
 - [ ] **Step 2-5**：实现 coder.ts，DI mock runner。
 - [ ] **Step 6: Commit**：`feat(orchestrator): coder agent writes CoderAgentReport`。
 
@@ -1162,8 +1198,19 @@ describe("resolveEffectiveRecipe", () => {
   - 当 workflow `default_recipe = "coding_only"` + task 无 override，
     dispatch 走 coordinator.startPipeline，结果与旧路径在
     `WorkItemReport.taskSummaries[]` 上的输出兼容（status / lastError
-    走 V4.6 但旧 UI 字段仍能读出）。
-  - 当 task 没有 V4.6 字段（兼容性 fallback）时旧路径保留。
+    走 V4.6 但旧 UI 字段仍能读出，`evidenceStatus` fallback 到
+    `skipped_by_recipe`）。
+  - 当 task 没有 V4.6 字段（兼容性 fallback）时旧路径保留，
+    `WorkItemReport.taskSummaries[].evidenceStatus` 写 `unavailable`，
+    `pipelineRunId` 为 undefined。
+  - 当上游依赖 task `failed` 时下游 task 仍走 V4.2 既有
+    `blocked_by_dependency` 状态，**不**被 V4.6 改写（确认 coordinator
+    在 dispatch 入口前就识别依赖未满足并退出）。
+  - V4.2 task-level retry / skip API（`POST /api/work-items/:wid/tasks/:tid/retry`
+    等已有 endpoint）仍走原 work-items orchestration 路径，**不**被
+    coordinator 截胡；coordinator 只负责 V4.6 新增 endpoint
+    （`/api/agent-reports/:id/retry|skip`）。两类 API 在并发触发时
+    走 work-items store lock，互不踩。
 - [ ] **Step 2-5**：替换 dispatch 入口为 coordinator；保持其余 V4.2
   invariant。
 - [ ] **Step 6: Commit**：`feat(orchestrator): route dispatch through V4.6 coordinator`。
@@ -1193,9 +1240,10 @@ describe("resolveEffectiveRecipe", () => {
     `findings = []` + `inlineComments = []` + `risks = []` +
     `evidenceRequest = []`。
   - 解析失败 → AgentReport `status = "failed"`
-    `lastError.code = "reviewer_cannot_review"`，
+    `lastError.code = "parse_failed"`（spec §16.2 表），
+    TaskNode roleFailureReason 走 `reviewer_unavailable`；
     message 注明 `prompt_output_schema_mismatch`。
-  - `summary` 长度超过 4000 字符 → `lastError.code = "reviewer_cannot_review"`
+  - `summary` 长度超过 4000 字符 → `lastError.code = "parse_failed"`
     (`message = "reviewer_summary_too_long"`)。
   - `decision = "request_changes"` 时 reviewer 写
     AgentReport `complete` + lastError 可省（这是正常完成的"要求返工"），
@@ -1312,8 +1360,11 @@ describe("resolveEffectiveRecipe", () => {
   - mock screenshot 失败但 CI 成功 → `status = "incomplete"`、
     `lastError.code = "evidence_partial"`。
   - mock 写源码 → sandbox 抛 violation → `status = "failed"`、
-    `lastError.code = "sandbox_violation"`，evidence 字段写已收集到的
-    那部分。
+    `lastError.code = "sandbox_violation"`，`evidenceItems[]` 仅保留
+    violation 之前已落盘的条目；`baselineEvidence` 视采集时机而定：
+    若 baseline 已完成则保留，否则为 `null`。这与 spec §16.1
+    "agent 未启动场景"（基线收集本身就没启动 → 全 `null`）区分：
+    本场景 agent 已启动并跑通若干步。
 - [ ] **Step 2-5**：实现，复用 V4.3 evidence collector helper（如
   `work-items/evidence-scanner.ts` / `evidence-merge.ts`）。
 - [ ] **Step 6: Commit**：`feat(orchestrator): test-evidence agent runs CI + walkthrough and writes evidence`。
@@ -1645,11 +1696,11 @@ describe("resolveEffectiveRecipe", () => {
     可见 + 可点。
   - `mrPublication.status` 在 `pending` / `publish_failed` / `revoked`
     / `skipped_by_config` 四种情况时按钮**可见但 disabled**，且
-    tooltip 文案对应 i18n key：
-    - `pending` → `workItemPage.revoke.disabledReason.pending`
-    - `publish_failed` → `workItemPage.revoke.disabledReason.publishFailed`
-    - `revoked` → `workItemPage.revoke.disabledReason.alreadyRevoked`
-    - `skipped_by_config` → `workItemPage.revoke.disabledReason.skippedByConfig`
+    tooltip 文案对应 i18n key（命名空间见 Task 11.9 说明）：
+    - `pending` → `workItem.revoke.disabledReason.pending`
+    - `publish_failed` → `workItem.revoke.disabledReason.publishFailed`
+    - `revoked` → `workItem.revoke.disabledReason.alreadyRevoked`
+    - `skipped_by_config` → `workItem.revoke.disabledReason.skippedByConfig`
   - `AgentReport.status ∈ {cancelled, failed, incomplete}` 但仍带
     `mrPublication.status = published`（极端边界）→ 按钮可见可点，
     单独 i18n tooltip 说明 "review run 不完整但 MR 已推送，撤回前请
@@ -1711,33 +1762,44 @@ describe("resolveEffectiveRecipe", () => {
 
 ### Task 11.9：i18n 中英 key
 
+> **命名空间约定**：spec §17.6 列出的根级 i18n key（`pipeline.role.*` /
+> `pipeline.status.*` / `pipeline.recipe.*` / `reviewer.decision.*` /
+> `evidence.status.*` / `mr.publish.status.*` / `roleFailure.*`）属于
+> "工作单元详情页 V4.6 段"。本仓库 dashboard 现有约定是把 work-item 详情
+> 页面的 key 放在 `workItem.*` 单数前缀（参考 `apps/dashboard/i18n/messages/zh.json`
+> 中现有 `workItem.*` key）。本计划统一采用 `workItem.pipeline.*` /
+> `workItem.reviewer.*` 等单数前缀，**不**使用 `workItemPage.*`（之前 Task
+> 11.5 中的 `workItemPage.revoke.disabledReason.*` 也应改为
+> `workItem.revoke.disabledReason.*`，配合 Task 11.9 一并落地）。
+
 **Files:**
 
 - Modify: `apps/dashboard/i18n/messages/zh.json`
 - Modify: `apps/dashboard/i18n/messages/en.json`
 - Modify: 之前 task 中各组件的 test（覆盖 i18n key 渲染）
 
-- [ ] **Step 1**：写失败测试覆盖（spec §17.6 命名空间）
+- [ ] **Step 1**：写失败测试覆盖（spec §17.6 + 本仓库 `workItem.*` 约定）
   - 以下 key 在 `zh.json` 与 `en.json` 都存在，缺一即测试 fail：
-    - `workItemPage.pipeline.role.coder` / `reviewer` / `test_evidence`
-    - `workItemPage.pipeline.status.running_coding` /
+    - `workItem.pipeline.role.coder` / `reviewer` / `test_evidence`
+    - `workItem.pipeline.status.running_coding` /
       `running_reviewer` / `running_test_evidence` /
       `awaiting_human_review` / `awaiting_rework` / `partial` /
       `failed` / `cancelled`
-    - `workItemPage.pipeline.recipe.full_pipeline` /
+    - `workItem.pipeline.recipe.full_pipeline` /
       `coding_plus_reviewer` / `coding_only`
-    - `workItemPage.pipeline.action.retry` / `skip` / `cancel` /
+    - `workItem.pipeline.action.retry` / `skip` / `cancel` /
       `override_recipe` / `revoke_ai_review`
-    - `workItemPage.reviewer.decision.approve_with_comments` /
+    - `workItem.reviewer.decision.approve_with_comments` /
       `request_changes` / `cannot_review`
-    - `workItemPage.evidence.status.complete` / `partial` /
+    - `workItem.evidence.status.complete` / `partial` /
       `skipped_by_recipe` / `unavailable`
-    - `workItemPage.mr.publish.status.pending` / `published` /
+    - `workItem.mr.publish.status.pending` / `published` /
       `publish_failed` / `skipped_by_config` / `revoked`
-    - `workItemPage.roleFailure.<reason>`（与
+    - `workItem.roleFailure.<reason>`（与
       `TASK_ROLE_FAILURE_REASON_VALUES` 全部对应）
-    - `workItemPage.revoke.disabledReason.pending` / `publishFailed`
+    - `workItem.revoke.disabledReason.pending` / `publishFailed`
       / `alreadyRevoked` / `skippedByConfig`
+    - `workItem.roleSkipNotAllowed`（coder skip 按钮 tooltip）
 - [ ] **Step 2-5**：补齐 key。
 - [ ] **Step 6: Commit**：`feat(i18n): add V4.6 dashboard strings (zh + en)`。
 
@@ -1879,6 +1941,12 @@ pnpm -r build && pnpm -r lint && pnpm -r test
 
 发布或合并前必须有一种通过的 gate。
 
+注：Codex 沙箱或默认 Node runtime 不能加载 Rollup native binding 时，
+**优先**走 `scripts/ci-equivalent-check.sh`（按 `AGENTS.md` §"验证要求"
+节，脚本会自动尝试 `~/.cache/codex-runtimes/codex-primary-runtime/...`
+或 `NODE_BIN_DIR=...` 显式指定的 Node runtime；快速反馈可加
+`SKIP_E2E=1`）。
+
 ---
 
 ## Out-of-Scope Reminders（在每个 task 开头都自检）
@@ -1900,7 +1968,7 @@ pnpm -r build && pnpm -r lint && pnpm -r test
 
 | 风险 | 缓解 |
 | --- | --- |
-| `WORKFLOW.md` 默认值仓库内已有大量 deployment，升级 `default_recipe` 可能让旧 task 突然全部跑 reviewer | Task 2.1 给 `default_recipe` 缺省 = `coding_only`；workflow YAML 解析输出 `warnings[]` 提示运维者可以选择切到 `full_pipeline` |
+| `WORKFLOW.md` 默认值仓库内已有大量 deployment，升级 `default_recipe` 可能让旧 task 突然全部跑 reviewer | Task 2.1 给 `default_recipe` 缺省 = `full_pipeline`（与 spec §10 示例一致，V4.6 把三角色 pipeline 作为新默认）；workflow YAML 解析输出 `warnings[]` 提示运维者：若想保留 V4.5 行为，需要显式声明 `default_recipe: coding_only` |
 | reviewer prompt 输出 schema 难一次性命中 | Task 7.1 解析失败 fallback 到 `cannot_review`，coordinator 不会因此 crash；改 prompt 后下一轮自然恢复 |
 | GitLab MR API rate limit / 网络错误 | Task 7.4 publish fail soft，写 `publish_failed`；revoke 按钮 idempotent；fail 时 reviewer AgentReport 仍 `complete` |
 | `auto_advance` 与 cancel 竞态 | Task 5.5 用 `last_cancelled_at` 抑制 + coordinator 内 mutex 保证一次只一个 role 在跑 |
@@ -1922,7 +1990,7 @@ pnpm -r build && pnpm -r lint && pnpm -r test
 - `ui-ux-pro-max`：Phase 11 UI 组件设计时遵循
   `progressive-disclosure` / `truncation-strategy` / `input-helper-text` /
   `success-feedback` / `error-clarity` 原则（spec §23）。
-- `.codex/skills/commit/SKILL.md`：每次 commit 时遵循的提交规范（IssuePilot
-  仓库内置）。
+- `.codex/skills/commit/SKILL.md`：每次 commit 时遵循的提交规范（仅在
+  IssuePilot 仓库内置；其他仓库 fork 时不可用，需替换为本地规范）。
 - `.codex/skills/push/SKILL.md` / `.codex/skills/land/SKILL.md`：完成实现
-  后推 PR / 合并阶段使用。
+  后推 PR / 合并阶段使用（同样仅 IssuePilot 仓库内置）。

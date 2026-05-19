@@ -2,10 +2,54 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased] V4.6 Multi-Agent Collaboration（plan 阶段）
+## [Unreleased] V4.6 Multi-Agent Collaboration（实施阶段）
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 1（shared contracts 基础）**：
+  - `packages/shared-contracts/src/agent-report.ts`：新增 `AgentRole` /
+    `AgentReportStatus` / `LastErrorCode`（15 项 truth source）/
+    `AgentLastError`、coder / reviewer / test_evidence 三 payload 子类型、
+    顶层 `AgentReport` discriminated union、`isAgentReport` /
+    `isCoderAgentReport` / `isReviewerAgentReport` /
+    `isTestEvidenceAgentReport` type guards、`formatConfidence` 与
+    `ReviewerSummaryTooLongError`。
+  - `packages/shared-contracts/src/pipeline.ts`：新增
+    `PIPELINE_RUN_STATUS_VALUES`（8 项）/ `WORKFLOW_RECIPE_VALUES`
+    / `RECIPE_SOURCE_VALUES` / `PipelineRun` 结构（含 `agentReportIds`
+    by-role 索引、supersede 链）、`recipeRoles` / `recipeFinalRole`
+    helper。
+  - `packages/shared-contracts/src/workflow-role.ts`：`WORKFLOW_SANDBOX_VALUES`
+    / `WORKFLOW_TOOL_NAME_VALUES`（7 项）/ `REVIEWER_SEVERITY_THRESHOLD_VALUES`、
+    `WorkflowToolGrant`（含 `allow[]` 规则与拒绝全通配项）、
+    `parseRoleConfig` YAML snake_case → TS camelCase 映射器与
+    `WorkflowConfigError`。
+  - `packages/shared-contracts/src/work-item.ts`：扩展 `TaskNodeStatus`
+    至 13 项（V4.6 新增 `running_coding` / `running_reviewer` /
+    `running_test_evidence` / `awaiting_human_review`，保留 `running`
+    作兼容值）、新增 `TASK_ROLE_FAILURE_REASON_VALUES` /
+    `EVIDENCE_STATUS_VALUES`、`legacyRunningStateToV46` 兼容映射、
+    `TaskNode` 新字段（`currentPipelineRunId` / `pendingRecipe*` /
+    `last_cancelled_at` / `roleFailureReason`）、`WorkItemTaskSummary`
+    新字段（`pipelineRunId` / `coderReportId` / `reviewerReportId` /
+    `testEvidenceReportId` / `reviewerDecision` / `reviewerConfidence`
+    / `evidenceStatus` / `reviewerSummary` / `mrPublicationStatus`）、
+    `effectiveEvidenceStatus` + `computeOverallStatus` 否决谓词。
+  - `packages/shared-contracts/src/review.ts`：把 reviewer decision /
+    findings / inlineComments / MR publication 类型从 agent-report.ts
+    re-export，保持历史 import path 不变。
+  - `packages/shared-contracts/src/api.ts`：新增 `PipelineRouteErrorCode`
+    （12 项）/ `AgentReportSummary` / `PipelineRunWithReports` /
+    `GetPipelineResponse` / `ListPipelinesResponse` /
+    `SetRecipeOverrideRequest` / `SetRecipeOverrideResponse` /
+    `GetAgentReportResponse` / `ListTaskAgentReportsResponse` /
+    `ListPipelineRunAgentReportsResponse` / `RevokeAiReviewResponse` /
+    `RetryAgentReportRequest|Response` / `SkipAgentReportRequest|Response`
+    / `ValidateWorkflowRolesResponse` 类型，全部按 spec §18 URL 路径对齐。
+  - 测试：`agent-report.test.ts` / `pipeline.test.ts` /
+    `workflow-role.test.ts` 新增；`work-item.test.ts` / `review.test.ts`
+    / `api.test.ts` / `index.test.ts` 扩展。`tsc -b` 干净通过，
+    `vitest run` 16 文件 / 146 用例全绿。
 - 2026-05-19 — **V4.6 实施计划**：
   `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`。
   按 12 个 Phase（shared contracts → workflow YAML → PipelineRun /

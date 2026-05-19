@@ -6,6 +6,47 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 8 Task 8.2（test_evidence 单步重跑 + supersede 链）**：
+  - `packages/shared-contracts/src/agent-report.ts`：`AgentReportBase` 新增
+    `supersedes?` / `supersededBy?` 两字段，spec §8.2 行 1057-1058 要求
+    retry 时不能覆盖旧 attempt，必须以线性链保留。
+  - `apps/orchestrator/src/pipelines/store.ts` 新增
+    `PipelineStore.supersedeAgentReport({taskId, role, prevId, nextId})`：
+    - 双向写 `prev.supersededBy=nextId` 与 `next.supersedes=prevId`；
+    - 同步把 `{from, to}` 追加到 role 级 `index.json` 的
+      `supersedeChain[]`，并更新 `latestAgentReportId=nextId`；
+    - 任一 report 不存在 → 抛 `PipelineStoreReadError`。
+  - `apps/orchestrator/src/pipelines/coordinator.ts` 新增
+    `Coordinator.retryRole({workItem, task, pipelineRunId, role})`：
+    - 复用 pipelineRunId，不创建新的 PipelineRun；先把 PipelineRun
+      状态翻回 `running_<role>`，TaskNode 翻回 `running_<role>`、
+      清理 `roleFailureReason` / `statusReason`；
+    - 按 role 调对应 agent runner，cancel mid-retry 走
+      `last_cancelled_at` + `needs_rework`，抛 `CoordinatorError
+      ("retry_cancelled")` 让 HTTP 层映射 409；
+    - 新 AgentReport 写完后立即调 `supersedeAgentReport`，
+      把 supersede 链接两边写完；并把新 id 写入
+      `PipelineRun.agentReportIds[role]`；
+    - 重新派生 PipelineRun final status：复用 `startPipeline` 同一
+      套规则——`request_changes` → `awaiting_rework`、test_evidence
+      `incomplete` → `partial`、其他 → `awaiting_human_review`；
+      失败时 storage_full / reviewer_unavailable /
+      reviewer_cannot_review / redaction_failed → TaskNode `blocked`，
+      其他 → `failed`；
+    - 发 `pipeline_finished` 事件时带 `retry: true` 与 `role`，
+      dashboard 可以与初次 run 区分；
+    - PipelineRun 不存在 → `CoordinatorError("pipeline_run_missing")`；
+      无该 role 的 baseline AgentReport →
+      `CoordinatorError("agent_report_baseline_missing")`。
+  - 测试：
+    - `store.test.ts` 加 2 例（happy supersede + 缺失报告抛错）。
+    - `coordinator.test.ts` 加 4 例（test_evidence incomplete → complete
+      retry 链 + PipelineRun 翻 `awaiting_human_review`；retry 仍 failed
+      但 supersedes 仍写；未知 pipelineRunId 抛错；无 baseline 抛错）。
+  - 验证：shared-contracts 143/143 ✓；orchestrator 798/798 ✓（70 文件）；
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。daemon 注入
+    `retryRole` 端点的工作延后到 Phase 9 一起做。
+
 - 2026-05-19 — **V4.6 Phase 7 Task 7.3+7.4+7.5（Reviewer MR publish 闭环）**：
   - `packages/tracker-gitlab/src/notes.ts`：扩展 MR notes API。
     - `MergeRequestNotes.create` / `remove`：在 `api-shape.ts` 中显式定义

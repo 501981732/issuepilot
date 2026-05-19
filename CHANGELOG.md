@@ -6,6 +6,83 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 7 Task 7.3+7.4+7.5（Reviewer MR publish 闭环）**：
+  - `packages/tracker-gitlab/src/notes.ts`：扩展 MR notes API。
+    - `MergeRequestNotes.create` / `remove`：在 `api-shape.ts` 中显式定义
+      接口（含 `MergeRequestNotePosition` 类型），覆盖 inline 与 plain
+      note。
+    - `createMrNote(client, mrIid, body, requiredScope?)` 与
+      `createMrInlineNote(..., position)`：分别发布主 note 与带 diff
+      position 的 inline note，统一捕获 401/403 转 `GitLabScopeMissingError`。
+    - `deleteMrNotes(client, mrIid, noteIds, requiredScope?)`：批量 DELETE；
+      per-note 404 视为已删除 (`missingNoteIds[]`)；500 / 网络错误抛
+      `GitLabError`；空 `noteIds` 短路。
+    - `GitLabScopeMissingError`：继承自 `GitLabError`，携带 `missingScope`
+      字段；401 → category=auth，403 → category=permission，`retriable=false`。
+    - 测试：`notes.test.ts` 新增 12 例覆盖 main/inline create、scope 缺失、
+      404 idempotent、501 / 5xx 透传、空 noteIds 短路、`GitLabScopeMissingError`
+      自身行为。tracker-gitlab 整套 90/90 用例全绿，`tsc --noEmit` 与
+      `eslint --max-warnings 0` 干净。
+  - `apps/orchestrator/src/gitlab/mr-comments.ts`：V4.6 spec §12 的六条
+    护栏 publish/revoke 入口。
+    - `publishReviewerToMr({client, reviewerReport, mrRef, publishToMr,
+      requiredScope?})`：
+      - 1 主 note + N inline note，body 统一以 `[ai-reviewer] ` 前缀；
+      - 主 note 体含 summary / decision / confidence（两位小数）/
+        risks / evidence requested；
+      - inline 体含 `(severity/category)` 标记，可选 `Suggested fix`
+        code block；
+      - `summary` / `inlineComments[i].message` / `suggestedFix` 走
+        `@issuepilot/observability/redact`；改写的字段路径返回到
+        `redactedFieldsAdded[]`（如 `reviewer.summary`、
+        `reviewer.inlineComments[0].message`）；
+      - `publishToMr=false` → `mrPublication.status="skipped_by_config"`，
+        不发起 HTTP；
+      - 401/403 → `scopeInsufficient = { missingScope }` 信号，外加
+        `mrPublication.status="publish_failed"` + `lastError.code=
+        "scope_insufficient"`；coordinator 据此把 AgentReport 升级
+        到 `status="failed"`；
+      - 非 auth GitLab 错（5xx 等）→ fail soft：
+        `mrPublication.status="publish_failed"` +
+        `lastError.code="gitlab_rate_limited"`；AgentReport 不变 failed；
+      - 部分 publish 已落地的 noteIds 仍写入 `mrPublication.noteIds[]`，
+        便于后续 revoke 清理。
+    - `revokeReviewerMrComments({client, mrIid, mrPublication, requiredScope?})`：
+      调用 `deleteMrNotes` 删除全部 noteIds，per-note 404 idempotent；
+      成功后 `mrPublication.status="revoked"`，noteIds 清空，
+      `publishedAt` 保留；scope 错抛 `GitLabScopeMissingError`，其他
+      错抛 `GitLabError`，便于 dashboard 路由分级处理。
+    - 测试：`mr-comments.test.ts` 14 例覆盖 prefix / 聚合主 note /
+      redaction 路径 (`reviewer.summary`、`reviewer.inlineComments[i].message`、
+      `reviewer.inlineComments[i].suggestedFix`) / `publishToMr=false` /
+      非 auth fail soft / 部分 publish 保留 noteIds / scopeInsufficient
+      surface / revoke 删除 / revoke 404 idempotent / revoke scope 错
+      传播 / revoke 短路。
+  - `apps/orchestrator/src/pipelines/coordinator.ts`：把 reviewer publish
+    接入 V4.6 pipeline 调度。
+    - 新增 `ReviewerMrPublisher` 接口与可选 DI `CoordinatorAgents.reviewerPublisher`，
+      production 在 Phase 9 由 daemon 注入 `publishReviewerToMr` 实现，
+      单测用 fake；缺省时保持向后兼容（reviewer report 原样落盘）。
+    - reviewer agent `status="complete"` 且 `decision != "cannot_review"`
+      时才会调用 publisher；LLM 自己输出的 `cannot_review` 仍走原来
+      `roleFailureReason="reviewer_cannot_review"` + TaskNode `blocked` 通路。
+    - publish 成功 / `publish_failed` → AgentReport 仍 `complete`，
+      pipeline 继续 advance test_evidence（spec §12 rail #4 fail soft）。
+    - publish 报 `scopeInsufficient` → AgentReport 升级为 `status=
+      "failed"` + `lastError.code="scope_insufficient"`；走失败分支，
+      mrPublication.publish_failed 仍持久化便于 dashboard 显示。
+    - `redactedFieldsAdded[]` 去重后 append 到 `AgentReport.redactedFields[]`。
+    - 失败分支扩容：`reviewer_cannot_review` / `reviewer_unavailable` /
+      `redaction_failed` / `storage_full` → TaskNode `blocked`；其余
+      继续走 `failed`（与 spec §7.3 行 269 + §16.2 对齐）。原有
+      `reviewer_unavailable` 测试断言从 `failed` 更新为 `blocked`。
+    - 测试：`coordinator.test.ts` 新增 6 例（publish published /
+      publish_failed 不阻断 advance / scopeInsufficient 升级 failed +
+      blocked + event / cannot_review 跳过 publisher / request_changes
+      仍触发 publish / 无 publisher 时兼容兜底）。
+  - 验证：orchestrator 整套 792/792 全绿；tracker-gitlab 90/90 全绿；
+    `tsc --noEmit` 与 `eslint --max-warnings 0` 均干净。
+
 - 2026-05-19 — **V4.6 Phase 8 Task 8.1（Test/Evidence Agent）**：
   - `apps/orchestrator/src/agents/test-evidence.ts`：实现
     `createTestEvidenceAgent()` 把一组 `EvidenceCollector` 注入式合并：

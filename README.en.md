@@ -683,10 +683,24 @@ productionizes the capabilities that prove valuable here.
 - **Cross-issue dependency analysis**: detect blockers, duplicated work,
   upstream/downstream dependencies, and mergeable tasks, then surface them as
   an engineering work graph.
-- **Multi-agent collaboration** (V4.6 in design): coding agent, reviewer
-  agent, and test/evidence agent roles that can collaborate per sub-task and
-  summarize their results. Design spec:
-  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-design.md`.
+- **Multi-agent collaboration** (V4.6 in progress): coding agent, reviewer
+  agent, and test/evidence agent roles, orchestrated by a single
+  `PipelineCoordinator` over a recipe (`coding_only` /
+  `coding_plus_reviewer` / `full_pipeline`) and producing one
+  `AgentReport` per role. **Phase 7 landed: Reviewer Agent + GitLab MR
+  publish loop** — reviewer findings turn into inline MR comments under
+  spec §12's six safety rails (`[ai-reviewer]` prefix, 1 summary note +
+  N inline notes, `severity_threshold` / `max_inline_comments` filter,
+  fail-soft publishing that does not block the pipeline, idempotent
+  `noteIds[]` revoke, redaction tracked into `AgentReport.redactedFields[]`).
+  Missing token scope upgrades the reviewer report to
+  `status=failed` / `lastError.code=scope_insufficient` and transitions
+  the TaskNode to `blocked` / `reviewer_cannot_review`. Phase 8 landed
+  the Test/Evidence Agent reusing the V4.3 evidence collectors. Design
+  spec:
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`;
+  implementation plan:
+  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

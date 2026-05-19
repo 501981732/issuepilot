@@ -1,4 +1,31 @@
 /**
+ * V4.6 reviewer 产物契约转出口：把 reviewer 的 decision / findings /
+ * inline comments / MR publication 类型从 `./agent-report.js`
+ * re-export，让历史代码可以继续按 `./review.js` 入口取这些类型，
+ * 不需要双份枚举定义。任何新增/修改请直接编辑 `agent-report.ts`。
+ */
+export {
+  REVIEWER_DECISION_VALUES,
+  FINDING_SEVERITY_VALUES,
+  INLINE_COMMENT_SEVERITY_VALUES,
+  MR_PUBLICATION_STATUS_VALUES,
+  isReviewerDecision,
+  isMrPublicationRevocable,
+  assertReviewerSummaryLength,
+  ReviewerSummaryTooLongError,
+  type ReviewerDecision,
+  type FindingSeverity,
+  type InlineCommentSeverity,
+  type ReviewerFinding,
+  type ReviewerInlineComment,
+  type ReviewerEvidenceRequest,
+  type ReviewerRisk,
+  type MrPublicationStatus,
+  type MrPublication,
+  type ReviewerAgentReportPayload,
+} from "./agent-report.js";
+
+/**
  * Structured GitLab MR note captured by the V2 Phase 4 review feedback
  * sweep. The orchestrator collects these from `listMergeRequestNotes`
  * after filtering out IssuePilot's own marker notes (handoff / failure /

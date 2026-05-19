@@ -1,0 +1,43 @@
+<h2>V4.5 Architecture / Data Flow</h2>
+<p class="subtitle">The recommendation loop should be deterministic-first, evidence-backed, and human-gated.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Data Flow</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr 1fr;gap:12px">
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#f6f8fa">
+        <div class="label">Inputs</div>
+        <h3 style="margin:6px 0">Existing Facts</h3>
+        <p><code>QualitySummaryResponse</code></p>
+        <p><code>QualityDrilldownItem</code></p>
+        <p><code>RunReportArtifact</code></p>
+        <p><code>WorkItemReport</code></p>
+        <p><code>TaskPlan</code> / <code>TaskRunLink</code></p>
+      </div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#fff8c5">
+        <div class="label">Analyzer</div>
+        <h3 style="margin:6px 0">Cluster Problems</h3>
+        <p>Group repeat patterns by workflow, task type, rule target, and failure reason.</p>
+        <p>Prefer deterministic rules first; LLM wording can be added later.</p>
+      </div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#ddf4ff">
+        <div class="label">Output</div>
+        <h3 style="margin:6px 0">Recommendation Store</h3>
+        <p><code>recommendations/&lt;id&gt;.json</code></p>
+        <p>Status: <code>open</code>, <code>accepted</code>, <code>rejected</code>, <code>deferred</code>, <code>superseded</code>.</p>
+      </div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#dafbe1">
+        <div class="label">Review</div>
+        <h3 style="margin:6px 0">Patch Proposal</h3>
+        <p>Patch preview targets one explicit surface and carries rollback notes.</p>
+        <p>No direct write until a later human apply step.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Second Design Section: Architecture / Data Flow</h3>
+  <p>V4.5 should add a small <code>improvements</code> module in orchestrator, not expand the V4.4 quality aggregator into a policy engine. V4.4 remains responsible for metrics and failure-pattern classification; V4.5 consumes those facts and creates durable recommendation records.</p>
+  <p>The first version should be deterministic-first: map repeated <code>missing-evidence</code>, <code>missing-tests</code>, <code>environment-issue</code>, <code>permission-issue</code>, <code>review-rework</code>, and <code>unclear-requirements</code> patterns to known improvement templates. Each recommendation links back to concrete drilldown items so the operator can audit why it exists.</p>
+</div>

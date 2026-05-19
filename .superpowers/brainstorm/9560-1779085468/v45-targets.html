@@ -1,0 +1,46 @@
+<h2>V4.5 Recommendation Types / Patch Targets</h2>
+<p class="subtitle">First version should recommend changes to execution guidance, not runtime state machines.</p>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-image" style="padding:14px;background:#dafbe1">
+      <h3>In Scope</h3>
+      <p><strong>Workflow front matter</strong></p>
+      <p>CI policy, retention hints, max attempts, sandbox warnings, project workflow metadata.</p>
+      <p><strong>Prompt template</strong></p>
+      <p>Missing evidence instructions, required validation wording, review feedback handling.</p>
+      <p><strong>Project rules</strong></p>
+      <p>Repo-local AGENTS / project facts / acceptance discipline suggestions.</p>
+      <p><strong>Skill instructions</strong></p>
+      <p>Advice to update or create skills, but only as patch preview.</p>
+    </div>
+    <div class="card-body">
+      <h3>Recommended V4.5 Target Set</h3>
+      <p>High leverage and reviewable. These are the places repeated quality problems usually come from.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-image" style="padding:14px;background:#ffebe9">
+      <h3>Out of Scope</h3>
+      <p><strong>No auto label changes</strong></p>
+      <p>Do not alter workflow labels or issue state transitions.</p>
+      <p><strong>No secret edits</strong></p>
+      <p>Do not write tokens, credentials, or private env values.</p>
+      <p><strong>No production policy</strong></p>
+      <p>Do not change RBAC, budgets, merge automation, or worker scheduling.</p>
+      <p><strong>No direct commit</strong></p>
+      <p>Patch preview only; applying remains human-gated.</p>
+    </div>
+    <div class="card-body">
+      <h3>Hard Safety Boundary</h3>
+      <p>V4.5 improves process guidance without becoming a self-modifying control plane.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Third Design Section: Recommendation Types</h3>
+  <p>Each recommendation should have a <code>target.kind</code>: <code>workflow_front_matter</code>, <code>prompt_template</code>, <code>project_rules</code>, or <code>skill_instruction</code>. It should also carry <code>problemPattern</code>, <code>evidenceRefs</code>, <code>suggestedChange</code>, <code>patchPreview</code>, <code>confidence</code>, <code>risk</code>, and <code>status</code>.</p>
+  <p>V4.5 should not modify runtime state machines, labels, credentials, production policies, or merge behavior. Those are either existing orchestrator contracts or V3 production-platform concerns.</p>
+</div>

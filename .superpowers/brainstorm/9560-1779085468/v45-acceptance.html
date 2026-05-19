@@ -1,0 +1,47 @@
+<h2>V4.5 Error Handling / Testing / Acceptance</h2>
+<p class="subtitle">The acceptance bar should prove recommendations are useful, traceable, and unable to mutate rules silently.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Acceptance Model</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#f6f8fa">
+        <div class="label">Traceability</div>
+        <h3 style="margin:6px 0">Every suggestion cites facts</h3>
+        <p>Each recommendation links to pattern IDs, drilldown items, runs, work items, tasks, review comments, or evidence.</p>
+      </div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#fff8c5">
+        <div class="label">Safety</div>
+        <h3 style="margin:6px 0">No silent edits</h3>
+        <p>Patch previews are inert records until an explicit human apply step exists. Reject/defer never touches files.</p>
+      </div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#ddf4ff">
+        <div class="label">Usefulness</div>
+        <h3 style="margin:6px 0">Low-noise queue</h3>
+        <p>Repeated issues cluster into stable recommendations; duplicate suggestions are deduped or superseded.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#fff">
+      <h3 style="margin-top:0">Test Matrix</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <p><strong>Contract</strong>: recommendation JSON round-trip, statuses, target kinds, evidence refs.</p>
+          <p><strong>Engine</strong>: pattern-to-template mapping, dedupe, confidence, stale/superseded handling.</p>
+          <p><strong>Patch</strong>: generated diff preview is scoped to one target and never writes files.</p>
+        </div>
+        <div>
+          <p><strong>API</strong>: list/detail/action endpoints; team project isolation with <code>x-issuepilot-project</code>.</p>
+          <p><strong>UI</strong>: queue, detail view, accept/reject/defer, empty/error states, keyboard accessible controls.</p>
+          <p><strong>E2E</strong>: quality pattern → recommendation → patch preview → human action history.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Fifth Design Section: Error Handling / Testing / Acceptance</h3>
+  <p>V4.5 fails closed. If evidence is missing, target files are unknown, a patch cannot be generated safely, or the recommendation source becomes stale, the system keeps the recommendation visible with an explicit blocked/stale reason instead of guessing.</p>
+  <p>Acceptance should prove three things: every recommendation is traceable to evidence, no action silently mutates workflow/skill/project rules, and operator actions are durable and auditable. Team mode must preserve project isolation exactly like V4.4 quality analytics.</p>
+</div>

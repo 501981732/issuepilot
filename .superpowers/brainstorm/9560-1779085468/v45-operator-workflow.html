@@ -1,0 +1,67 @@
+<h2>V4.5 UI / Operator Workflow</h2>
+<p class="subtitle">Keep recommendations inside the existing operator surfaces: Reports for discovery, detail drawer/page for review.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Reports → Recommendations Queue → Patch Preview</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:260px 1fr 360px;gap:14px;min-height:360px">
+      <div style="border-right:1px solid #d0d7de;padding-right:12px">
+        <div class="label">Reports</div>
+        <h3 style="margin:6px 0 12px">Quality Analytics</h3>
+        <div style="border:1px solid #d0d7de;border-radius:8px;padding:10px;margin-bottom:8px;background:#f6f8fa">
+          <strong>Missing evidence</strong>
+          <p style="margin:6px 0 0">18% · 12 affected tasks</p>
+        </div>
+        <div style="border:1px solid #d0d7de;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff">
+          <strong>CI failure</strong>
+          <p style="margin:6px 0 0">9% · 6 affected runs</p>
+        </div>
+        <button class="mock-button" style="width:100%;margin-top:8px">Generate recommendations</button>
+      </div>
+
+      <div>
+        <div class="label">Recommendation Queue</div>
+        <h3 style="margin:6px 0 12px">Open Recommendations</h3>
+        <div style="border:2px solid #0969da;border-radius:8px;padding:12px;margin-bottom:10px;background:#ddf4ff">
+          <div style="display:flex;justify-content:space-between;gap:12px">
+            <strong>Require command-output evidence for UI tasks</strong>
+            <span>High confidence</span>
+          </div>
+          <p>Pattern: missing-evidence · Target: prompt_template · 8 runs, 3 work items</p>
+        </div>
+        <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;margin-bottom:10px;background:#fff">
+          <strong>Add CI retry guidance for flaky integration jobs</strong>
+          <p>Pattern: ci-failure · Target: workflow_front_matter · 5 runs</p>
+        </div>
+        <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#fff">
+          <strong>Clarify review rework input contract</strong>
+          <p>Pattern: review-rework · Target: project_rules · 4 tasks</p>
+        </div>
+      </div>
+
+      <div style="border-left:1px solid #d0d7de;padding-left:12px">
+        <div class="label">Detail</div>
+        <h3 style="margin:6px 0">Patch Preview</h3>
+        <p><strong>Evidence</strong>: 8 runs, 3 work items, latest failure yesterday.</p>
+        <p><strong>Risk</strong>: May increase prompt length; low runtime risk.</p>
+        <div style="border:1px solid #d0d7de;border-radius:8px;background:#0d1117;color:#e6edf3;padding:10px;font-family:monospace;font-size:12px;line-height:1.5">
+          <div>@@ prompt_template @@</div>
+          <div style="color:#7ee787">+ When a task changes UI behavior, attach</div>
+          <div style="color:#7ee787">+ command output or screenshot evidence.</div>
+          <div style="color:#7ee787">+ If unavailable, state why explicitly.</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="mock-button">Accept</button>
+          <button class="mock-button">Defer</button>
+          <button class="mock-button">Reject</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Fourth Design Section: UI / Operator Workflow</h3>
+  <p>V4.5 should not create a separate product area at first. Put a compact Recommendations section under Reports / Quality Analytics, with drilldown links back to the evidence. Selecting a recommendation opens a focused review surface showing evidence, rationale, target file/surface, patch preview, risk, and actions.</p>
+  <p>The default action model is <code>accept</code>, <code>reject</code>, and <code>defer</code>. Accepting means “this recommendation is valid and may produce a patch preview”; it does not mean “apply to disk immediately.”</p>
+</div>

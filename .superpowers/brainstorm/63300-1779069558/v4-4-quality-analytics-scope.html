@@ -1,0 +1,86 @@
+<h2>V4.4 Quality Analytics: first-slice shape</h2>
+<p class="subtitle">Goal: see quality trends across many runs and many work-item tasks without turning V4.4 into a full BI product.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Recommended first screen: Reports / Quality</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:1.1fr .9fr;gap:16px;align-items:start">
+      <div>
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px">
+          <div class="placeholder" style="min-height:84px;text-align:left">
+            <strong>Success rate</strong><br>
+            <span style="font-size:28px">72%</span><br>
+            <small>completed / terminal runs</small>
+          </div>
+          <div class="placeholder" style="min-height:84px;text-align:left">
+            <strong>Rework rate</strong><br>
+            <span style="font-size:28px">18%</span><br>
+            <small>needs_rework / completed tasks</small>
+          </div>
+          <div class="placeholder" style="min-height:84px;text-align:left">
+            <strong>CI pass rate</strong><br>
+            <span style="font-size:28px">81%</span><br>
+            <small>success / known CI</small>
+          </div>
+          <div class="placeholder" style="min-height:84px;text-align:left">
+            <strong>Review hit rate</strong><br>
+            <span style="font-size:28px">24%</span><br>
+            <small>runs with unresolved review</small>
+          </div>
+        </div>
+
+        <div class="placeholder" style="min-height:180px;text-align:left">
+          <strong>Trend lane</strong>
+          <div style="height:92px;margin-top:14px;border-left:1px solid #cbd5e1;border-bottom:1px solid #cbd5e1;display:flex;align-items:end;gap:10px;padding:0 10px">
+            <div style="height:42px;width:32px;background:#16a34a"></div>
+            <div style="height:68px;width:32px;background:#16a34a"></div>
+            <div style="height:52px;width:32px;background:#16a34a"></div>
+            <div style="height:34px;width:32px;background:#dc2626"></div>
+            <div style="height:76px;width:32px;background:#16a34a"></div>
+            <div style="height:40px;width:32px;background:#f59e0b"></div>
+            <div style="height:62px;width:32px;background:#16a34a"></div>
+          </div>
+          <small>Toggle: success / failed / blocked / rework / CI / review feedback</small>
+        </div>
+      </div>
+
+      <div class="placeholder" style="min-height:292px;text-align:left">
+        <strong>Top failure patterns</strong>
+        <ol style="margin-top:12px;line-height:1.9">
+          <li>Missing validation evidence <small>(12 tasks)</small></li>
+          <li>CI failed after handoff <small>(8 runs)</small></li>
+          <li>Permission / token issue <small>(5 runs)</small></li>
+          <li>Ambiguous acceptance criteria <small>(4 work items)</small></li>
+        </ol>
+        <div style="margin-top:12px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc">
+          Drill-down opens the exact run / task / evidence rows behind the pattern.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3>Scope choice for the V4.4 spec</h3>
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Reports-first Quality Analytics</h3>
+      <p>Extend the existing Reports page with quality metrics, trends, failure-pattern drill-down, and project/workflow/task-type grouping. This is the safest V4.4 slice.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Quality API first</h3>
+      <p>Build the orchestrator/shared-contract aggregation model first, then add only a minimal UI. This is stronger architecturally but less product-visible.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Insights-to-recommendations bridge</h3>
+      <p>Start turning repeated quality patterns into workflow/skills recommendations. Useful, but it overlaps V4.5 and may make V4.4 too wide.</p>
+    </div>
+  </div>
+</div>

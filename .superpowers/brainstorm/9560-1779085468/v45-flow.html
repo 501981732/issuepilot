@@ -1,0 +1,45 @@
+<h2>V4.5 Workflow / Skills Improvement Loop</h2>
+<p class="subtitle">Recommended first slice: generate evidence-backed recommendations and stop at human-reviewed patch preview.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Architecture Flow</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:12px;align-items:stretch">
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#f6f8fa">
+        <div class="label">V4.4</div>
+        <h3 style="margin:6px 0">Quality Facts</h3>
+        <p>Failure patterns, drilldown, missing evidence, review rework, CI failures.</p>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;font-size:24px">→</div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#fff8c5">
+        <div class="label">Engine</div>
+        <h3 style="margin:6px 0">Recommendations</h3>
+        <p>Group repeated problems into workflow, prompt, skill, or project-rule suggestions.</p>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;font-size:24px">→</div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#ddf4ff">
+        <div class="label">Operator</div>
+        <h3 style="margin:6px 0">Review Queue</h3>
+        <p>Accept, reject, or defer. Nothing changes without human approval.</p>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 36px 1fr;gap:12px;margin-top:14px;align-items:stretch">
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#dafbe1">
+        <div class="label">Patch Preview</div>
+        <h3 style="margin:6px 0">Reviewable Change</h3>
+        <p>Generate a diff proposal for WORKFLOW.md, central workflow profile, skill instructions, prompt template, or project rules.</p>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;font-size:24px">↔</div>
+      <div style="border:1px solid #d0d7de;border-radius:8px;padding:12px;background:#ffebe9">
+        <div class="label">Hard Boundary</div>
+        <h3 style="margin:6px 0">No Silent Mutation</h3>
+        <p>V4.5 does not auto-commit, auto-edit production rules, or bypass review. V4.6 multi-agent work stays separate.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>First Design Section: Product Boundary</h3>
+  <p>V4.5 should extend V4.4 from observation to improvement, but keep the control point human-owned. The unit of value is an <code>ImprovementRecommendation</code> with evidence, scope, confidence, proposed target, and status. Accepted recommendations produce a patch preview; applying or committing the patch is still a separate human-controlled action.</p>
+</div>

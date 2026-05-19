@@ -1,13 +1,22 @@
 "use client";
 
 import type {
+  ImprovementRecommendation,
   QualitySummaryResponse,
   RunReportSummary,
 } from "@issuepilot/shared-contracts";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
+import {
+  acceptImprovementRecommendation,
+  deferImprovementRecommendation,
+  generateImprovementRecommendations,
+  previewImprovementPatch,
+  rejectImprovementRecommendation,
+} from "../../lib/api";
 import { cn } from "../../lib/cn";
 import { Badge } from "../ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -19,10 +28,12 @@ import {
 } from "../ui/status";
 
 import { QualityAnalytics } from "./quality-analytics";
+import { Recommendations } from "./recommendations";
 
 interface ReportsPageProps {
   reports: RunReportSummary[];
   quality: QualitySummaryResponse;
+  recommendations: ImprovementRecommendation[];
 }
 
 type SortKey = "updatedAt" | "runId" | "status" | "readiness" | "duration";
@@ -106,12 +117,38 @@ function medianDurationByDay(reports: RunReportSummary[]): number[] {
   return out;
 }
 
-export function ReportsPage({ reports, quality }: ReportsPageProps) {
+export function ReportsPage({
+  reports,
+  quality,
+  recommendations,
+}: ReportsPageProps) {
   const t = useTranslations("reportsPage");
   const tCommon = useTranslations("common");
   const dash = tCommon("dash");
+  const router = useRouter();
   const [sortKey, setSortKey] = useState<SortKey>("updatedAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  async function handleGenerate() {
+    await generateImprovementRecommendations({});
+    router.refresh();
+  }
+  async function handleAccept(id: string) {
+    await acceptImprovementRecommendation(id);
+    router.refresh();
+  }
+  async function handleReject(id: string) {
+    await rejectImprovementRecommendation(id);
+    router.refresh();
+  }
+  async function handleDefer(id: string) {
+    await deferImprovementRecommendation(id);
+    router.refresh();
+  }
+  async function handlePreview(id: string) {
+    await previewImprovementPatch(id);
+    router.refresh();
+  }
 
   const counters = useMemo(() => {
     const total = reports.length;
@@ -283,6 +320,15 @@ export function ReportsPage({ reports, quality }: ReportsPageProps) {
       </section>
 
       <QualityAnalytics summary={quality} />
+
+      <Recommendations
+        recommendations={recommendations}
+        onGenerate={handleGenerate}
+        onAccept={handleAccept}
+        onReject={handleReject}
+        onDefer={handleDefer}
+        onPreview={handlePreview}
+      />
 
       <section className="grid gap-3 lg:grid-cols-3">
         <Card className="lg:col-span-2">

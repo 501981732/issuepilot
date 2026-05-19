@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
-import type { QualitySummaryResponse } from "@issuepilot/shared-contracts";
+import type {
+  ImprovementRecommendation,
+  QualitySummaryResponse,
+} from "@issuepilot/shared-contracts";
 import { screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -10,6 +13,43 @@ import { ReportsPage } from "./reports-page";
 vi.mock("./quality-analytics", () => ({
   QualityAnalytics: () => <section aria-label="Quality analytics" />,
 }));
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/reports",
+  useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
+}));
+
+vi.mock("../../lib/api", () => ({
+  acceptImprovementRecommendation: vi.fn(),
+  deferImprovementRecommendation: vi.fn(),
+  generateImprovementRecommendations: vi.fn(),
+  previewImprovementPatch: vi.fn(),
+  rejectImprovementRecommendation: vi.fn(),
+}));
+
+function improvement(): ImprovementRecommendation {
+  return {
+    recommendationId: "rec_1",
+    projectId: "proj-a",
+    scope: { mode: "single-project" },
+    problemPattern: "missing-evidence",
+    title: "Require evidence",
+    summary: "Repeated missing evidence",
+    target: { kind: "prompt_template", description: "Prompt template" },
+    evidenceRefs: [],
+    suggestedChange: "Require evidence.",
+    patchPreview: {
+      status: "not_generated",
+      targetDescription: "Prompt template",
+    },
+    confidence: "high",
+    risk: "low",
+    status: "open",
+    actionHistory: [],
+    createdAt: "2026-05-18T00:00:00.000Z",
+    updatedAt: "2026-05-18T00:00:00.000Z",
+  };
+}
 
 function qualitySummaryFixture(
   over: Partial<QualitySummaryResponse> = {},
@@ -63,6 +103,7 @@ describe("ReportsPage", () => {
           },
         ]}
         quality={qualitySummaryFixture()}
+        recommendations={[]}
       />,
     );
 
@@ -93,6 +134,7 @@ describe("ReportsPage", () => {
             },
           ],
         })}
+        recommendations={[]}
       />,
     );
     expect(
@@ -101,7 +143,27 @@ describe("ReportsPage", () => {
   });
 
   it("renders an empty state when no reports exist", () => {
-    render(<ReportsPage reports={[]} quality={qualitySummaryFixture()} />);
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture()}
+        recommendations={[]}
+      />,
+    );
     expect(screen.getByText(/No reports yet/i)).toBeInTheDocument();
+  });
+
+  it("renders recommendations below quality analytics", () => {
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture()}
+        recommendations={[improvement()]}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: /Recommendations/i }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Require evidence").length).toBeGreaterThan(0);
   });
 });

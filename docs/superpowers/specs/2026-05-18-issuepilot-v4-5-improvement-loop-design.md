@@ -204,9 +204,22 @@ interface ImprovementActionHistoryEntry {
 
 interface ImprovementRecommendation {
   recommendationId: string;
+  /**
+   * 权威 projectId。single-project 模式始终就是当前 daemon 服务的
+   * project；team-project 模式镜像自 `x-issuepilot-project` header
+   * 解析到的 project。所有 store 索引、API filter 以及 audit log 都以
+   * 这个字段为准。
+   */
   projectId: string;
   scope: {
     mode: "single-project" | "team-project";
+    /**
+     * 仅 team-project 模式下镜像顶层 `projectId`，方便 dashboard 直接
+     * 在 `scope` 对象上做展示和后续 filter（与 V4.4
+     * `QualitySummaryResponse.scope.projectId` 对齐）；single-project
+     * 模式下省略。出现冲突时以顶层 `projectId` 为准。
+     */
+    projectId?: string;
     workflow?: string;
     taskType?: string;
   };

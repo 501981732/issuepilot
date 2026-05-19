@@ -10,6 +10,34 @@
 
 ---
 
+## Scope Check
+
+本计划只实现 `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md` 描述的 V4.5 Improvement Loop。任务粒度与 V4.4 plan
+（`docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`）保持一致：TDD 节奏（先写失败测试再实现）、每个 task
+一个 commit、最终用 `scripts/ci-equivalent-check.sh` 收口。
+
+### In Scope
+
+- Shared contract（`@issuepilot/shared-contracts/src/improvement.ts`）：`ImprovementRecommendation`、`ImprovementPatchPreview`、`ImprovementEvidenceRef`、`ImprovementActionHistoryEntry`、`ImprovementRecommendationStatus`、`ImprovementTargetKind` 及对应 type guard。
+- Orchestrator `improvements` 模块（`apps/orchestrator/src/improvements/`）：deterministic 模板、engine、本地 JSON store、patch preview 生成、service 与 Fastify routes。
+- `GET /api/improvements/recommendations`、`GET /api/improvements/recommendations/:id`、`POST /api/improvements/recommendations:generate`、`POST /api/improvements/recommendations/:id/{accept,reject,defer}`、`POST /api/improvements/recommendations/:id/patch-preview`。
+- Daemon 装配：single 与 team 模式分别注入 `improvements` 与 `improvementsByProject` deps（与 V4.4 quality 同款 resolver pattern）。
+- Dashboard：`apps/dashboard/lib/api.ts` 客户端、`/reports` 顶部新增 Improvement Recommendations section、中英 i18n。
+- 文档：README 中 / 中-alias / 英三份 V4 roadmap、`USAGE.md` / `USAGE.zh-CN.md`、`CHANGELOG.md` `[Unreleased]`、acceptance 文件。
+- 测试：`packages/shared-contracts` contract round-trip、各 improvements 单测、`apps/orchestrator/src/__tests__/improvements-v45-e2e.test.ts` 端到端、dashboard 客户端/UI 单测。
+
+### Out of Scope
+
+- 自动应用 patch、自动 commit、自动改写 `WORKFLOW.md` / `.agents/skills/*` / `AGENTS.md` / 项目规则等文件（保持 V4.5 inert）。
+- 引入 LLM 作为第一版分类器或建议生成器；模板与失败模式映射全部 deterministic。
+- 任何 Postgres / 外部分析存储 / 后台分析 job；仍走 `~/.issuepilot/<scope>/recommendations/<id>.json` 本地 JSON。
+- 修改 `RunStatus` / `PipelineStatus` 枚举、`ai-ready` / `ai-running` / `human-review` / `ai-rework` / `ai-failed` / `ai-blocked` 等 work-item label 状态机、`x-issuepilot-project` header 之外的 team scope 机制。
+- 反向修改 V4.4 `apps/orchestrator/src/quality/*` 模块、`/api/quality/summary` 契约、`apps/dashboard/components/reports/quality-analytics.tsx`。
+- 任何写 secret / token 到 store、prompt、log、dashboard 状态的行为；`AGENTS.md` 不变量。
+- 触碰 `elixir/` 目录（Symphony Elixir 参考实现，不在 IssuePilot 实现路线）。
+
+---
+
 ## File Structure
 
 ### Shared Contracts
@@ -2072,7 +2100,7 @@ git commit -m "feat(orchestrator): expose improvement recommendation api"
 **Files:**
 - Modify: `apps/orchestrator/src/daemon.ts`
 - Modify: `apps/orchestrator/src/team/daemon.ts`
-- Modify: `apps/orchestrator/src/__tests__/improvements-v45-e2e.test.ts`
+- Create: `apps/orchestrator/src/__tests__/improvements-v45-e2e.test.ts`
 
 - [ ] **Step 1: Write failing wiring/E2E test**
 
@@ -3003,6 +3031,10 @@ import type {
 Import the API actions and component:
 
 ```ts
+"use client";
+
+import { useRouter } from "next/navigation";
+
 import {
   acceptImprovementRecommendation,
   deferImprovementRecommendation,
@@ -3012,6 +3044,14 @@ import {
 } from "../../lib/api";
 import { Recommendations } from "./recommendations";
 ```
+
+> Use `useRouter().refresh()`（Next.js 14 App Router）来在 mutation 之后让
+> 服务端 `app/reports/page.tsx` 重新拉取
+> `getImprovementRecommendations()`；不要用 `window.location.reload()`，
+> 它会丢失局部 state、quality filter、滚动位置，并且与 V4.4
+> `apps/dashboard/components/reports/quality-analytics.tsx` 的「server
+> component 数据 + 局部 client interaction」基线不一致（参见
+> `AGENTS.md`「实现规则」节）。
 
 Update props:
 
@@ -3034,6 +3074,7 @@ export function ReportsPage({
   const t = useTranslations("reportsPage");
   const tCommon = useTranslations("common");
   const dash = tCommon("dash");
+  const router = useRouter();
   const [sortKey, setSortKey] = useState<SortKey>("updatedAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -3044,20 +3085,20 @@ export function ReportsPage({
         recommendations={recommendations}
         onGenerate={() =>
           generateImprovementRecommendations({ filters: quality.filters }).then(
-            () => window.location.reload(),
+            () => router.refresh(),
           )
         }
         onAccept={(id) =>
-          acceptImprovementRecommendation(id).then(() => window.location.reload())
+          acceptImprovementRecommendation(id).then(() => router.refresh())
         }
         onReject={(id) =>
-          rejectImprovementRecommendation(id).then(() => window.location.reload())
+          rejectImprovementRecommendation(id).then(() => router.refresh())
         }
         onDefer={(id) =>
-          deferImprovementRecommendation(id).then(() => window.location.reload())
+          deferImprovementRecommendation(id).then(() => router.refresh())
         }
         onPreview={(id) =>
-          previewImprovementPatch(id).then(() => window.location.reload())
+          previewImprovementPatch(id).then(() => router.refresh())
         }
       />
       {/* existing report table */}
@@ -3066,7 +3107,7 @@ export function ReportsPage({
 }
 ```
 
-Use the actual JSX shape in `reports-page.tsx`; insert the `Recommendations` block directly after the existing `QualityAnalytics` block without changing the report table layout.
+Use the actual JSX shape in `reports-page.tsx`; insert the `Recommendations` block directly after the existing `QualityAnalytics` block without changing the report table layout. If `ReportsPage` was previously a server component, mark it `"use client"` here because of `useRouter()`; the server boundary moves up to `app/reports/page.tsx`, which already does the data fetch.
 
 - [ ] **Step 5: Run page integration tests**
 

@@ -372,6 +372,10 @@ success rate 才能反映"人接受的成功"，而不是"AI 自我标记成功"
 - `runId?`：对应 Codex run 的 ID（与 RunReportArtifact 绑定）；agent 未启动场景下为 `null`
 - `evidenceLinks`：指向 evidence files / RunReportArtifact 中的 anchor
 - `lastError?` (`{ code, message, hint? }`)
+  - `status = failed` 时 `lastError` **必填**。
+  - `status = incomplete` 时 `lastError` 可填以解释为何 incomplete（例如
+    `evidence_partial`），但不是必填。
+  - `status ∈ {running, complete, cancelled}` 时 `lastError` 可省。
 - `redactedFields[]`：记录哪些字段在写盘时被 redaction（V4.4 已有机制）
 
 角色专属字段（coder）：
@@ -716,15 +720,20 @@ failure pattern 拆分（一个反映 agent 配置质量，一个反映 coder �
 ### 14.6 PipelineRun cancel
 
 - operator 在 dashboard 上 cancel：orchestrator 通过现有 cancel registry
-  发信号给 Codex run，AgentReport.status = `cancelled`。回写规则：
+  发信号给 Codex run，AgentReport.status = `cancelled`。回写规则按 §16.2 表
+  `pipeline_cancelled` 行映射：
   - 若 cancel 发生在 `running_coding` 之前（仅 PipelineRun draft 已创建），
-    TaskNode 回 `ready`，PipelineRun.status = `cancelled`；
-  - 若 cancel 发生在 `running_coding` / `running_reviewer` /
-    `running_test_evidence` 任一阶段，TaskNode 进 `needs_rework`，
-    PipelineRun.status = `cancelled`，roleFailureReason 标对应的
-    `*_cancelled` reason（V4.6 直接复用 `reviewer_unavailable` /
-    `evidence_unavailable` reason 集合，event key 区分 `*_cancelled`）。
-  - 两种情况都同时写入 `TaskNode.last_cancelled_at`。
+    TaskNode 回 `ready`，PipelineRun.status = `cancelled`，event key
+    `coder_cancelled`，TaskNode 不写 roleFailureReason；
+  - 若 cancel 发生在 `running_coding` 阶段，TaskNode 进 `needs_rework`，
+    roleFailureReason = `coding_failed`，event key `coder_cancelled`；
+  - 若 cancel 发生在 `running_reviewer` 阶段，TaskNode 进 `needs_rework`，
+    roleFailureReason = `reviewer_unavailable`，event key `reviewer_cancelled`；
+  - 若 cancel 发生在 `running_test_evidence` 阶段，TaskNode 进 `needs_rework`，
+    roleFailureReason = `evidence_unavailable`，event key
+    `test_evidence_cancelled`。
+  - 以上所有情况都同时写入 `TaskNode.last_cancelled_at`，并把
+    AgentReport.lastError.code 置为 `pipeline_cancelled`。
 - orchestrator auto_advance 检查 `last_cancelled_at` 并跳过该 TaskNode，
   直到 operator 在 dashboard 上显式触发新一轮 pipeline（清空标记）。
   这一约束确保 cancel 行为符合 §7.2 "失败时不自动重跑"。
@@ -814,7 +823,7 @@ event key 在 V4.6 层面共享同一组字面量，避免实施期混乱：
 | `reviewer_unavailable` | Codex run 崩 / timeout | `reviewer_unavailable` | `reviewer_unavailable` | `reviewer_unavailable` |
 | `runner_unavailable` | Codex app-server 启动失败 | `coding_failed` (coder) / `reviewer_unavailable` (reviewer) / `evidence_unavailable` (test_evidence) | `runner_unavailable` | `runner_unavailable` |
 | `parse_failed` | LLM 输出 schema 解析失败 | `reviewer_unavailable` | `reviewer_unavailable` | `reviewer_unavailable` |
-| `sandbox_violation` | 任一 agent 越界写文件 / 调未授权 tool | `coding_failed` (coder) / `reviewer_cannot_review` (reviewer) / `evidence_unavailable` (test_evidence) | `sandbox_violation` | `sandbox_violation` |
+| `sandbox_violation` | 任一 agent 越界写文件 / 调未授权 tool | `sandbox_violation` | `sandbox_violation` | `sandbox_violation` |
 | `redaction_failed` | redaction 模块异常（fail-closed） | `reviewer_cannot_review` | `redaction_failed` | `redaction_failed` |
 | `storage_full` | 磁盘写入失败 | `storage_full` (TaskNode → `blocked`) | `storage_full` | `storage_full` |
 | `gitlab_rate_limited` | MR publish 收到 429 | n/a（fail soft，不改 TaskNode） | n/a | n/a |
@@ -822,10 +831,25 @@ event key 在 V4.6 层面共享同一组字面量，避免实施期混乱：
 | `evidence_unavailable` | test_evidence agent 崩 | `evidence_unavailable` | `evidence_unavailable` | `evidence_unavailable` |
 | `evidence_partial` | test_evidence 部分 request 失败 | `evidence_partial` | `evidence_partial` | `evidence_partial` |
 | `reviewer_requested_changes` | reviewer decision = request_changes | `reviewer_requested_changes` | `reviewer_requested_changes` | `reviewer_requested_changes` |
+| `pipeline_cancelled` | operator 在 dashboard 上 cancel | `coding_failed` (running_coding) / `reviewer_unavailable` (running_reviewer) / `evidence_unavailable` (running_test_evidence) / 不变 (ready 前) | `coder_cancelled` / `reviewer_cancelled` / `test_evidence_cancelled` | `pipeline_cancelled` |
+
+表脚注：
+
+- 多值 TaskNode roleFailureReason 表示按场景 / 角色映射：
+  - `prompt_template_missing`：在 role profile 初始化阶段对应 `role_profile_invalid`
+    （TaskNode 仍 `ready`，dashboard 提示 workflow 配置错误）；在 reviewer 启动前
+    fail 对应 `reviewer_cannot_review`（TaskNode → `blocked`）。
+  - `runner_unavailable`：按角色拆分（coder → `coding_failed`、reviewer →
+    `reviewer_unavailable`、test_evidence → `evidence_unavailable`），见 §21 / §21.1 footnote。
+  - `pipeline_cancelled`：按 cancel 发生时 PipelineRun.status 拆分（见 §14.6）。
+- `sandbox_violation` 在 TaskNode 层不按角色拆分，角色信息从 `AgentReport.role` 读取
+  （与 §13 / §7.3 / §14.4 口径一致）。
+- `evidence_partial` 在 AgentReport.status = `incomplete` 场景下作为 lastError.code
+  非必填（见 §8.2 lastError 释义）；其他失败场景必填。
 
 实施层在写 AgentReport 时必须从这张表里选 lastError.code；event store、V4.4
 FailurePatternId、dashboard filter bucket（见 §21.1）严格按表对齐。新增 code
-必须先更新本表与 §21.1 才能在代码里使用。
+必须**同时**更新本表与 §21.1 表才能在代码里使用，两表是双向 truth source。
 
 ## 17. UI / dashboard
 
@@ -898,7 +922,7 @@ recipe 标签的来源：
   - `reviewer.cannot_review_rate` = `count(decision = cannot_review) / count(decision != null OR status = failed)`
   - `reviewer.unavailable_rate` = `count(reviewer.status = failed AND lastError.code ∈ {reviewer_unavailable, runner_unavailable}) / count(reviewer_attempted)`
   - `test_evidence.evidence_complete_rate` = `count(testEvidence.status = complete) / count(test_evidence_attempted)`
-  - `test_evidence.partial_rate` = `count(PipelineRun.status = partial) / count(pipelines_with_test_evidence)`
+  - `test_evidence.partial_rate` = `count(testEvidence.status ∈ {incomplete, failed}) / count(test_evidence_attempted)`（与 `evidence_complete_rate` 对偶）
 - 失败模式表格新增 `role` 列：每个 failure pattern 显示集中在哪个角色。
 - drill-down 增加 `agentReportId` link，跳转到 AgentReport tab。
 
@@ -1049,7 +1073,10 @@ orchestrator HTTP API 新增以下 endpoints。错误响应沿用 V4.5 已建立
 补充 §14 之外的边界：
 
 - **Codex app-server 启动失败**：写 `runner_unavailable` event，
-  PipelineRun.status = `failed`。所有 task `failed` reason `runner_unavailable`。
+  PipelineRun.status = `failed`；TaskNode reason 按角色映射回 §16.2 表
+  （coder → `coding_failed`、reviewer → `reviewer_unavailable`、
+  test_evidence → `evidence_unavailable`）。事件维度保留根因，TaskNode 维度
+  保留角色语义。
 - **prompt template 文件缺失**：role_profile_invalid，TaskNode 停在 `ready`，
   dashboard 提示 workflow YAML 错误。
 - **token redaction 失败**：被视为 critical bug，写 `redaction_failed`
@@ -1076,7 +1103,9 @@ dashboard event filter bucket 的对应：
 | `pipeline_init_failed` | 仍 `ready` | n/a | `pipeline_init_failed` | configuration |
 | `role_profile_invalid` | 仍 `ready` | n/a | `role_profile_invalid` | configuration |
 | `runner_unavailable` | `failed` (coder) / `blocked` (reviewer 等) | `failed` | `runner_unavailable` | infrastructure |
-| `*_cancelled`（operator 主动 cancel） | `ready` / `needs_rework`（见 §14.6） | `cancelled` | `pipeline_cancelled` | n/a（不计入失败统计） |
+| `coder_cancelled` | `ready` (cancel 发生在 PipelineRun draft 阶段) / `needs_rework` (cancel 发生在 `running_coding`) | `cancelled` | `pipeline_cancelled` | n/a（不计入失败统计） |
+| `reviewer_cancelled` | `needs_rework`（cancel 发生在 `running_reviewer`） | `cancelled` | `pipeline_cancelled` | n/a |
+| `test_evidence_cancelled` | `needs_rework`（cancel 发生在 `running_test_evidence`） | `cancelled` | `pipeline_cancelled` | n/a |
 | `sandbox_violation` | `failed` | `failed` | `sandbox_violation` | safety |
 | `redaction_failed` | `blocked` | `failed` | `redaction_failed` | safety |
 | `storage_full` | `blocked` | n/a | `storage_full` | infrastructure |
@@ -1203,9 +1232,9 @@ V4.6 至少满足：
    evidenceRequest、findings、inlineComments、mrPublication 字段都按
    contract 写入；schema 通过 contract tests。
 4. **MR 联动护栏**：reviewer 的 1 主 note + N inline 推到 fake GitLab
-   MR；§12 的 6 条护栏（聚合主 note / severity_threshold /
-   max_inline_comments / prefix / revoke / fail soft / redaction）都通过
-   unit + E2E 验证。
+   MR；§12 的 6 条护栏（prefix / 聚合主 note / severity_threshold /
+   fail soft / revoke / redaction）+ `max_inline_comments` 额外约束都
+   通过 unit + E2E 验证。
 5. **失败 reason 显式**：reviewer_unavailable / reviewer_requested_changes
    / reviewer_cannot_review / evidence_unavailable / coding_failed /
    sandbox_violation 各自的 dashboard 展示和 V4.4 quality summary 切片

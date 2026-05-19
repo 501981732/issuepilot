@@ -241,6 +241,47 @@ describe("WorkItemStore", () => {
     expect(JSON.parse(body).overallStatus).toBe("complete");
   });
 
+  it("V4.6 migration：旧 status='running' 读出时升级为 running_coding", async () => {
+    const store = createWorkItemStore({ rootDir: root });
+    const legacyTask: TaskNode = {
+      ...baseTask,
+      taskId: "t_legacy",
+      status: "running" as TaskNode["status"],
+    };
+    await store.saveTaskPlan(
+      makePlan({ planId: "tp_legacy", version: 5, tasks: [legacyTask] }),
+    );
+    const fresh = createWorkItemStore({ rootDir: root });
+    const plan = await fresh.getCurrentPlan("wi_01");
+    expect(plan?.tasks[0]?.status).toBe("running_coding");
+  });
+
+  it("V4.6 TaskNode 字段往返不丢（pendingRecipe / last_cancelled_at / currentPipelineRunId / roleFailureReason）", async () => {
+    const store = createWorkItemStore({ rootDir: root });
+    const taskV46: TaskNode = {
+      ...baseTask,
+      taskId: "t_v46",
+      status: "running_reviewer",
+      pendingRecipe: "coding_plus_reviewer",
+      pendingRecipeSource: "operator_override",
+      last_cancelled_at: "2026-05-19T01:00:00.000Z",
+      currentPipelineRunId: "pr_xx",
+      roleFailureReason: "reviewer_cannot_review",
+    };
+    await store.saveTaskPlan(
+      makePlan({ planId: "tp_v46", version: 7, tasks: [taskV46] }),
+    );
+    const fresh = createWorkItemStore({ rootDir: root });
+    const plan = await fresh.getCurrentPlan("wi_01");
+    const round = plan?.tasks[0];
+    expect(round?.status).toBe("running_reviewer");
+    expect(round?.pendingRecipe).toBe("coding_plus_reviewer");
+    expect(round?.pendingRecipeSource).toBe("operator_override");
+    expect(round?.last_cancelled_at).toBe("2026-05-19T01:00:00.000Z");
+    expect(round?.currentPipelineRunId).toBe("pr_xx");
+    expect(round?.roleFailureReason).toBe("reviewer_cannot_review");
+  });
+
   it("persists evidence confirmations under evidence-confirmations/<workItemId>.json", async () => {
     const store = createWorkItemStore({ rootDir: root });
     const saved = await store.saveEvidenceConfirmation("wi_01", "ev_01", {

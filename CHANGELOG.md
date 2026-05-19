@@ -6,6 +6,52 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 5（Pipeline Coordinator + Auto Advance + TaskNode 迁移）**：
+  - `apps/orchestrator/src/work-items/store.ts`：读路径加 V4.6 TaskNode
+    migration（`legacyRunningStateToV46`），把旧版 `status="running"` 升级到
+    `running_coding`；V4.6 新字段（`pendingRecipe` / `pendingRecipeSource` /
+    `currentPipelineRunId` / `last_cancelled_at` / `roleFailureReason`）经
+    JSON 序列化往返保留，新增 2 条 store 测试覆盖。
+  - `apps/orchestrator/src/pipelines/coordinator.ts`：实现 V4.6 pipeline
+    coordinator，按 effective recipe 顺序调用 coder / reviewer / test_evidence
+    agent（依赖注入 + role profile resolver），把每一步结果持久化到
+    `PipelineStore` 并同步 patch TaskNode。落地分支：
+    - coding_only / coding_plus_reviewer / full_pipeline 全部 happy
+      path → `PipelineRun.status = awaiting_human_review`、TaskNode →
+      `awaiting_human_review`。
+    - test_evidence `incomplete` → PipelineRun `partial`、TaskNode 标
+      `roleFailureReason = evidence_partial`。
+    - 任一 agent `failed` → PipelineRun `failed`，TaskNode 用
+      `failure-mapping.toTaskNodeReason` 计算 reason；`storage_full`
+      映射成 TaskNode `blocked`，其他映射成 `failed`。
+    - reviewer.decision = `request_changes` → PipelineRun
+      `awaiting_rework`、TaskNode `needs_rework` reason=
+      `reviewer_requested_changes`。
+    - reviewer.decision = `cannot_review` → PipelineRun `failed`、TaskNode
+      `blocked` reason=`reviewer_cannot_review`。
+    - agent 返回 `cancelled` → PipelineRun `cancelled`、TaskNode
+      `needs_rework` + `last_cancelled_at` 写入。
+    - 所有分支同步 emit 事件（`pipeline_started` / `pipeline_finished` /
+      `coding_failed` / `reviewer_cannot_review` /
+      `reviewer_requested_changes` / `coder_cancelled` 等）。
+    - PipelineRun.recipeSource 按 `EffectiveRecipeSource` 折叠：
+      `workflow_default` 直传，`task_pending` → `operator_override`。
+    - `TaskPatch` 类型显式允许 `undefined` 用于清空 V4.6 optional 字段，
+      兼容 `exactOptionalPropertyTypes` 严格模式。
+  - `apps/orchestrator/src/pipelines/auto-advance.ts`：纯函数
+    `shouldAutoAdvance({pipelineRun, finishedReport, task})` 给出
+    `{advance, nextRole?}`；`nextPipelineStatusFor(role)` 给出对应的
+    PipelineRun 中间态；`createAutoAdvance()` 包装成 EventBus 友好的
+    `AutoAdvanceTrigger`。识别 task.last_cancelled_at / 失败 / cancelled /
+    reviewer.request_changes|cannot_review 等抑制条件，末端 role
+    一律不推进。
+  - 测试：`coordinator.test.ts`（11 用例覆盖 coding_only / coding_plus_reviewer
+    / full_pipeline 各 happy + fail + cancel + reviewer decision +
+    test_evidence partial / sandbox_violation），`auto-advance.test.ts`
+    （12 用例覆盖 advance 决策 / 抑制条件 / nextPipelineStatusFor /
+    AutoAdvanceTrigger）；orchestrator 整套 738 用例全绿，
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。
+
 - 2026-05-19 — **V4.6 Phase 4（Recipe + Role Profile + Failure Mapping）**：
   - `apps/orchestrator/src/pipelines/recipe.ts`：
     `resolveEffectiveRecipe({workflowDefault, pendingRecipe, pipelineRecipe})`

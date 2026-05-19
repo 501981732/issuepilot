@@ -30,8 +30,8 @@ export type EffectiveRecipeSource =
 
 export interface ResolveEffectiveRecipeInput {
   workflowDefault: WorkflowRecipe;
-  pendingRecipe?: WorkflowRecipe;
-  pipelineRecipe?: WorkflowRecipe;
+  pendingRecipe?: WorkflowRecipe | undefined;
+  pipelineRecipe?: WorkflowRecipe | undefined;
 }
 
 export interface EffectiveRecipe {

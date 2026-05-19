@@ -2,6 +2,40 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.5 Workflow / Skills Improvement Loop (Design)
+
+### Added
+
+- 2026-05-18 — **V4.5 Improvement Loop 设计 spec 与实施计划**：在 V4.4
+  Quality Analytics 基础上规划 workflow / skills / prompt / 项目规则
+  的改进闭环，第一版严格 observe + suggest（不自动 apply、不静默改
+  workflow / skills / prompt / `AGENTS.md`、不引入 LLM 作为分类器、
+  不引入 Postgres / 后台 job、不修改 label 状态机）。本次仅落地文档：
+  - `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`
+    （V4.5 设计 spec，含数据模型、API 契约、安全边界与验收标准）。
+  - `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
+    （V4.5 实施计划，覆盖 shared contract → orchestrator module →
+    daemon wiring → dashboard → docs / acceptance 共 12 个 task；新增
+    `## Scope Check` / `In Scope` / `Out of Scope` 节与 V4.4 plan 对齐）。
+  - `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+    V4 智能工作台总览 roadmap：V4.5 从"设计中"刷新为"实施计划已完成"。
+  - 三份 README（`README.md`、`README.zh-CN.md`、`README.en.md`）V4
+    roadmap 同步新增 V4.5 段落，明确"V4.5 是观察 + 建议，不自动改写"。
+
+### Fixed
+
+- 2026-05-19 — **V4.5 设计 spec 与实施计划字段一致性收口**：根据 V4.5
+  docs code review，把 `ImprovementRecommendation.scope.projectId?:
+  string` 显式补到 spec §8 数据模型并说明它与顶层 `projectId` 的关系
+  （team-project 镜像、single-project 省略，权威字段仍为顶层
+  `projectId`）；同步把 plan Task 7 `Files` header 中的
+  `improvements-v45-e2e.test.ts` 由 `Modify` 改成 `Create`；plan
+  Task 10 `/reports` 集成把 mutation 之后的刷新由
+  `window.location.reload()` 改成 Next.js 14 App Router 的
+  `useRouter().refresh()`，与 V4.4 `quality-analytics.tsx`「server
+  component 数据 + 局部 client interaction」基线和 `AGENTS.md`
+  「实现规则」一致。
+
 ## [Unreleased] V4.4 Quality Analytics
 
 ### Added

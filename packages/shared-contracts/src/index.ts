@@ -2,6 +2,7 @@ export const PACKAGE_NAME = "@issuepilot/shared-contracts";
 export const VERSION = "0.0.0";
 
 export * from "./agent-report.js";
+export * from "./pipeline.js";
 export * from "./api.js";
 export * from "./events.js";
 export * from "./improvement.js";

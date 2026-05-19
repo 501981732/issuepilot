@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 
 import {
   acceptImprovementRecommendation,
+  ApiError,
   deferImprovementRecommendation,
   generateImprovementRecommendations,
   previewImprovementPatch,
@@ -128,27 +129,45 @@ export function ReportsPage({
   const router = useRouter();
   const [sortKey, setSortKey] = useState<SortKey>("updatedAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [recommendationError, setRecommendationError] = useState<
+    string | undefined
+  >(undefined);
 
-  async function handleGenerate() {
-    await generateImprovementRecommendations({});
-    router.refresh();
+  // Wrap each improvement action so that:
+  //   1. The user always sees a localised banner instead of an unhandled
+  //      rejection (review minor #6 — operator-facing failures).
+  //   2. `router.refresh()` still runs even on failure so the dashboard
+  //      eventually reconciles with the orchestrator state (e.g. after the
+  //      action service flips back to available).
+  async function runImprovementAction(
+    action: () => Promise<unknown>,
+  ): Promise<void> {
+    try {
+      setRecommendationError(undefined);
+      await action();
+    } catch (err) {
+      const code =
+        err instanceof ApiError && err.code ? err.code : "unknown";
+      const tail =
+        err instanceof Error && err.message ? err.message : String(err);
+      setRecommendationError(
+        t("recommendations.actionFailed", { code, message: tail }),
+      );
+    } finally {
+      router.refresh();
+    }
   }
-  async function handleAccept(id: string) {
-    await acceptImprovementRecommendation(id);
-    router.refresh();
-  }
-  async function handleReject(id: string) {
-    await rejectImprovementRecommendation(id);
-    router.refresh();
-  }
-  async function handleDefer(id: string) {
-    await deferImprovementRecommendation(id);
-    router.refresh();
-  }
-  async function handlePreview(id: string) {
-    await previewImprovementPatch(id);
-    router.refresh();
-  }
+
+  const handleGenerate = (): Promise<void> =>
+    runImprovementAction(() => generateImprovementRecommendations({}));
+  const handleAccept = (id: string): Promise<void> =>
+    runImprovementAction(() => acceptImprovementRecommendation(id));
+  const handleReject = (id: string): Promise<void> =>
+    runImprovementAction(() => rejectImprovementRecommendation(id));
+  const handleDefer = (id: string): Promise<void> =>
+    runImprovementAction(() => deferImprovementRecommendation(id));
+  const handlePreview = (id: string): Promise<void> =>
+    runImprovementAction(() => previewImprovementPatch(id));
 
   const counters = useMemo(() => {
     const total = reports.length;
@@ -320,6 +339,15 @@ export function ReportsPage({
       </section>
 
       <QualityAnalytics summary={quality} />
+
+      {recommendationError ? (
+        <p
+          role="alert"
+          className="rounded-md border border-danger/40 bg-danger-soft px-4 py-2 text-xs text-danger-fg"
+        >
+          {recommendationError}
+        </p>
+      ) : null}
 
       <Recommendations
         recommendations={recommendations}

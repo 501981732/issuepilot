@@ -415,7 +415,8 @@
       "risk": "风险：{value}",
       "status": "状态：{value}",
       "target": "目标：{value}",
-      "evidenceCount": "{count} 条证据"
+      "evidenceCount": "{count} 条证据",
+      "actionFailed": "改进操作失败（{code}）：{message}"
     }
   },
   "runDetail": {

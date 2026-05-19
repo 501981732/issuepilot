@@ -3,9 +3,13 @@ import type {
   ImprovementRecommendation,
   QualitySummaryResponse,
 } from "@issuepilot/shared-contracts";
-import { screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  acceptImprovementRecommendation,
+  ApiError,
+} from "../../lib/api";
 import { renderWithIntl as render } from "../../test/intl";
 
 import { ReportsPage } from "./reports-page";
@@ -19,13 +23,23 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn(), replace: vi.fn() }),
 }));
 
-vi.mock("../../lib/api", () => ({
-  acceptImprovementRecommendation: vi.fn(),
-  deferImprovementRecommendation: vi.fn(),
-  generateImprovementRecommendations: vi.fn(),
-  previewImprovementPatch: vi.fn(),
-  rejectImprovementRecommendation: vi.fn(),
-}));
+import type * as ApiModule from "../../lib/api";
+
+vi.mock("../../lib/api", async () => {
+  const actual = await vi.importActual<typeof ApiModule>("../../lib/api");
+  return {
+    ...actual,
+    acceptImprovementRecommendation: vi.fn(),
+    deferImprovementRecommendation: vi.fn(),
+    generateImprovementRecommendations: vi.fn(),
+    previewImprovementPatch: vi.fn(),
+    rejectImprovementRecommendation: vi.fn(),
+  };
+});
+
+beforeEach(() => {
+  vi.mocked(acceptImprovementRecommendation).mockReset();
+});
 
 function improvement(): ImprovementRecommendation {
   return {
@@ -165,5 +179,27 @@ describe("ReportsPage", () => {
       screen.getByRole("region", { name: /Recommendations/i }),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Require evidence").length).toBeGreaterThan(0);
+  });
+
+  it("surfaces an alert when an improvement action fails", async () => {
+    vi.mocked(acceptImprovementRecommendation).mockRejectedValueOnce(
+      new ApiError("POST … failed: HTTP 503", 503, {
+        ok: false,
+        code: "improvements_unavailable",
+      }),
+    );
+    render(
+      <ReportsPage
+        reports={[]}
+        quality={qualitySummaryFixture()}
+        recommendations={[improvement()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "improvements_unavailable",
+      );
+    });
   });
 });

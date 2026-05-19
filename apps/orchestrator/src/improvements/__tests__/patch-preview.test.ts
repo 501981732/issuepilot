@@ -76,6 +76,50 @@ describe("generatePatchPreview", () => {
     });
   });
 
+  it("blocks when the target path falls outside the allowed sandbox", async () => {
+    const root = await mkdtemp(join(tmpdir(), "issuepilot-patch-preview-"));
+    const outside = await mkdtemp(join(tmpdir(), "issuepilot-other-"));
+    const targetPath = join(outside, "ESCAPE.md");
+    await writeFile(targetPath, "noop\n", "utf8");
+
+    const preview = await generatePatchPreview({
+      recommendation: rec({
+        target: {
+          kind: "prompt_template",
+          path: targetPath,
+          description: "Outside sandbox",
+        },
+      }),
+      allowedPathPrefixes: [root],
+    });
+
+    expect(preview).toMatchObject({
+      status: "blocked",
+      blockedReason: "target_outside_sandbox",
+      targetPath,
+    });
+  });
+
+  it("allows reads inside the sandbox when prefixes are configured", async () => {
+    const root = await mkdtemp(join(tmpdir(), "issuepilot-patch-preview-"));
+    const targetPath = join(root, "AGENTS.md");
+    await writeFile(targetPath, "rules\n", "utf8");
+
+    const preview = await generatePatchPreview({
+      recommendation: rec({
+        target: {
+          kind: "project_rules",
+          path: targetPath,
+          description: "Project rules",
+        },
+      }),
+      allowedPathPrefixes: [root],
+    });
+
+    expect(preview.status).toBe("generated");
+    expect(preview.targetPath).toBe(targetPath);
+  });
+
   it("marks existing generated previews stale when the source hash changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "issuepilot-patch-preview-"));
     const targetPath = join(root, "WORKFLOW.md");

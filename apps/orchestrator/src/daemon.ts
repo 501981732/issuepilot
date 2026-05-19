@@ -507,8 +507,31 @@ export async function startDaemon(
   const improvementStore = createImprovementStore({
     rootDir: path.join(workflow.workspace.root, ".issuepilot"),
   });
+  // Patch preview sandbox: only read files inside the workflow file itself or
+  // anywhere under the workflow workspace root (where project rules, prompt
+  // templates and skill instructions live). Keeps a malicious / tampered
+  // recommendation.json from getting the orchestrator to read credentials.
+  const improvementSandbox = [
+    workflowPath,
+    path.resolve(workflow.workspace.root),
+  ];
   const improvementService = createImprovementService({
     store: improvementStore,
+    allowedPathPrefixes: improvementSandbox,
+    resolveTargetPath: ({ template }) => {
+      // First-pass mapping per spec §7 / spec §10. We only resolve the two
+      // canonical targets that live at well-known paths; the other kinds stay
+      // `undefined` and patch preview surfaces `target_path_missing` until a
+      // future change adds a richer resolver.
+      switch (template.targetKind) {
+        case "workflow_front_matter":
+          return workflowPath;
+        case "project_rules":
+          return path.join(workflow.workspace.root, "AGENTS.md");
+        default:
+          return undefined;
+      }
+    },
     buildQualitySummary: async (input) => {
       const collected = await collectQualitySources({
         metadata: { workflow: path.basename(workflowPath) },

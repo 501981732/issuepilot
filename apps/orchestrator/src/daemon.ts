@@ -65,6 +65,10 @@ import {
   reconcile,
 } from "./orchestrator/reconcile.js";
 import { sweepReviewFeedbackOnce } from "./orchestrator/review-feedback.js";
+import { createImprovementService } from "./improvements/service.js";
+import { createImprovementStore } from "./improvements/store.js";
+import { buildQualitySummary } from "./quality/aggregate.js";
+import { collectQualitySources } from "./quality/collect.js";
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
@@ -494,6 +498,40 @@ export async function startDaemon(
   // the V4.1 routes (returning planner_failed) instead of crashing.
   const workItemStore = createWorkItemStore({
     rootDir: path.join(workflow.workspace.root, ".issuepilot"),
+  });
+  // V4.5 Improvement Loop: recommendations live alongside reports and work
+  // items so support tarballs capture the operator review trail. The store
+  // is lazy on disk so a daemon that never runs Improvement actions still
+  // exposes the routes (returning empty lists) without polluting the
+  // workspace tree.
+  const improvementStore = createImprovementStore({
+    rootDir: path.join(workflow.workspace.root, ".issuepilot"),
+  });
+  const improvementService = createImprovementService({
+    store: improvementStore,
+    buildQualitySummary: async (input) => {
+      const collected = await collectQualitySources({
+        metadata: { workflow: path.basename(workflowPath) },
+        reports: reportStore,
+        workItems: workItemStore,
+      });
+      return buildQualitySummary({
+        items: collected.items,
+        filters: {
+          from:
+            input.filters?.from ??
+            new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+          to: input.filters?.to ?? new Date().toISOString(),
+          window: input.filters?.window ?? "7d",
+          ...(input.filters?.workflow ? { workflow: input.filters.workflow } : {}),
+          ...(input.filters?.taskType ? { taskType: input.filters.taskType } : {}),
+          ...(input.filters?.status ? { status: input.filters.status } : {}),
+          ...(input.filters?.pattern ? { pattern: input.filters.pattern } : {}),
+        },
+        scope: { mode: "single-project" },
+        diagnostics: collected.diagnostics,
+      });
+    },
   });
   const workItemPlanner =
     deps.workItemPlanner ?? createDefaultWorkItemPlanner();
@@ -1413,6 +1451,7 @@ export async function startDaemon(
         reports: reportStore,
         workItems: workItemStore,
       },
+      improvements: improvementService,
     },
     { host, port },
   );

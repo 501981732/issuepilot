@@ -11,6 +11,10 @@ import {
   type LeaseStore,
 } from "../runtime/leases.js";
 import { createRuntimeState, type RuntimeState } from "../runtime/state.js";
+import { createImprovementService } from "../improvements/service.js";
+import { createImprovementStore } from "../improvements/store.js";
+import { buildQualitySummary } from "../quality/aggregate.js";
+import { collectQualitySources } from "../quality/collect.js";
 import { createServer, type WorkItemService } from "../server/index.js";
 import {
   createWorkItemPlanner,
@@ -220,6 +224,10 @@ export async function startTeamDaemon(
   const workItemsByProject = new Map<string, WorkItemService>();
   const reportsByProject = new Map<string, ReportStore>();
   const qualityByProject = new Map<string, QualityCollectorDeps>();
+  const improvementsByProject = new Map<
+    string,
+    ReturnType<typeof createImprovementService>
+  >();
   for (const project of registry.enabledProjects()) {
     const reportStore = createReportStore({
       rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
@@ -238,6 +246,49 @@ export async function startTeamDaemon(
       reports: reportStore,
       workItems: workItemStore,
     });
+    // V4.5 Improvement Loop: per-project recommendation store rooted under
+    // the project workspace so support tarballs and team-mode isolation
+    // both align with the existing reports / work-items layout. Patch
+    // previews remain inert; the daemon never writes the suggested change
+    // back to the project tree.
+    const improvementStore = createImprovementStore({
+      rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
+    });
+    const qualityDeps = qualityByProject.get(project.id)!;
+    const projectId = project.id;
+    improvementsByProject.set(
+      project.id,
+      createImprovementService({
+        store: improvementStore,
+        buildQualitySummary: async (input) => {
+          const collected = await collectQualitySources(qualityDeps);
+          return buildQualitySummary({
+            items: collected.items,
+            filters: {
+              from:
+                input.filters?.from ??
+                new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+              to: input.filters?.to ?? new Date().toISOString(),
+              window: input.filters?.window ?? "7d",
+              ...(input.filters?.workflow
+                ? { workflow: input.filters.workflow }
+                : {}),
+              ...(input.filters?.taskType
+                ? { taskType: input.filters.taskType }
+                : {}),
+              ...(input.filters?.status
+                ? { status: input.filters.status }
+                : {}),
+              ...(input.filters?.pattern
+                ? { pattern: input.filters.pattern }
+                : {}),
+            },
+            scope: { mode: "team-project", projectId },
+            diagnostics: collected.diagnostics,
+          });
+        },
+      }),
+    );
   }
 
   const app = await createServerImpl(
@@ -264,6 +315,7 @@ export async function startTeamDaemon(
       workItemsByProject,
       reportsByProject,
       qualityByProject,
+      improvementsByProject,
     },
     { host, port },
   );

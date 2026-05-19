@@ -23,8 +23,8 @@ function stableId(parts: string[]): string {
 
 function clusterKey(input: {
   projectId: string;
-  workflow?: string;
-  taskType?: string;
+  workflow: string | undefined;
+  taskType: string | undefined;
   patternId: FailurePatternId;
   targetKind: string;
 }): string {

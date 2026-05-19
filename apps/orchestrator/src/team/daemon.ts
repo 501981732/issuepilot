@@ -4,7 +4,6 @@ import * as path from "node:path";
 import { createEventBus, type EventBus } from "@issuepilot/observability";
 import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
 
-import { buildPipelineQualitySummary } from "../daemon.js";
 import { createImprovementService } from "../improvements/service.js";
 import { createImprovementStore } from "../improvements/store.js";
 import {
@@ -22,6 +21,7 @@ import {
   type PipelineStore,
 } from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
+import { createPipelineQualitySummaryCallback } from "../quality/pipeline-summary.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
@@ -251,6 +251,14 @@ export async function startTeamDaemon(
    * validateWorkflowRoles) work fully end-to-end.
    */
   const pipelinesByProject = new Map<string, PipelineService>();
+  /**
+   * V4.6 review follow-up (Issue 1)：per-project `PipelineStore` 的反向
+   * 索引，专供 `GET /api/quality/summary` 路由按 `x-issuepilot-project`
+   * 解析对应 store 用。与 `pipelinesByProject` 同一套 project id，
+   * 严格 per-project 不混库；未启用 V4.6 的 project 不出现在 map 中，
+   * 该 project 的 byRole 切片保持 undefined。
+   */
+  const pipelineStoreByProject = new Map<string, PipelineStore>();
   for (const project of registry.enabledProjects()) {
     const reportStore = createReportStore({
       rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
@@ -294,15 +302,18 @@ export async function startTeamDaemon(
     // plan Task 9.3 "missing config → friendly log").
     const projectDefaultRecipe = project.workflow.defaultRecipe;
     const projectRoles = project.workflow.roles;
-    // V4.6 review fix C4：把 pipelineStore 提到 if-block 外，让本 project
-    // 的 buildQualitySummary callback 在未启用 V4.6 时仍保持 undefined（行
-    // 为不变），启用 V4.6 时拿到本 project 隔离的 pipelineStore（不会混
-    // 用其他 project 的 AgentReport）。
+    // V4.6 review follow-up (Issue 1)：pipelineStore 同时被两条路径消费：
+    //   1) improvement service 的 buildQualitySummary callback（本地循环）。
+    //   2) `GET /api/quality/summary` HTTP 路由（dashboard ByRolePanel）。
+    // 因此提到 if-block 外保留 undefined / 实例两种状态，并把启用 V4.6 的
+    // project 加入 `pipelineStoreByProject` 让 server 路由能按 project
+    // 解析对应 store，严格不跨 project 混库。
     let pipelineStore: PipelineStore | undefined;
     if (projectDefaultRecipe && projectRoles) {
       pipelineStore = createPipelineStore({
         root: path.join(project.workflow.workspace.root, ".issuepilot"),
       });
+      pipelineStoreByProject.set(project.id, pipelineStore);
       const pipelineAgents: CoordinatorAgents = {
         coder: {
           async run() {
@@ -395,11 +406,15 @@ export async function startTeamDaemon(
               return undefined;
           }
         },
-        // V4.6 review fix C4：team 模式下每个 project 一份独立的
-        // pipelineStore；通过 buildPipelineQualitySummary helper 把本
-        // project 的 AgentReport 喂给 buildQualitySummary，让 dashboard
-        // 的 byRole 切片在 team 模式同样可见，且不混库（spec §9 / §17.4）。
-        buildQualitySummary: buildPipelineQualitySummary({
+        // V4.6 review follow-up (Issue 1)：improvement service 的
+        // buildQualitySummary callback 与 `GET /api/quality/summary` 路由
+        // 共享同一份 `createPipelineQualitySummaryCallback` /
+        // `buildPipelineQualitySummary` 实现（见
+        // `apps/orchestrator/src/quality/pipeline-summary.ts`），保证 byRole
+        // 切片在两条路径上语义一致。team 模式下 pipelineStore 与
+        // qualityDeps 都是 per-project 实例，严格不跨 project 混库
+        // （spec §9 / §17.4）。
+        buildQualitySummary: createPipelineQualitySummaryCallback({
           pipelineStore,
           collectorDeps: qualityDeps,
           scope: { mode: "team-project", projectId },
@@ -434,6 +449,12 @@ export async function startTeamDaemon(
       qualityByProject,
       improvementsByProject,
       pipelinesByProject,
+      // V4.6 review follow-up (Issue 1)：team 模式下把 per-project
+      // pipelineStore 透给 /api/quality/summary 路由，让 dashboard
+      // ByRolePanel 按 `x-issuepilot-project` 解析对应 project 的 byRole
+      // 切片，严格不跨 project 混库。未启用 V4.6 的 project 不在 map 中，
+      // 该 project 的 byRole 切片保持 undefined。
+      pipelineStoreByProject,
     },
     { host, port },
   );

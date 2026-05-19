@@ -34,10 +34,10 @@ import {
   type PipelineRouteContext,
 } from "../pipelines/routes.js";
 import type { PipelineService } from "../pipelines/service.js";
-import { buildQualitySummary } from "../quality/aggregate.js";
+import type { PipelineStore } from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
-import { collectQualitySources } from "../quality/collect.js";
 import { parseQualityQuery } from "../quality/filters.js";
+import { buildPipelineQualitySummary } from "../quality/pipeline-summary.js";
 import type { ReportStore } from "../reports/store.js";
 import type { RuntimeState } from "../runtime/state.js";
 import { serveEvidenceFile } from "../work-items/evidence-file-server.js";
@@ -258,6 +258,21 @@ export interface ServerDeps {
    * `?project=` query (per spec §18.3 team-mode rules).
    */
   pipelinesByProject?: Map<string, PipelineService>;
+  /**
+   * V4.6 review follow-up (Issue 1)：单 project 模式下的 `PipelineStore`，
+   * 用于把 V4.6 `AgentReport` 喂给 `GET /api/quality/summary` 的 `byRole`
+   * 切片（spec §17.4 / dashboard `ByRolePanel` 的真正数据源）。未启用
+   * V4.6（workflow 缺 `default_recipe` / `roles`）时为 `undefined`，
+   * `byRole` 保持 undefined，dashboard 也不渲染该面板。
+   */
+  pipelineStore?: PipelineStore;
+  /**
+   * V4.6 review follow-up (Issue 1)：team 模式下的 per-project
+   * `PipelineStore`，与 `qualityByProject` / `pipelinesByProject` 共用
+   * 同一套 project id。HTTP 路由会按 `x-issuepilot-project` header 解析
+   * 对应 store，保证 byRole 切片严格 per-project 不混库。
+   */
+  pipelineStoreByProject?: Map<string, PipelineStore>;
 }
 
 function resolveSnapshotField<T>(
@@ -1220,6 +1235,11 @@ export async function createServer(
       }
 
       let depsForRequest: QualityCollectorDeps | undefined;
+      // V4.6 review follow-up (Issue 1)：与 `qualityByProject` 同一套
+      // project id 解析对应的 `PipelineStore`，以便把 V4.6 AgentReport
+      // 喂给 byRole 切片。未启用 V4.6 时为 undefined，byRole 保持
+      // undefined，dashboard 仍能看到其它切片不受影响。
+      let pipelineStoreForRequest: PipelineStore | undefined;
       let scope: {
         mode: "single-project" | "team-project";
         projectId?: string;
@@ -1247,11 +1267,13 @@ export async function createServer(
             );
         }
         depsForRequest = projectDeps;
+        pipelineStoreForRequest = deps.pipelineStoreByProject?.get(project);
         scope = { mode: "team-project", projectId: project };
       } else {
         depsForRequest = deps.quality ?? {
           ...(deps.reports ? { reports: deps.reports } : {}),
         };
+        pipelineStoreForRequest = deps.pipelineStore;
         scope = { mode: "single-project" };
       }
 
@@ -1288,13 +1310,19 @@ export async function createServer(
           );
       }
 
-      const collection = await collectQualitySources(depsForRequest ?? {});
-      const summary = buildQualitySummary({
-        items: collection.items,
-        filters: parsed.filters,
-        scope,
-        diagnostics: collection.diagnostics,
-      });
+      // V4.6 review follow-up (Issue 1)：以前这里直接 `buildQualitySummary`
+      // 不传 `agentReports`，dashboard ByRolePanel 永远拿到 undefined。
+      // 改走 `buildPipelineQualitySummary`：启用 V4.6 时把当前窗口内的
+      // AgentReport 也喂进来，未启用时 pipelineStoreForRequest 为
+      // undefined，行为与 V4.5 完全一致。
+      const summary = await buildPipelineQualitySummary(
+        {
+          pipelineStore: pipelineStoreForRequest,
+          collectorDeps: depsForRequest ?? {},
+          scope,
+        },
+        parsed.filters,
+      );
       return reply.code(200).send(summary);
     },
   );

@@ -523,6 +523,66 @@ describe("PipelineStore.listAllAgentReports (V4.6 review C4)", () => {
     expect(all).toHaveLength(1);
     expect(all[0]?.agentReportId).toBe("ar_only");
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // V4.6 review follow-up (Issue 2)：单文件损坏不应该阻塞整个 byRole 切片。
+  // readJsonSafe 在 (a) 非 ENOENT 读失败、(b) JSON parse 失败、(c) schema
+  // 不匹配 三种情况都会抛 `PipelineStoreReadError`，listAllAgentReports
+  // 应该把这种条目静默跳过（continue），让全量扫描产出尽量多的可用数据。
+  // ──────────────────────────────────────────────────────────────────────
+  it("skips files with corrupt JSON instead of aborting the whole scan", async () => {
+    const { root, store } = await createTempStore();
+    await store.saveAgentReport(
+      coderReport({
+        agentReportId: "ar_good_1",
+        startedAt: "2026-05-20T00:00:00.000Z",
+      }),
+    );
+    await store.saveAgentReport(
+      coderReport({
+        agentReportId: "ar_good_2",
+        startedAt: "2026-05-20T00:30:00.000Z",
+      }),
+    );
+    const corruptPath = join(
+      root,
+      "agent-reports",
+      "t_1",
+      "coder",
+      "ar_corrupt.json",
+    );
+    await writeFile(corruptPath, "{not valid json", "utf8");
+
+    const all = await store.listAllAgentReports({ includeSuperseded: true });
+    expect(all.map((r) => r.agentReportId).sort()).toEqual([
+      "ar_good_1",
+      "ar_good_2",
+    ]);
+  });
+
+  it("skips files with schema mismatch instead of aborting the whole scan", async () => {
+    const { root, store } = await createTempStore();
+    await store.saveAgentReport(
+      coderReport({
+        agentReportId: "ar_good_3",
+        startedAt: "2026-05-20T00:00:00.000Z",
+      }),
+    );
+    const badShapePath = join(
+      root,
+      "agent-reports",
+      "t_1",
+      "coder",
+      "ar_wrong_shape.json",
+    );
+    await mkdir(join(root, "agent-reports", "t_1", "coder"), {
+      recursive: true,
+    });
+    await writeFile(badShapePath, JSON.stringify({ foo: "bar" }), "utf8");
+
+    const all = await store.listAllAgentReports({ includeSuperseded: true });
+    expect(all.map((r) => r.agentReportId)).toEqual(["ar_good_3"]);
+  });
 });
 
 describe("createPipelineStoresByProject", () => {

@@ -536,6 +536,12 @@ export const createPipelineStore = (
               out.push(report);
             } catch (cause) {
               if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+              // V4.6 review follow-up (Issue 2)：单条损坏 / schema 不匹配
+              // 的 AgentReport JSON 不应该阻塞整个 byRole 切片。把这种
+              // 损坏条目静默跳过，让其它 task / role 仍能产出 quality
+              // 分析；运维侧通过 diagnostics + 文件 / readJsonSafe 自身的
+              // 错误日志察觉到具体损坏文件。
+              if (cause instanceof PipelineStoreReadError) continue;
               throw cause;
             }
           }

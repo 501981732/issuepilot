@@ -96,7 +96,15 @@ export function registerImprovementRoutes(
     async (request, reply) => {
       const ctx = resolveService(request.headers as Record<string, unknown>);
       if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
-      return { recommendation: await ctx.service.detail(request.params.id) };
+      const recommendation = await ctx.service.detail(request.params.id);
+      if (!recommendation) {
+        return reply
+          .code(404)
+          .send(
+            improvementRouteError("not_found", "recommendation not found"),
+          );
+      }
+      return { recommendation };
     },
   );
 

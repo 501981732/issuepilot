@@ -2792,6 +2792,21 @@ describe("V4.1 work item routes", () => {
       }
     });
 
+    it("returns 404 when the recommendation id is unknown", async () => {
+      const { app } = await buildTestApp(undefined, {
+        improvements: fakeImprovementService(),
+      });
+      try {
+        const missing = await app.inject(
+          "/api/improvements/recommendations/rec_unknown",
+        );
+        expect(missing.statusCode).toBe(404);
+        expect(missing.json()).toMatchObject({ code: "not_found" });
+      } finally {
+        await app.close();
+      }
+    });
+
     it("requires project header for team-mode improvements", async () => {
       const { app } = await buildTestApp(undefined, {
         improvementsByProject: new Map([["proj-a", fakeImprovementService()]]),

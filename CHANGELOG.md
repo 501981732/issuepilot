@@ -6,6 +6,55 @@
 
 ### Added
 
+- 2026-05-19 — **V4.6 Phase 9 Task 9.1（pipelines service 高层方法）**：
+  - `apps/orchestrator/src/pipelines/store.ts` 新增
+    `PipelineStore.findAgentReportById(agentReportId)`：按 V4.6 spec §9 三层
+    目录布局扫描 `<root>/agent-reports/<taskId>/<role>/<agentReportId>.json`，
+    返回 `{ report, taskId, role }` 或 null；用于 `/api/agent-reports/:id/...`
+    的反查，避免 HTTP 层需要额外传 task/role。
+  - `apps/orchestrator/src/pipelines/service.ts` 新增 `createPipelineService`：
+    - `getPipelineForTask` / `listPipelinesForTask`：返回最新 PipelineRun
+      （含 `pendingRecipe` / `pendingRecipeSource`）与按 `agentReportIds`
+      投射的 `AgentReportSummary[]`。
+    - `getAgentReport({ id })`：经 `findAgentReportById` 反查；找不到 →
+      `agent_report_not_found`。
+    - `listTaskAgentReports({ wid, tid, role?, includeSuperseded? })`：
+      支持按 role 过滤与 supersede 链开关。
+    - `listPipelineRunAgentReports({ pid })`：按 `agentReportIds` 直读
+      AgentReport 全量实体（spec §18.2 用复数 `pipeline-runs`）。
+    - `setRecipeOverride`：状态机分支按 spec §8.3 / §18.1 落地——
+      `planned` / `blocked_by_dependency` / `ready (无 PipelineRun)`
+      → 写 `TaskNode.pendingRecipe` + `pendingRecipeSource=operator_override`；
+      `ready` 且 draft PipelineRun 存在 → 写
+      `PipelineRun.recipe` + `recipeSource=operator_override`；
+      `running_*` / `awaiting_human_review` → 409 `recipe_override_locked`；
+      未知 recipe → 400 `unknown_recipe`。
+    - `revokeAiReview`：仅 reviewer + `mrPublication.status="published"`
+      可调用；其他 role → 400 `role_mismatch`，其他 mrPublication 状态
+      → 409 `not_revocable`；成功时调用注入的
+      `revokeReviewerMrComments` 入口（缺省时仍能写
+      `mrPublication.status="revoked"` 到本地存储，方便单机/dev 部署降级）。
+    - `retryAgentReport`：reviewer / test_evidence → 复用 PipelineRun，
+      调 `coordinator.retryRole()` 在 supersede 链追加新 AgentReport；
+      coder → 清空 V4.6 task 字段（`currentPipelineRunId` /
+      `last_cancelled_at` / `roleFailureReason` / `statusReason`），把
+      task 拨回 `ready`，把新 PipelineRun 的创建交给下一次 dispatch tick
+      （响应 `RetryAgentReportResponse.newPipelineRunId` 暂为 undefined，
+      dashboard 轮询 `GET /pipeline` 自然取到）。
+    - `skipAgentReport`：coder → 400 `role_skip_not_allowed`；reviewer /
+      test_evidence → AgentReport `status=cancelled` + `lastError.code=
+      pipeline_cancelled` + `message="skipped_by_operator"`；PipelineRun
+      推进到下一 role 或 `awaiting_human_review`，并把 task 同步到
+      `awaiting_human_review`（当 skip 推到末端时）。
+    - `validateWorkflowRoles`：现阶段为纯结构校验 —— 三个 role 都存在
+      且每个 role 都有 `promptTemplateHash`；返回 `{ valid, errors[] }`，
+      错误码 `missing_role` / `missing_prompt_template_hash`。
+  - 测试：`pipelines/__tests__/service.test.ts` 新增 19 例覆盖以上每条
+    分支（happy + 不可逆 + 未知 id + 角色错配）。
+  - 验证：`apps/orchestrator/src/pipelines` 全套 7 文件 138/138 ✓；
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。daemon 注入与
+    Fastify route 暴露由 Task 9.2 / 9.3 接着做。
+
 - 2026-05-19 — **V4.6 Phase 8 Task 8.2（test_evidence 单步重跑 + supersede 链）**：
   - `packages/shared-contracts/src/agent-report.ts`：`AgentReportBase` 新增
     `supersedes?` / `supersededBy?` 两字段，spec §8.2 行 1057-1058 要求

@@ -229,6 +229,23 @@ export interface PipelineStore {
     prevId: string;
     nextId: string;
   }): Promise<void>;
+  /**
+   * V4.6 Phase 9：通过 AgentReport id 在 `<root>/agent-reports/` 下扫描
+   * 定位文件（`<taskId>/<role>/<agentReportId>.json`），返回 report +
+   * taskId + role。找不到返回 null。
+   *
+   * 单一 AgentReport 落盘路径同时编码了 taskId + role，所以扫描总能拿
+   * 到完整身份。orchestrator HTTP API（`/api/agent-reports/:id/...`）
+   * 用本方法做反查。
+   */
+  findAgentReportById(agentReportId: string): Promise<
+    | {
+        taskId: string;
+        role: AgentRole;
+        report: AgentReport;
+      }
+    | null
+  >;
   /** 暴露 path builder 给上层（如测试 / 维护脚本）。 */
   readonly paths: PipelineStorePaths;
   readonly root: string;
@@ -450,6 +467,38 @@ export const createPipelineStore = (
         role: input.role,
         agentReportId: idx.latestAgentReportId,
       });
+    },
+
+    async findAgentReportById(agentReportId) {
+      // 防御性校验，避免在路径里塞 `..` 越权扫描。
+      assertSafeSegment(agentReportId, "agentReportId");
+      const agentReportsRoot = path.join(root, "agent-reports");
+      let taskDirs: string[];
+      try {
+        taskDirs = await readdir(agentReportsRoot);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw cause;
+      }
+      for (const taskId of taskDirs) {
+        if (!SAFE_SEGMENT.test(taskId)) continue;
+        for (const role of ["coder", "reviewer", "test_evidence"] as const) {
+          const candidate = paths.agentReportPath({
+            taskId,
+            role,
+            agentReportId,
+          });
+          try {
+            const report = await readJsonSafe(candidate, isAgentReport);
+            return { taskId, role, report };
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+            if (cause instanceof PipelineStoreReadError) throw cause;
+            throw cause;
+          }
+        }
+      }
+      return null;
     },
 
     async supersedeAgentReport({ taskId, role, prevId, nextId }) {

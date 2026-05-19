@@ -679,3 +679,138 @@ describe("coordinator reviewer MR publish wiring (Task 7.5)", () => {
     expect(res.finalStatus).toBe("awaiting_human_review");
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// V4.6 Phase 8 Task 8.2 — retryRole (test_evidence) + supersede
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("coordinator.retryRole (Phase 8 Task 8.2)", () => {
+  it("retries test_evidence within the same pipelineRunId; new AgentReport supersedes the previous one", async () => {
+    // First run: full_pipeline with incomplete test_evidence → pipeline ends partial.
+    const h = await harness({
+      testEvidence: {
+        kind: "report",
+        report: fakeTeReport({ status: "incomplete" }),
+      },
+    });
+    const first = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    expect(first.finalStatus).toBe("partial");
+    const firstTeReportId = first.pipelineRun.agentReportIds.test_evidence;
+    expect(firstTeReportId).toBe("ar_te");
+
+    // Now operator retries test_evidence (single role) on the same pipeline.
+    let nextIdCounter = 100;
+    h.teRun.mockImplementation(async () => ({
+      kind: "report",
+      report: fakeTeReport({
+        agentReportId: `ar_te_retry_${++nextIdCounter}`,
+        status: "complete",
+      }),
+    }));
+
+    const retry = await h.coordinator.retryRole({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRunId: first.pipelineRun.pipelineRunId,
+      role: "test_evidence",
+    });
+
+    // pipelineRunId is reused
+    expect(retry.pipelineRun.pipelineRunId).toBe(
+      first.pipelineRun.pipelineRunId,
+    );
+    // new report supersedes the previous one
+    expect(retry.report.role).toBe("test_evidence");
+    expect(retry.report.agentReportId).toBe("ar_te_retry_101");
+    expect(retry.report.supersedes).toBe(firstTeReportId);
+    expect(retry.report.status).toBe("complete");
+
+    // pipeline final status promoted to awaiting_human_review
+    expect(retry.pipelineRun.status).toBe("awaiting_human_review");
+    expect(retry.pipelineRun.agentReportIds.test_evidence).toBe(
+      retry.report.agentReportId,
+    );
+
+    // supersede chain persisted in the index
+    const list = await h.store.listAgentReportsForRole({
+      taskId: TASK.taskId,
+      role: "test_evidence",
+    });
+    expect(list.index.supersedeChain).toEqual([
+      { from: firstTeReportId, to: retry.report.agentReportId },
+    ]);
+    expect(list.index.latestAgentReportId).toBe(retry.report.agentReportId);
+  });
+
+  it("retry test_evidence that still fails leaves pipeline status=failed and TaskNode failed evidence_unavailable", async () => {
+    const h = await harness({
+      testEvidence: {
+        kind: "report",
+        report: fakeTeReport({
+          status: "failed",
+          lastError: { code: "evidence_unavailable", message: "boom" },
+        }),
+      },
+    });
+    const first = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+    expect(first.finalStatus).toBe("failed");
+
+    // operator retries; still failed.
+    h.teRun.mockImplementation(async () => ({
+      kind: "report",
+      report: fakeTeReport({
+        agentReportId: "ar_te_retry_failed",
+        status: "failed",
+        lastError: { code: "evidence_unavailable", message: "still bad" },
+      }),
+    }));
+    const retry = await h.coordinator.retryRole({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRunId: first.pipelineRun.pipelineRunId,
+      role: "test_evidence",
+    });
+    expect(retry.pipelineRun.status).toBe("failed");
+    expect(retry.report.supersedes).toBe(first.pipelineRun.agentReportIds.test_evidence!);
+    expect(h.taskPatches.at(-1)?.status).toBe("failed");
+    expect(h.taskPatches.at(-1)?.roleFailureReason).toBe("evidence_unavailable");
+  });
+
+  it("throws when pipelineRunId is unknown", async () => {
+    const h = await harness();
+    await expect(
+      h.coordinator.retryRole({
+        workItem: WORKITEM,
+        task: TASK,
+        pipelineRunId: "pr_does_not_exist",
+        role: "test_evidence",
+      }),
+    ).rejects.toThrow(/pipeline run not found/i);
+  });
+
+  it("throws when no previous AgentReport for the role exists in this pipeline (cannot retry without baseline)", async () => {
+    // Run coding_only; no reviewer report exists.
+    const h = await harness();
+    const first = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "coding_only",
+    });
+    await expect(
+      h.coordinator.retryRole({
+        workItem: WORKITEM,
+        task: TASK,
+        pipelineRunId: first.pipelineRun.pipelineRunId,
+        role: "test_evidence",
+      }),
+    ).rejects.toThrow(/no previous AgentReport/i);
+  });
+});

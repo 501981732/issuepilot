@@ -217,6 +217,18 @@ export interface PipelineStore {
     taskId: string;
     role: AgentRole;
   }): Promise<AgentReport | null>;
+  /**
+   * spec §8.2 / §10.3：把 `prev.supersededBy = nextId` 与
+   * `next.supersedes = prevId` 双向写回，并在 role index.json 的
+   * `supersedeChain[]` 追加 `{ from, to }`。任一报告不存在 → 抛
+   * `PipelineStoreReadError`。
+   */
+  supersedeAgentReport(input: {
+    taskId: string;
+    role: AgentRole;
+    prevId: string;
+    nextId: string;
+  }): Promise<void>;
   /** 暴露 path builder 给上层（如测试 / 维护脚本）。 */
   readonly paths: PipelineStorePaths;
   readonly root: string;
@@ -438,6 +450,54 @@ export const createPipelineStore = (
         role: input.role,
         agentReportId: idx.latestAgentReportId,
       });
+    },
+
+    async supersedeAgentReport({ taskId, role, prevId, nextId }) {
+      const prev = await this.getAgentReport({
+        taskId,
+        role,
+        agentReportId: prevId,
+      });
+      const next = await this.getAgentReport({
+        taskId,
+        role,
+        agentReportId: nextId,
+      });
+      if (!prev || !next) {
+        throw new PipelineStoreReadError(
+          `cannot supersede AgentReport: prev=${!!prev} next=${!!next}`,
+          paths.agentReportPath({ taskId, role, agentReportId: prevId }),
+        );
+      }
+      const updatedPrev = {
+        ...prev,
+        supersededBy: nextId,
+      } as AgentReport;
+      const updatedNext = {
+        ...next,
+        supersedes: prevId,
+      } as AgentReport;
+      // Persist reports without re-running the index update (we'll patch the
+      // chain ourselves below to keep `supersedeChain[]` in sync).
+      await this.saveAgentReport(updatedPrev, { updateIndex: false });
+      await this.saveAgentReport(updatedNext, { updateIndex: false });
+
+      const idx = await readIndex({ taskId, role });
+      if (!idx.agentReportIds.includes(prevId)) {
+        idx.agentReportIds.push(prevId);
+      }
+      if (!idx.agentReportIds.includes(nextId)) {
+        idx.agentReportIds.push(nextId);
+      }
+      const alreadyLinked = idx.supersedeChain.some(
+        (link) => link.from === prevId && link.to === nextId,
+      );
+      if (!alreadyLinked) {
+        idx.supersedeChain.push({ from: prevId, to: nextId });
+      }
+      idx.latestAgentReportId = nextId;
+      idx.updatedAt = new Date().toISOString();
+      await writeIndex(idx);
     },
   };
 };

@@ -395,6 +395,66 @@ describe("PipelineStore.listAgentReportsForRole + latestAgentReportForRole", () 
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// V4.6 Phase 8 Task 8.2 — AgentReport supersede chain (retry test_evidence)
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("PipelineStore.supersedeAgentReport", () => {
+  it("links prev.supersededBy / next.supersedes both ways and updates index.supersedeChain", async () => {
+    const { store } = await createTempStore();
+    const r1 = testEvidenceReport({ agentReportId: "ar_te_1" });
+    const r2 = testEvidenceReport({
+      agentReportId: "ar_te_2",
+      pipelineRunId: r1.pipelineRunId,
+      startedAt: "2026-05-19T12:00:00.000Z",
+    });
+    await store.saveAgentReport(r1);
+    await store.saveAgentReport(r2);
+
+    await store.supersedeAgentReport({
+      taskId: r1.taskId,
+      role: "test_evidence",
+      prevId: r1.agentReportId,
+      nextId: r2.agentReportId,
+    });
+
+    const refreshed1 = await store.getAgentReport({
+      taskId: r1.taskId,
+      role: "test_evidence",
+      agentReportId: r1.agentReportId,
+    });
+    const refreshed2 = await store.getAgentReport({
+      taskId: r2.taskId,
+      role: "test_evidence",
+      agentReportId: r2.agentReportId,
+    });
+    expect(refreshed1?.supersededBy).toBe("ar_te_2");
+    expect(refreshed2?.supersedes).toBe("ar_te_1");
+
+    const { index } = await store.listAgentReportsForRole({
+      taskId: r1.taskId,
+      role: "test_evidence",
+    });
+    expect(index.supersedeChain).toEqual([
+      { from: "ar_te_1", to: "ar_te_2" },
+    ]);
+    expect(index.latestAgentReportId).toBe("ar_te_2");
+  });
+
+  it("throws PipelineStoreReadError when prev or next is missing", async () => {
+    const { store } = await createTempStore();
+    await store.saveAgentReport(testEvidenceReport({ agentReportId: "ar_te_only" }));
+    await expect(
+      store.supersedeAgentReport({
+        taskId: "t_1",
+        role: "test_evidence",
+        prevId: "ar_te_only",
+        nextId: "ar_te_missing",
+      }),
+    ).rejects.toBeInstanceOf(PipelineStoreReadError);
+  });
+});
+
 describe("createPipelineStoresByProject", () => {
   it("按 projectId 隔离根目录；upsert 同根目录返回同实例", async () => {
     const tmp1 = await mkdtemp(join(tmpdir(), "ip-pipeline-proj-a-"));

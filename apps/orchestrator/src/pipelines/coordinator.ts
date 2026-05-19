@@ -187,8 +187,35 @@ export interface CreateCoordinatorOptions {
   newId?: () => string;
 }
 
+export interface RetryRoleInput {
+  workItem: WorkItem;
+  task: TaskNode;
+  pipelineRunId: string;
+  role: AgentRole;
+  now?: () => string;
+}
+
+export interface RetryRoleResult {
+  /** 已被本次 retry 取代的旧 AgentReport id。 */
+  supersededReportId: string;
+  /** 新跑出的 AgentReport（已经写入 supersede 链）。 */
+  report: AgentReport;
+  /** 复用同一个 pipelineRunId 的更新后 PipelineRun。 */
+  pipelineRun: PipelineRun;
+}
+
 export interface Coordinator {
   startPipeline(input: StartPipelineInput): Promise<StartPipelineResult>;
+  /**
+   * V4.6 Phase 8 Task 8.2：在已经存在的 PipelineRun 内单步重跑一个 role。
+   *
+   * - 不创建新的 PipelineRun；`pipelineRunId` 复用。
+   * - 新 AgentReport.supersedes = prevReportId，prev.supersededBy = newId
+   *   （通过 `pipelineStore.supersedeAgentReport` 双向写）。
+   * - 重新计算 final pipeline status / TaskNode status，遵循
+   *   `startPipeline` 同一套规则（partial / awaiting_human_review / failed）。
+   */
+  retryRole(input: RetryRoleInput): Promise<RetryRoleResult>;
 }
 
 export const createCoordinator = (
@@ -545,7 +572,282 @@ export const createCoordinator = (
     return { pipelineRun: run, finalStatus, reports };
   };
 
-  return { startPipeline };
+  // ────────────────────────────────────────────────────────────────────────
+  // V4.6 Phase 8 Task 8.2 — single-role retry inside the same PipelineRun.
+  //
+  // Re-runs ONE role (typically `test_evidence`, but any role is supported)
+  // against the existing PipelineRun, links the new AgentReport into the
+  // supersede chain, and re-derives the final PipelineRun / TaskNode status
+  // from the now-current AgentReport set.
+  // ────────────────────────────────────────────────────────────────────────
+  const retryRole = async (
+    input: RetryRoleInput,
+  ): Promise<RetryRoleResult> => {
+    const tickNow = input.now ?? now;
+
+    const existing = await opts.pipelineStore.getPipelineRunById({
+      workItemId: input.workItem.workItemId,
+      taskId: input.task.taskId,
+      pipelineRunId: input.pipelineRunId,
+    });
+    if (!existing) {
+      throw new CoordinatorError(
+        `pipeline run not found: ${input.pipelineRunId}`,
+        "pipeline_run_missing",
+      );
+    }
+
+    const prevReportId = existing.agentReportIds[input.role];
+    if (!prevReportId) {
+      throw new CoordinatorError(
+        `no previous AgentReport for role ${input.role} on pipeline ${input.pipelineRunId}`,
+        "agent_report_baseline_missing",
+      );
+    }
+
+    // Mark pipeline back into the running_<role> state so dashboard reflects retry.
+    // Strip completedAt while reusing the rest; exactOptionalPropertyTypes
+    // refuses an explicit `undefined` write here, so we drop the key.
+    const { completedAt: _completedAt, ...existingWithoutCompletion } = existing;
+    void _completedAt;
+    let run: PipelineRun = {
+      ...existingWithoutCompletion,
+      status: ROLE_TO_RUNNING_STATE[input.role],
+      currentRole: input.role,
+      updatedAt: tickNow(),
+    };
+    await persistRun(run);
+    await opts.taskWriter.updateTask({
+      workItemId: input.workItem.workItemId,
+      taskId: input.task.taskId,
+      patch: {
+        status: ROLE_TO_TASK_RUNNING[input.role],
+        currentPipelineRunId: input.pipelineRunId,
+        roleFailureReason: undefined,
+        statusReason: undefined,
+      },
+    });
+
+    const profile = await opts.roleProfileResolver.resolveRoleProfile(
+      input.role,
+      { workItem: input.workItem, task: input.task },
+    );
+    if (!profile) {
+      throw new CoordinatorError(
+        `missing role profile for ${input.role}`,
+        "role_profile_invalid",
+      );
+    }
+
+    let result: AgentRunResult;
+    if (input.role === "coder") {
+      result = await opts.agents.coder.run({
+        workItem: input.workItem,
+        task: input.task,
+        pipelineRun: run,
+        profile,
+      });
+    } else if (input.role === "reviewer") {
+      if (profile.role !== "reviewer") {
+        throw new CoordinatorError(
+          "reviewer role profile mismatch",
+          "role_profile_invalid",
+        );
+      }
+      result = await opts.agents.reviewer.run({
+        workItem: input.workItem,
+        task: input.task,
+        pipelineRun: run,
+        profile,
+      });
+    } else {
+      result = await opts.agents.testEvidence.run({
+        workItem: input.workItem,
+        task: input.task,
+        pipelineRun: run,
+        profile,
+      });
+    }
+
+    if (result.kind === "cancelled") {
+      // A retry that was cancelled mid-flight: treat like the start-time
+      // cancel path so the caller can surface needs_rework.
+      run = {
+        ...run,
+        status: "cancelled",
+        currentRole: null,
+        updatedAt: tickNow(),
+        completedAt: tickNow(),
+      };
+      await persistRun(run);
+      await opts.taskWriter.updateTask({
+        workItemId: input.workItem.workItemId,
+        taskId: input.task.taskId,
+        patch: {
+          status: "needs_rework",
+          last_cancelled_at: result.cancelledAt,
+          currentPipelineRunId: undefined,
+        },
+      });
+      throw new CoordinatorError(
+        `${input.role} retry cancelled`,
+        "retry_cancelled",
+      );
+    }
+
+    // Persist the new report and link it into the supersede chain.
+    const newReport = result.report;
+    await persistReport(newReport);
+    await opts.pipelineStore.supersedeAgentReport({
+      taskId: input.task.taskId,
+      role: input.role,
+      prevId: prevReportId,
+      nextId: newReport.agentReportId,
+    });
+    // Re-read so the in-memory report reflects the supersedes link
+    // (saveAgentReport above wrote the bare report, supersedeAgentReport
+    // patched supersedes onto it).
+    const linkedReport = await opts.pipelineStore.getAgentReport({
+      taskId: input.task.taskId,
+      role: input.role,
+      agentReportId: newReport.agentReportId,
+    });
+    const finalReport = linkedReport ?? newReport;
+
+    run = {
+      ...run,
+      agentReportIds: {
+        ...run.agentReportIds,
+        [input.role]: finalReport.agentReportId,
+      },
+      updatedAt: tickNow(),
+    };
+
+    // Re-derive the pipeline final status from the up-to-date set of
+    // current reports across all three roles.
+    const reportFor = async (role: AgentRole): Promise<AgentReport | null> => {
+      if (role === input.role) return finalReport;
+      const id = run.agentReportIds[role];
+      if (!id) return null;
+      return opts.pipelineStore.getAgentReport({
+        taskId: input.task.taskId,
+        role,
+        agentReportId: id,
+      });
+    };
+    const coderRpt = await reportFor("coder");
+    const reviewerRpt = await reportFor("reviewer");
+    const teRpt = await reportFor("test_evidence");
+
+    // failed report short-circuits to failure.
+    if (finalReport.status === "failed") {
+      const code = finalReport.lastError?.code ?? "coding_failed";
+      const taskReason = toTaskNodeReason(code, input.role);
+      run = {
+        ...run,
+        status: "failed",
+        currentRole: null,
+        updatedAt: tickNow(),
+        completedAt: tickNow(),
+      };
+      await persistRun(run);
+      const blockedReasons = new Set<string>([
+        "storage_full",
+        "reviewer_cannot_review",
+        "reviewer_unavailable",
+        "redaction_failed",
+      ]);
+      const taskStatus: TaskNodeStatus = blockedReasons.has(taskReason ?? "")
+        ? "blocked"
+        : "failed";
+      await opts.taskWriter.updateTask({
+        workItemId: input.workItem.workItemId,
+        taskId: input.task.taskId,
+        patch: {
+          status: taskStatus,
+          ...(taskReason !== null ? { roleFailureReason: taskReason } : {}),
+          ...(finalReport.lastError?.message
+            ? { statusReason: finalReport.lastError.message }
+            : {}),
+          currentPipelineRunId: undefined,
+        },
+      });
+      const evKey = toEventKey(code, input.role);
+      if (evKey) {
+        emit(evKey, {
+          pipelineRunId: input.pipelineRunId,
+          taskId: input.task.taskId,
+          role: input.role,
+          retry: true,
+        });
+      }
+      return {
+        supersededReportId: prevReportId,
+        report: finalReport,
+        pipelineRun: run,
+      };
+    }
+
+    // No failure: derive final pipeline status (mirroring startPipeline tail).
+    let finalStatus: PipelineRunStatus;
+    if (isReviewerReport(finalReport)) {
+      if (finalReport.reviewer.decision === "request_changes") {
+        finalStatus = "awaiting_rework";
+      } else if (
+        teRpt && teRpt.role === "test_evidence" && teRpt.status === "incomplete"
+      ) {
+        finalStatus = "partial";
+      } else {
+        finalStatus = "awaiting_human_review";
+      }
+    } else if (
+      teRpt && teRpt.role === "test_evidence" && teRpt.status === "incomplete"
+    ) {
+      finalStatus = "partial";
+    } else {
+      finalStatus = "awaiting_human_review";
+    }
+    // Suppress unused-variable lints — these are kept for the future
+    // re-derivation in Phase 9 (reviewer publish retry can reread them).
+    void coderRpt;
+    void reviewerRpt;
+
+    run = {
+      ...run,
+      status: finalStatus,
+      currentRole: null,
+      updatedAt: tickNow(),
+      completedAt: tickNow(),
+    };
+    await persistRun(run);
+    await opts.taskWriter.updateTask({
+      workItemId: input.workItem.workItemId,
+      taskId: input.task.taskId,
+      patch: {
+        status: finalStatus === "awaiting_rework" ? "needs_rework" : "awaiting_human_review",
+        currentPipelineRunId: undefined,
+        ...(finalStatus === "partial"
+          ? { roleFailureReason: "evidence_partial" }
+          : finalStatus === "awaiting_rework"
+            ? { roleFailureReason: "reviewer_requested_changes" }
+            : { roleFailureReason: undefined }),
+      },
+    });
+    emit("pipeline_finished", {
+      pipelineRunId: input.pipelineRunId,
+      taskId: input.task.taskId,
+      finalStatus,
+      retry: true,
+      role: input.role,
+    });
+    return {
+      supersededReportId: prevReportId,
+      report: finalReport,
+      pipelineRun: run,
+    };
+  };
+
+  return { startPipeline, retryRole };
 };
 
 // Re-export 便于 daemon 用一个文件 import 即可。

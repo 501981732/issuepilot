@@ -102,6 +102,16 @@ export interface AgentReportBase {
   evidenceLinks: string[];
   /** 落盘时被 redaction 的字段名。 */
   redactedFields: string[];
+  /**
+   * spec §8.2 / §10.3：retry / replan 时上一份 AgentReport 的 id。
+   * 第一份 attempt 时为空；coordinator.retryRole 创建后续 attempt 时
+   * 填写并同时把 prev report 的 `supersededBy` 写为当前 id。
+   */
+  supersedes?: string;
+  /**
+   * spec §8.2 / §10.3：被哪个新 AgentReport 取代。链末端为空。
+   */
+  supersededBy?: string;
 }
 
 /** spec §8.2：coder 角色专属字段。 */

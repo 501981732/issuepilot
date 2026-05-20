@@ -12,8 +12,8 @@
 
 ## 实施计划
 
-- V4.7 Runner Adapter Contract：待写。设计 spec 通过后由 `writing-plans`
-  skill 产出实施计划。
+- V4.7 Runner Adapter Contract：实施计划见
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`。
 
 ## 1. 背景
 

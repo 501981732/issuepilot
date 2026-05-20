@@ -63,7 +63,7 @@ describe("@issuepilot/shared-contracts/api", () => {
       .toEqualTypeOf<string | undefined>();
   });
 
-  it("V4.6 PipelineRouteErrorCode 严格 11 项", () => {
+  it("V4.6 PipelineRouteErrorCode 严格 13 项", () => {
     const codes: PipelineRouteErrorCode[] = [
       "recipe_override_locked",
       "unknown_recipe",
@@ -77,8 +77,9 @@ describe("@issuepilot/shared-contracts/api", () => {
       "role_skip_not_allowed",
       "workflow_not_found",
       "invalid_payload",
+      "service_unavailable",
     ];
-    expect(codes.length).toBe(12);
+    expect(codes.length).toBe(13);
   });
 
   it("V4.6 GetPipelineResponse 持有 PipelineRun 或 null", () => {

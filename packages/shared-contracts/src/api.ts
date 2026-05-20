@@ -204,7 +204,14 @@ export interface ConfirmEvidenceResponse {
  * `PipelineRouteErrorCode` 统一字面量。
  */
 
-/** V4.6 route 统一 error code（spec §18.4）。 */
+/**
+ * V4.6 route 统一 error code（spec §18.4）。
+ *
+ * V4.6 follow-up Important #5：spec §18.4 保留 `service_unavailable` →
+ * HTTP 503 用于标记 "agent runner 未装配" 这类暂时性服务异常，例如
+ * coordinator 抛出 `CoordinatorError("agent_not_configured")` 时；
+ * 不与 400 / `invalid_payload` 合并，便于 dashboard 区分。
+ */
 export type PipelineRouteErrorCode =
   | "recipe_override_locked"
   | "unknown_recipe"
@@ -217,7 +224,8 @@ export type PipelineRouteErrorCode =
   | "agent_report_not_found"
   | "role_skip_not_allowed"
   | "workflow_not_found"
-  | "invalid_payload";
+  | "invalid_payload"
+  | "service_unavailable";
 
 export interface PipelineRouteError {
   code: PipelineRouteErrorCode;

@@ -38,7 +38,8 @@ function fail(
     | "workflow_not_found"
     | "invalid_payload"
     | "project_required"
-    | "project_query_not_allowed",
+    | "project_query_not_allowed"
+    | "service_unavailable",
   message: string,
 ): PipelineServiceResult<never> {
   return { ok: false, error: { code, message } };
@@ -395,6 +396,24 @@ describe("registerPipelineRoutes", () => {
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ code: "agent_report_not_found" });
+  });
+
+  // V4.6 follow-up Important #5：spec §18.4 把 service_unavailable 映射
+  // 到 HTTP 503，避免 "agent runner 未装配" 这类配置错误被吞成 400
+  // invalid_payload 而误导 dashboard。
+  it("POST retry 503 when service reports service_unavailable", async () => {
+    service.__calls.retryAgentReport.mockResolvedValue(
+      fail("service_unavailable", "reviewer agent runner is not wired"),
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agent-reports/ar_reviewer/retry",
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({
+      code: "service_unavailable",
+      message: "reviewer agent runner is not wired",
+    });
   });
 
   // ── POST /api/agent-reports/:id/skip ────────────────────────────────

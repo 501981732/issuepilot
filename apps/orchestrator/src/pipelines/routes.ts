@@ -14,6 +14,8 @@
  *   - `unknown_recipe` / `role_mismatch` / `role_skip_not_allowed` /
  *     `invalid_payload` / `project_required` / `project_query_not_allowed`
  *     → 400
+ *   - `service_unavailable` → 503（V4.6 follow-up Important #5：coordinator
+ *     抛 `agent_not_configured` 时使用，区别于 400 invalid_payload）
  */
 
 import {
@@ -67,6 +69,8 @@ function statusFromCode(code: PipelineRouteErrorCode): number {
     case "project_required":
     case "project_query_not_allowed":
       return 400;
+    case "service_unavailable":
+      return 503;
     default: {
       // Exhaustiveness — TypeScript will surface uncovered codes here.
       const exhaustive: never = code;

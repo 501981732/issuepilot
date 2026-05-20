@@ -57,6 +57,31 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Important #5（`agent_not_configured` 映射
+  503）**：spec §18.4 把 `service_unavailable` / HTTP 503 保留给 "agent
+  runner 未装配" 这类暂时性服务异常；当前
+  `apps/orchestrator/src/pipelines/service.ts` 在
+  `retryAgentReport` 的 `coordinator.retryRole` catch 块里把所有抛错都吞成
+  400 / `invalid_payload`，让 dashboard 无法区分配置错误与请求错误。本次：
+  - `packages/shared-contracts/src/api.ts`：`PipelineRouteErrorCode` 联合
+    新增 `"service_unavailable"`，并补 JSDoc 解释 503 语义；
+    `packages/shared-contracts/src/__tests__/api.test.ts` 严格枚举测试
+    扩展为 13 项。
+  - `apps/orchestrator/src/pipelines/routes.ts`：`statusFromCode` 新增
+    `case "service_unavailable": return 503`，顶部 JSDoc 同步增加 503
+    映射条目（TypeScript `never` exhaustiveness 强制覆盖）。
+  - `apps/orchestrator/src/pipelines/service.ts`：catch 分支 `instanceof
+    CoordinatorError && code === "agent_not_configured"` → 返回
+    `service_unavailable`，其它情况继续走 `invalid_payload`，并 import
+    `CoordinatorError` 类（与现有 `Coordinator` type-only 导入并列）。
+  - 测试：`service.test.ts` 新增两条用例（agent_not_configured →
+    service_unavailable；其它 Error → invalid_payload 回归保护）；
+    `routes.test.ts` 新增 HTTP-level 503 用例并扩展 `fail()` helper 的
+    code 联合。`vitest run apps/orchestrator/src/pipelines/__tests__`
+    174/174 全绿；`shared-contracts` 144/144 全绿；
+    `tsc -b apps/orchestrator packages/shared-contracts` 干净；
+    `eslint --max-warnings 0` 干净。
+
 - 2026-05-20 — **V4.6 follow-up Important #4（`retryAgentReport` 用真实
   workItemId）**：`apps/orchestrator/src/pipelines/store.ts` 新增
   `PipelineStore.getPipelineRunByIdOnly({ pipelineRunId })`，把 service 内

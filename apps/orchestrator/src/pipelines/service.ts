@@ -48,7 +48,7 @@ import {
   type WorkflowRolesConfig,
 } from "@issuepilot/shared-contracts";
 
-import type { Coordinator } from "./coordinator.js";
+import { CoordinatorError, type Coordinator } from "./coordinator.js";
 import { recipeRoles } from "./recipe.js";
 import type { PipelineStore } from "./store.js";
 
@@ -566,6 +566,15 @@ export const createPipelineService = (
           },
         };
       } catch (cause) {
+        // V4.6 follow-up Important #5：CoordinatorError("agent_not_configured")
+        // 表示 agent runner 未装配（spec §18.4），属于 503 service_unavailable，
+        // 不应吞成 400 invalid_payload；其它 coordinator 抛错继续走 400。
+        if (
+          cause instanceof CoordinatorError &&
+          cause.code === "agent_not_configured"
+        ) {
+          return err("service_unavailable", cause.message);
+        }
         return err(
           "invalid_payload",
           cause instanceof Error ? cause.message : String(cause),

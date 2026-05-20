@@ -14,7 +14,7 @@ import type {
 } from "@issuepilot/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Coordinator } from "../coordinator.js";
+import { CoordinatorError, type Coordinator } from "../coordinator.js";
 import { createPipelineService, type PipelineService } from "../service.js";
 import { createPipelineStore, type PipelineStore } from "../store.js";
 
@@ -576,6 +576,67 @@ describe("createPipelineService", () => {
     expect(h.coordinator.retryRole).toHaveBeenCalledWith(
       expect.objectContaining({ pipelineRunId: "pr_1", role: "reviewer" }),
     );
+  });
+
+  // V4.6 follow-up Important #5：spec §18.4 把 `service_unavailable` 保留
+  // 给 "agent runner 未装配" 这类暂时性错误（HTTP 503），而不是 400
+  // invalid_payload。retryAgentReport 在 coordinator 抛
+  // CoordinatorError("agent_not_configured") 时必须把 code 透传成
+  // service_unavailable，便于 dashboard 区分配置错误与请求错误。
+  it("V4.6 fix Important 5: retryAgentReport surfaces agent_not_configured as service_unavailable", async () => {
+    const h = await buildHarness();
+    cleanup.push(() => rm(h.tempRoot, { recursive: true, force: true }));
+    await h.store.savePipelineRun(
+      buildPipelineRun({
+        status: "awaiting_rework",
+        currentRole: null,
+        agentReportIds: {
+          coder: "ar_coder",
+          reviewer: "ar_reviewer",
+          test_evidence: null,
+        },
+      }),
+    );
+    await h.store.saveAgentReport(buildReviewerReport());
+    h.coordinator.retryRole.mockRejectedValueOnce(
+      new CoordinatorError(
+        "reviewer agent runner is not wired",
+        "agent_not_configured",
+      ),
+    );
+
+    const result = await h.service.retryAgentReport({
+      agentReportId: "ar_reviewer",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("service_unavailable");
+    expect(result.error.message).toBe("reviewer agent runner is not wired");
+  });
+
+  it("V4.6 fix Important 5: retryAgentReport keeps invalid_payload for unrelated coordinator throws", async () => {
+    const h = await buildHarness();
+    cleanup.push(() => rm(h.tempRoot, { recursive: true, force: true }));
+    await h.store.savePipelineRun(
+      buildPipelineRun({
+        status: "awaiting_rework",
+        currentRole: null,
+        agentReportIds: {
+          coder: "ar_coder",
+          reviewer: "ar_reviewer",
+          test_evidence: null,
+        },
+      }),
+    );
+    await h.store.saveAgentReport(buildReviewerReport());
+    h.coordinator.retryRole.mockRejectedValueOnce(new Error("boom"));
+
+    const result = await h.service.retryAgentReport({
+      agentReportId: "ar_reviewer",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("invalid_payload");
   });
 
   it("skipAgentReport (reviewer) marks AgentReport cancelled and reports nextRole", async () => {

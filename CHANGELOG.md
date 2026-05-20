@@ -57,6 +57,24 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Important #4（`retryAgentReport` 用真实
+  workItemId）**：`apps/orchestrator/src/pipelines/store.ts` 新增
+  `PipelineStore.getPipelineRunByIdOnly({ pipelineRunId })`，把 service 内
+  module-local 的 `scanPipelineRunById` 反查 helper 合并进 store 内部：
+  `<root>/pipelines/<wid>/<tid>/<pipelineRunId>.json` 全盘扫描，先
+  `assertSafeSegment(pipelineRunId, ...)` 防 `..` 注入，ENOENT / 找不到
+  统一返回 `null`，损坏 JSON 仍走 `PipelineStoreReadError`。
+  `apps/orchestrator/src/pipelines/service.ts` 删掉
+  `scanPipelineRunById`，把 `listPipelineRunAgentReports` / `retryAgentReport`
+  / `skipAgentReport` 三处的 `getPipelineRunById({ workItemId: "" }).catch + scan`
+  fallback 全部替换成 `pipelineStore.getPipelineRunByIdOnly({ pipelineRunId })`，
+  语义统一、对未来加严的 store 校验不再脆弱。测试：`store.test.ts` 新增
+  3 个用例（命中 / 未命中 / 越权 segment），`service.test.ts` 新增 1 个
+  回归用例锚定 `retryAgentReport` 调用了 `getPipelineRunByIdOnly` 且
+  完全不再调 `getPipelineRunById`。`vitest run` pipelines 全套 + e2e +
+  daemon wiring 共 185 项通过；`tsc -b apps/orchestrator` 干净；
+  `eslint --max-warnings 0` 干净。
+
 - 2026-05-19 — **V4.6 Phase 12（E2E + acceptance + docs + CHANGELOG 终稿）**：
   - `apps/orchestrator/src/__tests__/v4-6-multi-agent-e2e.test.ts`：新增
     multi-agent pipeline e2e 套件，覆盖 spec §22.7 + plan 补充共 8 个

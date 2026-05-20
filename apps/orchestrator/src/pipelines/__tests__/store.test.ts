@@ -188,6 +188,47 @@ describe("PipelineStore.savePipelineRun + getPipelineRunById", () => {
     });
     expect(res).toBeNull();
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // V4.6 follow-up Important #4：service 的 retryAgentReport /
+  // skipAgentReport / listPipelineRunAgentReports 只持有 pipelineRunId，
+  // 没有 workItemId 上下文。把反向查找从 service 内部的 module-local
+  // `scanPipelineRunById` 合并到 store 里，service 层用 `getPipelineRunByIdOnly`
+  // 单一入口；这里直接锚定 store API 的两种返回路径（命中 + 未命中）。
+  // ────────────────────────────────────────────────────────────────────────
+  it("getPipelineRunByIdOnly reverse-looks up a run with no workItemId context", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ip-store-byid-"));
+    const store = createPipelineStore({ root });
+    const run = pipelineRun({
+      workItemId: "wi_abc",
+      taskId: "t_abc",
+      pipelineRunId: "pr_abc",
+    });
+    await store.savePipelineRun(run);
+
+    const found = await store.getPipelineRunByIdOnly({
+      pipelineRunId: "pr_abc",
+    });
+    expect(found?.pipelineRunId).toBe("pr_abc");
+    expect(found?.workItemId).toBe("wi_abc");
+    expect(found?.taskId).toBe("t_abc");
+  });
+
+  it("getPipelineRunByIdOnly returns null for unknown id", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ip-store-byid-miss-"));
+    const store = createPipelineStore({ root });
+    const found = await store.getPipelineRunByIdOnly({
+      pipelineRunId: "pr_missing",
+    });
+    expect(found).toBeNull();
+  });
+
+  it("getPipelineRunByIdOnly rejects illegal pipelineRunId segments", async () => {
+    const { store } = await createTempStore();
+    await expect(
+      store.getPipelineRunByIdOnly({ pipelineRunId: "../escape" }),
+    ).rejects.toBeInstanceOf(PipelineStorePathError);
+  });
 });
 
 describe("PipelineStore.listForTask + latestForTask", () => {

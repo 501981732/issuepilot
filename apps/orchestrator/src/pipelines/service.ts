@@ -320,10 +320,12 @@ export const createPipelineService = (
     },
 
     async listPipelineRunAgentReports({ pipelineRunId }) {
-      // We do not have a direct prid → (wid, tid) index so we have to scan
-      // pipelines/<wid>/<tid>/<prid>.json. For the typical small workspaces
-      // V4.6 targets this is bounded and acceptable.
-      const matches = await scanPipelineRunById(opts.pipelineStore, pipelineRunId);
+      // V4.6 follow-up Important #4：HTTP caller 只持有 pipelineRunId，
+      // 反查由 store 内部 reverse-lookup 完成（保留扫描语义，统一
+      // ENOENT → null 的存在性判断）。
+      const matches = await opts.pipelineStore.getPipelineRunByIdOnly({
+        pipelineRunId,
+      });
       if (!matches) {
         return err(
           "pipeline_run_not_found",
@@ -502,20 +504,12 @@ export const createPipelineService = (
           `agent report ${agentReportId} not found`,
         );
       }
-      const run = await opts.pipelineStore.getPipelineRunById({
-        workItemId: "",
-        taskId: found.taskId,
+      // V4.6 follow-up Important #4：caller 只持有 agentReportId，没法
+      // 拼出 `pipelines/<wid>/<tid>/<prid>.json` 直接路径；交给 store 的
+      // reverse-lookup helper 一次完成扫描 + JSON 解析。
+      const concreteRun = await opts.pipelineStore.getPipelineRunByIdOnly({
         pipelineRunId: found.report.pipelineRunId,
-      }).catch(() => undefined);
-      // We may not have a workItemId here since reverse-lookup; do a scan if
-      // the direct path fails (this is rare but possible during tests where
-      // workItemId is required to build the path).
-      const concreteRun =
-        run ??
-        (await scanPipelineRunById(
-          opts.pipelineStore,
-          found.report.pipelineRunId,
-        ).then((m) => m ?? null));
+      });
       if (!concreteRun) {
         return err(
           "pipeline_run_not_found",
@@ -608,11 +602,11 @@ export const createPipelineService = (
       await opts.pipelineStore.saveAgentReport(cancelledReport);
 
       // Look up the parent PipelineRun to decide where the pipeline should
-      // land next (next role in recipe or `awaiting_human_review`).
-      const concreteRun = await scanPipelineRunById(
-        opts.pipelineStore,
-        found.report.pipelineRunId,
-      );
+      // land next (next role in recipe or `awaiting_human_review`). V4.6
+      // follow-up Important #4：交给 store 反查，不再走 service 内部 scan。
+      const concreteRun = await opts.pipelineStore.getPipelineRunByIdOnly({
+        pipelineRunId: found.report.pipelineRunId,
+      });
       let nextRole: AgentRole | "awaiting_human_review" = "awaiting_human_review";
       if (concreteRun) {
         const order = recipeRoles(concreteRun.recipe);
@@ -690,53 +684,4 @@ export const createPipelineService = (
       };
     },
   };
-};
-
-/**
- * Walk `<root>/pipelines/<wid>/<tid>/<prid>.json` to locate a PipelineRun by
- * id alone. Used by `listPipelineRunAgentReports` / `retryAgentReport` /
- * `skipAgentReport` where the dashboard only passes the run id.
- */
-const scanPipelineRunById = async (
-  store: PipelineStore,
-  pipelineRunId: string,
-): Promise<PipelineRun | null> => {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const pipelinesRoot = path.join(store.root, "pipelines");
-  let wids: string[];
-  try {
-    wids = await fs.readdir(pipelinesRoot);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw cause;
-  }
-  for (const wid of wids) {
-    let taskDirs: string[];
-    try {
-      taskDirs = await fs.readdir(path.join(pipelinesRoot, wid));
-    } catch {
-      continue;
-    }
-    for (const tid of taskDirs) {
-      const candidate = path.join(
-        pipelinesRoot,
-        wid,
-        tid,
-        `${pipelineRunId}.json`,
-      );
-      try {
-        await fs.access(candidate);
-      } catch {
-        continue;
-      }
-      const run = await store.getPipelineRunById({
-        workItemId: wid,
-        taskId: tid,
-        pipelineRunId,
-      });
-      if (run) return run;
-    }
-  }
-  return null;
 };

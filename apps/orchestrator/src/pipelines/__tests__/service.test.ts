@@ -460,6 +460,70 @@ describe("createPipelineService", () => {
     expect(result.error.code).toBe("agent_report_not_found");
   });
 
+  // V4.6 follow-up Important #4：retryAgentReport / skipAgentReport /
+  // listPipelineRunAgentReports 现在统一通过 PipelineStore.getPipelineRunByIdOnly
+  // 反查 PipelineRun，避免老实现里 `getPipelineRunById({ workItemId: "" })`
+  // + `.catch(() => undefined)` + 内部 scanPipelineRunById fallback 的三层
+  // 兜底语义。这里锚定 store 层的新入口被打到，并且不再触发原本会失败的
+  // `getPipelineRunById({ workItemId: "" })` 路径。
+  it("V4.6 fix Important 4: retryAgentReport resolves PipelineRun via getPipelineRunByIdOnly without workItemId context", async () => {
+    const h = await buildHarness();
+    cleanup.push(() => rm(h.tempRoot, { recursive: true, force: true }));
+    await h.store.savePipelineRun(
+      buildPipelineRun({
+        status: "awaiting_rework",
+        currentRole: null,
+        agentReportIds: {
+          coder: "ar_coder",
+          reviewer: "ar_reviewer",
+          test_evidence: null,
+        },
+      }),
+    );
+    await h.store.saveAgentReport(
+      buildReviewerReport({
+        reviewer: {
+          summary: "needs changes",
+          decision: "request_changes",
+          confidence: 0.7,
+          risks: [],
+          evidenceRequest: [],
+          findings: [],
+          inlineComments: [],
+          mrPublication: { status: "skipped_by_config", noteIds: [] },
+        },
+      }),
+    );
+    h.coordinator.retryRole.mockResolvedValue({
+      supersededReportId: "ar_reviewer",
+      report: buildReviewerReport({ agentReportId: "ar_reviewer_2" }),
+      pipelineRun: buildPipelineRun({
+        status: "awaiting_human_review",
+        currentRole: null,
+        agentReportIds: {
+          coder: "ar_coder",
+          reviewer: "ar_reviewer_2",
+          test_evidence: null,
+        },
+      }),
+    });
+
+    const byIdOnlySpy = vi.spyOn(h.store, "getPipelineRunByIdOnly");
+    const byIdSpy = vi.spyOn(h.store, "getPipelineRunById");
+
+    const result = await h.service.retryAgentReport({
+      agentReportId: "ar_reviewer",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.pipelineRunId).toBe("pr_1");
+    expect(byIdOnlySpy).toHaveBeenCalledWith({ pipelineRunId: "pr_1" });
+    // The old code path went through getPipelineRunById({ workItemId: "" })
+    // and .catch(() => undefined); after Important #4 the service must not
+    // call getPipelineRunById at all to resolve a run from agentReportId.
+    expect(byIdSpy).not.toHaveBeenCalled();
+  });
+
   it("retryAgentReport (reviewer) calls coordinator.retryRole and returns new id", async () => {
     const h = await buildHarness();
     cleanup.push(() => rm(h.tempRoot, { recursive: true, force: true }));

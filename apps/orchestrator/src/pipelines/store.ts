@@ -221,6 +221,21 @@ export interface PipelineStore {
     taskId: string;
     pipelineRunId: string;
   }): Promise<PipelineRun | null>;
+  /**
+   * V4.6 follow-up Important #4：无 workItemId 上下文的反查。
+   *
+   * 走 `<root>/pipelines/<wid>/<tid>/<pipelineRunId>.json` 全盘扫描定位
+   * PipelineRun，给 `listPipelineRunAgentReports` / `retryAgentReport` /
+   * `skipAgentReport` 这种只持有 `pipelineRunId` 的 HTTP 入口用。
+   *
+   * 与 `findAgentReportById` 同源：先 `assertSafeSegment` 防止 `..`
+   * 注入；目录或文件 ENOENT 一律返回 `null`，把存在性判断收敛到一处。
+   * V4.6 把 `pipelines/<wid>/<tid>/` 单层文件 layout 当作真相源，对于
+   * P0 目标的本地单机闭环这点扫描成本是有界且可接受的。
+   */
+  getPipelineRunByIdOnly(input: {
+    pipelineRunId: string;
+  }): Promise<PipelineRun | null>;
   /** spec §8.1：把 prevId.supersededBy = nextId 写回；nextId.supersedes = prevId。 */
   supersede(input: {
     workItemId: string;
@@ -454,6 +469,46 @@ export const createPipelineStore = (
         if (cause instanceof PipelineStoreReadError) throw cause;
         throw cause;
       }
+    },
+
+    async getPipelineRunByIdOnly({ pipelineRunId }) {
+      // 防御性校验，避免在路径里塞 `..` 越权扫描 / 拼出别的 task 的文件。
+      assertSafeSegment(pipelineRunId, "pipelineRunId");
+      const pipelinesRoot = path.join(root, "pipelines");
+      let wids: string[];
+      try {
+        wids = await readdir(pipelinesRoot);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw cause;
+      }
+      for (const wid of wids) {
+        if (!SAFE_SEGMENT.test(wid)) continue;
+        let taskDirs: string[];
+        try {
+          taskDirs = await readdir(path.join(pipelinesRoot, wid));
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw cause;
+        }
+        for (const tid of taskDirs) {
+          if (!SAFE_SEGMENT.test(tid)) continue;
+          const candidate = path.join(
+            pipelinesRoot,
+            wid,
+            tid,
+            `${pipelineRunId}.json`,
+          );
+          try {
+            return await readJsonSafe(candidate, isPipelineRun);
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+            if (cause instanceof PipelineStoreReadError) throw cause;
+            throw cause;
+          }
+        }
+      }
+      return null;
     },
 
     async listForTask(input) {

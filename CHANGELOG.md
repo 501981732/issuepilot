@@ -57,6 +57,27 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Important #8（dashboard SSR fetch 并发上
+  限）**：`apps/dashboard/app/work-items/[id]/page.tsx` 之前对每个 task 用
+  无界 `Promise.all` fetch pipeline，再 task-by-task `Promise.all` fetch 三
+  role agent-report；task 数量大时会向 orchestrator 同时打出 N + 3N 个
+  请求，把连接池打爆、SSR P95 时延爆炸。本次新增 module-scope
+  `withConcurrency(items, worker, concurrent = 8)` helper，用
+  `Promise.allSettled` + 8 并发上限同时给两个阶段限流：
+  - pipeline fetch：把 `taskIds.map` 包进 `withConcurrency`，单批 ≤ 8。
+  - agent-report fetch：把所有 task 的活跃 `agentReports` 摘要摊平成
+    `{ taskId, summary }[]`，全局走一次 `withConcurrency`，避免某个 task 内
+    supersede 链尾 fan-out 触发局部无界并发。
+  - 保留既有 fail-soft 语义：worker 内 `ApiError`（pipeline 404/400 →
+    `null`、agent-report 任意 `ApiError` → skip）；其它真实 transport /
+    编程错误 helper 仍向上 throw（保持与替换前 `Promise.all` 一致的失败
+    传播）。
+  - `pipelinesByTask` 中的 task 仍预置空 `{}` 桶，对消费者
+    `WorkItemDetail` 的 `agentReportsByTask[taskId] ?? {}` 行为保持等价。
+  - 验证：`vitest run app/work-items` 5/5 全绿；`tsc -b apps/dashboard`
+    clean；`eslint --max-warnings 0` clean。`next build` 跳过（tsc 已覆盖
+    SSR 组件类型）。
+
 - 2026-05-20 — **V4.6 follow-up Important #5（`agent_not_configured` 映射
   503）**：spec §18.4 把 `service_unavailable` / HTTP 503 保留给 "agent
   runner 未装配" 这类暂时性服务异常；当前

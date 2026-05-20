@@ -1,5 +1,6 @@
 import type {
   AgentReport,
+  AgentReportSummary,
   GetAgentReportResponse,
   GetPipelineResponse,
 } from "@issuepilot/shared-contracts";
@@ -18,6 +19,36 @@ import {
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+
+// V4.6 follow-up Important #8: SSR 当一个工作单元有很多 task 时会同时打出
+// N 个 pipeline + 最多 3N 个 agent-report 请求；不限流时 orchestrator 连接
+// 池会被打爆，SSR P95 时延爆炸。统一通过 withConcurrency(8) 给两阶段限流。
+// 8 与 orchestrator 单实例的合理并发上限对齐，且足以让 SSR 不空转。
+const CONCURRENT = 8;
+
+async function withConcurrency<T, R>(
+  items: readonly T[],
+  worker: (item: T) => Promise<R>,
+  concurrent = CONCURRENT,
+): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += concurrent) {
+    const slice = items.slice(i, i + concurrent);
+    const batch = await Promise.allSettled(slice.map(worker));
+    for (const r of batch) {
+      if (r.status === "fulfilled") {
+        out.push(r.value);
+      } else {
+        // worker 已经把 ApiError(404/400) 转成 soft null/skip，到达此处的
+        // rejection 一定是 transport / 编程错误，必须冒泡，与替换前的无界
+        // `Promise.all` 失败语义保持一致；allSettled 只是确保一个 batch
+        // 内的多个失败不会互相吞噬调用栈。
+        throw r.reason;
+      }
+    }
+  }
+  return out;
+}
 
 export default async function WorkItemDetailRoute(props: {
   params: Promise<{ id: string }>;
@@ -46,11 +77,9 @@ export default async function WorkItemDetailRoute(props: {
     // 这里 fail soft → 静默把对应 task 留空，UI 自动回退到旧路径。
     const opts = project ? { project } : {};
     const taskIds = detail.tasks.map((t) => t.taskId);
-    const pipelinePairs = await Promise.all(
-      taskIds.map(async (taskId): Promise<[
-        string,
-        GetPipelineResponse | null,
-      ]> => {
+    const pipelinePairs = await withConcurrency(
+      taskIds,
+      async (taskId): Promise<[string, GetPipelineResponse | null]> => {
         try {
           const res = await getPipeline(id, taskId, opts);
           return [taskId, res];
@@ -60,35 +89,52 @@ export default async function WorkItemDetailRoute(props: {
           }
           throw err;
         }
-      }),
+      },
     );
     const pipelinesByTask = Object.fromEntries(
       pipelinePairs.filter(
         (entry): entry is [string, GetPipelineResponse] => entry[1] !== null,
       ),
     );
+    // 把所有 task 的「活跃 agent-report 摘要」摊平成一份请求列表，再一次性
+    // 走 withConcurrency(8)，避免某个 task 内 supersede 链尾 fan-out 触发
+    // 局部无界 Promise.all。
+    const agentReportFetches: { taskId: string; summary: AgentReportSummary }[] = [];
+    for (const [taskId, pipeline] of Object.entries(pipelinesByTask)) {
+      for (const summary of pipeline.agentReports.filter((s) => !s.supersededBy)) {
+        agentReportFetches.push({ taskId, summary });
+      }
+    }
+    const agentReportEntries = await withConcurrency(
+      agentReportFetches,
+      async ({ taskId, summary }) => {
+        try {
+          const reportDetail: GetAgentReportResponse = await getAgentReport(
+            summary.agentReportId,
+            opts,
+          );
+          return {
+            taskId,
+            role: reportDetail.agentReport.role,
+            report: reportDetail.agentReport,
+          } as const;
+        } catch (err) {
+          if (err instanceof ApiError) return null;
+          throw err;
+        }
+      },
+    );
     const agentReportsByTask: Record<
       string,
       Partial<Record<AgentReport["role"], AgentReport>>
     > = {};
-    for (const [taskId, pipeline] of Object.entries(pipelinesByTask)) {
-      const byRole: Partial<Record<AgentReport["role"], AgentReport>> = {};
-      const summaries = pipeline.agentReports.filter((s) => !s.supersededBy);
-      await Promise.all(
-        summaries.map(async (summary) => {
-          try {
-            const detail: GetAgentReportResponse = await getAgentReport(
-              summary.agentReportId,
-              opts,
-            );
-            byRole[detail.agentReport.role] = detail.agentReport;
-          } catch (err) {
-            if (err instanceof ApiError) return;
-            throw err;
-          }
-        }),
-      );
-      agentReportsByTask[taskId] = byRole;
+    for (const taskId of Object.keys(pipelinesByTask)) {
+      agentReportsByTask[taskId] = {};
+    }
+    for (const entry of agentReportEntries) {
+      if (!entry) continue;
+      const bucket = (agentReportsByTask[entry.taskId] ??= {});
+      bucket[entry.role] = entry.report;
     }
     return (
       <WorkItemDetail

@@ -298,7 +298,7 @@ function buildHarness(opts: {
     const plan = await store.getCurrentPlan(workItem.workItemId);
     if (!plan || plan.status !== "accepted") return;
     const links = await store.listAllTaskRunLinks(workItem.workItemId);
-    await tickWorkItem(workItem, plan, links, orchestrationDeps);
+    const result = await tickWorkItem(workItem, plan, links, orchestrationDeps);
     for (const [runId, meta] of taskRunIndex) {
       if (!meta.workItemId) {
         taskRunIndex.set(runId, {
@@ -307,6 +307,7 @@ function buildHarness(opts: {
         });
       }
     }
+    return result;
   }
 
   const service = createWorkItemService({

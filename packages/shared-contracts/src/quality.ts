@@ -17,9 +17,7 @@ export const QUALITY_METRIC_ID_VALUES = [
 
 export type QualityMetricId = (typeof QUALITY_METRIC_ID_VALUES)[number];
 
-export const isQualityMetricId = (
-  value: unknown,
-): value is QualityMetricId =>
+export const isQualityMetricId = (value: unknown): value is QualityMetricId =>
   typeof value === "string" &&
   (QUALITY_METRIC_ID_VALUES as readonly string[]).includes(value);
 
@@ -31,15 +29,62 @@ export const FAILURE_PATTERN_ID_VALUES = [
   "review-rework",
   "ci-failure",
   "missing-evidence",
+  // V4.6 增量（spec §16.2 / §17.4）：reviewer / test_evidence / pipeline /
+  // role profile / sandbox / redaction / runner / coding / storage / cancel。
+  // 与 `apps/orchestrator/src/pipelines/failure-mapping.ts` 保持一致。
+  "reviewer_unavailable",
+  "reviewer_requested_changes",
+  "reviewer_cannot_review",
+  "evidence_unavailable",
+  "evidence_partial",
+  "pipeline_cancelled",
+  "pipeline_init_failed",
+  "role_profile_invalid",
+  "runner_unavailable",
+  "coding_failed",
+  "sandbox_violation",
+  "redaction_failed",
+  "storage_full",
 ] as const;
 
 export type FailurePatternId = (typeof FAILURE_PATTERN_ID_VALUES)[number];
 
-export const isFailurePatternId = (
-  value: unknown,
-): value is FailurePatternId =>
+export const isFailurePatternId = (value: unknown): value is FailurePatternId =>
   typeof value === "string" &&
   (FAILURE_PATTERN_ID_VALUES as readonly string[]).includes(value);
+
+/**
+ * V4.6 by-role 切片（spec §17.4）。每个 role 暴露成功 / 失败 / 跳过率，给
+ * dashboard 的 reports 页面 6 个 metric tile 用。`undefined` 表示当前窗口
+ * 没有该 role 的任何 AgentReport。
+ */
+export interface QualityByRoleSlice {
+  /** coder 成功率：`complete / (complete + failed + cancelled)` ∈ [0,100]。 */
+  coderSuccessRate?: number;
+  /** reviewer approve_with_comments 占 reviewer decision 总数。 */
+  reviewerApproveRate?: number;
+  /** reviewer cannot_review 占 reviewer decision 总数。 */
+  reviewerCannotReviewRate?: number;
+  /** reviewer runner_unavailable / agent failed 占 reviewer 总数。 */
+  reviewerUnavailableRate?: number;
+  /** test_evidence evidenceStatus = `complete` 占 test_evidence 总数。 */
+  testEvidenceCompleteRate?: number;
+  /** test_evidence evidenceStatus = `partial` 占 test_evidence 总数。 */
+  testEvidencePartialRate?: number;
+  /** 用于显示分子分母（dashboard hover tooltip）。 */
+  counts?: {
+    coderComplete: number;
+    coderFailed: number;
+    coderCancelled: number;
+    reviewerApprove: number;
+    reviewerRequestChanges: number;
+    reviewerCannotReview: number;
+    reviewerUnavailable: number;
+    testEvidenceComplete: number;
+    testEvidencePartial: number;
+    testEvidenceUnavailable: number;
+  };
+}
 
 export const QUALITY_STATUS_FILTER_VALUES = [
   "run-completed",
@@ -50,8 +95,7 @@ export const QUALITY_STATUS_FILTER_VALUES = [
   "report-incomplete",
 ] as const;
 
-export type QualityStatusFilter =
-  (typeof QUALITY_STATUS_FILTER_VALUES)[number];
+export type QualityStatusFilter = (typeof QUALITY_STATUS_FILTER_VALUES)[number];
 
 export const isQualityStatusFilter = (
   value: unknown,
@@ -116,12 +160,14 @@ export interface QualityDrilldownItem {
   issue?: { iid: number; title: string; url?: string };
   workItem?: { workItemId: string; title: string };
   task?: { taskId: string; title: string };
+  agentReport?: { agentReportId: string; role: string; status: string };
   run?: { runId: string; status: string };
   evidenceId?: string;
   updatedAt: string;
   target:
     | { kind: "run"; href: string }
     | { kind: "work-item"; href: string }
+    | { kind: "agent-report"; href: string }
     | { kind: "evidence"; href: string };
 }
 
@@ -141,4 +187,8 @@ export interface QualitySummaryResponse {
   drilldown: QualityDrilldownItem[];
   dimensions: QualityDimension[];
   diagnostics: { invalidReportCount: number };
+  /**
+   * V4.6 by-role 切片（spec §17.4）。可选字段，老 client 视为 undefined 即可。
+   */
+  byRole?: QualityByRoleSlice;
 }

@@ -3,6 +3,7 @@
 import type {
   FailurePatternId,
   FailurePatternSummary,
+  QualityByRoleSlice,
   QualityDrilldownItem,
   QualityDimension,
   QualityMetric,
@@ -190,6 +191,9 @@ export function QualityAnalytics({ summary }: QualityAnalyticsProps) {
           />
 
           <DrilldownTable items={filteredDrilldown} t={t} />
+          {summary.byRole ? (
+            <ByRolePanel byRole={summary.byRole} t={t} />
+          ) : null}
         </>
       ) : (
         <Card>
@@ -590,7 +594,17 @@ function DrilldownTable({
                       </span>
                     </td>
                     <td className="px-4 py-2.5 text-sm text-fg">
-                      {item.task ? (
+                      {item.agentReport ? (
+                        <span
+                          className="line-clamp-1"
+                          title={item.agentReport.agentReportId}
+                        >
+                          <span className="font-mono text-[11px] text-fg-subtle">
+                            {item.agentReport.role}
+                          </span>{" "}
+                          {item.agentReport.agentReportId}
+                        </span>
+                      ) : item.task ? (
                         <span className="line-clamp-1" title={item.task.title}>
                           <span className="font-mono text-[11px] text-fg-subtle">
                             {item.task.taskId}
@@ -652,6 +666,71 @@ function DrilldownTable({
             </table>
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface ByRolePanelProps {
+  byRole: QualityByRoleSlice;
+  t: SectionTranslator;
+}
+
+/**
+ * V4.6 by-role 切片渲染（plan Task 11.8 / spec §17.4）。6 个 metric tile：
+ * coder success / reviewer approve / reviewer cannot_review / reviewer
+ * unavailable / test_evidence complete / test_evidence partial。`undefined`
+ * 字段时 tile 留空字符 `—`，让 dashboard 视觉占位稳定。
+ */
+function ByRolePanel({ byRole, t }: ByRolePanelProps) {
+  const entries: Array<{ key: keyof QualityByRoleSlice; value?: number }> = [
+    { key: "coderSuccessRate", value: byRole.coderSuccessRate },
+    { key: "reviewerApproveRate", value: byRole.reviewerApproveRate },
+    {
+      key: "reviewerCannotReviewRate",
+      value: byRole.reviewerCannotReviewRate,
+    },
+    {
+      key: "reviewerUnavailableRate",
+      value: byRole.reviewerUnavailableRate,
+    },
+    {
+      key: "testEvidenceCompleteRate",
+      value: byRole.testEvidenceCompleteRate,
+    },
+    {
+      key: "testEvidencePartialRate",
+      value: byRole.testEvidencePartialRate,
+    },
+  ];
+  return (
+    <Card>
+      <CardContent className="space-y-3 py-4">
+        <h3
+          className="text-sm font-semibold text-fg"
+          data-testid="by-role-title"
+        >
+          {t("byRoleTitle")}
+        </h3>
+        <dl
+          data-testid="by-role-grid"
+          className="grid grid-cols-2 gap-3 sm:grid-cols-3"
+        >
+          {entries.map((e) => (
+            <div
+              key={e.key}
+              data-testid={`byRole-${e.key}`}
+              className="rounded-md border border-border bg-surface-2 px-3 py-2"
+            >
+              <dt className="text-[11px] uppercase tracking-wide text-fg-muted">
+                {t(`byRole.${e.key}`)}
+              </dt>
+              <dd className="mt-1 text-lg font-semibold text-fg">
+                {e.value === undefined ? "—" : `${e.value}%`}
+              </dd>
+            </div>
+          ))}
+        </dl>
       </CardContent>
     </Card>
   );

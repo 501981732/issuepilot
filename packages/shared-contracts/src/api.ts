@@ -1,19 +1,11 @@
+import type {
+  AgentReport,
+  AgentRole,
+  ReviewerDecision,
+} from "./agent-report.js";
 import { type IssuePilotEvent } from "./events.js";
-export type {
-  ImprovementActionRequest,
-  ImprovementActionResponse,
-  ImprovementGenerateRequest,
-  ImprovementGenerateResponse,
-  ImprovementPatchPreviewRequest,
-  ImprovementRecommendationDetailResponse,
-  ImprovementRecommendationFilters,
-  ImprovementRecommendationsListResponse,
-} from "./improvement.js";
-import {
-  type RunReportArtifact,
-  type RunReportSummary,
-} from "./report.js";
-export type { QualitySummaryResponse } from "./quality.js";
+import type { PipelineRun, WorkflowRecipe, RecipeSource } from "./pipeline.js";
+import { type RunReportArtifact, type RunReportSummary } from "./report.js";
 import { type RunRecord, type RunStatus } from "./run.js";
 import type {
   TaskNode,
@@ -25,6 +17,18 @@ import type {
   WorkItemReport,
   WorkItemStatus,
 } from "./work-item.js";
+
+export type {
+  ImprovementActionRequest,
+  ImprovementActionResponse,
+  ImprovementGenerateRequest,
+  ImprovementGenerateResponse,
+  ImprovementPatchPreviewRequest,
+  ImprovementRecommendationDetailResponse,
+  ImprovementRecommendationFilters,
+  ImprovementRecommendationsListResponse,
+} from "./improvement.js";
+export type { QualitySummaryResponse } from "./quality.js";
 
 /**
  * Wire types for the local orchestrator HTTP surface. Phase 6 (Fastify)
@@ -183,4 +187,168 @@ export interface ConfirmEvidenceResponse {
   evidenceId: string;
   confirmedAt: string;
   report: WorkItemReport;
+}
+
+/**
+ * V4.6 Multi-Agent Collaboration HTTP 契约（spec §18）。
+ *
+ * 所有 V4.6 route 都尊重 single / team 模式的 `x-issuepilot-project`
+ * header 与 active project 校验，沿用 V4.4 / V4.5 模式。错误码使用
+ * `PipelineRouteErrorCode` 统一字面量。
+ */
+
+/**
+ * V4.6 route 统一 error code（spec §18.4）。
+ *
+ * V4.6 follow-up Important #5：spec §18.4 保留 `service_unavailable` →
+ * HTTP 503 用于标记 "agent runner 未装配" 这类暂时性服务异常，例如
+ * coordinator 抛出 `CoordinatorError("agent_not_configured")` 时；
+ * 不与 400 / `invalid_payload` 合并，便于 dashboard 区分。
+ */
+export type PipelineRouteErrorCode =
+  | "recipe_override_locked"
+  | "unknown_recipe"
+  | "role_mismatch"
+  | "not_revocable"
+  | "project_required"
+  | "project_query_not_allowed"
+  | "task_not_found"
+  | "pipeline_run_not_found"
+  | "agent_report_not_found"
+  | "role_skip_not_allowed"
+  | "workflow_not_found"
+  | "invalid_payload"
+  | "service_unavailable"
+  | "pipelines_unavailable";
+
+export interface PipelineRouteError {
+  code: PipelineRouteErrorCode;
+  message: string;
+}
+
+/** AgentReport 摘要，供 PipelineRun 列表 / WorkItemReport 渲染消费。 */
+export interface AgentReportSummary {
+  agentReportId: string;
+  pipelineRunId: string;
+  taskId: string;
+  role: AgentRole;
+  status: AgentReport["status"];
+  startedAt: string;
+  completedAt?: string;
+  /** 仅 reviewer 时填入。 */
+  decision?: ReviewerDecision;
+  confidence?: number;
+  /** lastError.code 字面量（与 `LastErrorCode` 对齐）。 */
+  lastErrorCode?: string;
+  /** supersede 链：本 report 是否被 supersededBy 引用。 */
+  supersededBy?: string;
+}
+
+/** PipelineRun + 关联 AgentReport 摘要的 envelope。 */
+export interface PipelineRunWithReports {
+  pipelineRun: PipelineRun;
+  agentReports: AgentReportSummary[];
+}
+
+/** `GET /api/work-items/:wid/tasks/:tid/pipeline` 响应。 */
+export interface GetPipelineResponse {
+  /** 当前 task 上最新的 PipelineRun；尚未创建时为 null。 */
+  pipelineRun: PipelineRun | null;
+  agentReports: AgentReportSummary[];
+  /** spec §8.3：pendingRecipe 与 source。 */
+  pendingRecipe?: WorkflowRecipe;
+  pendingRecipeSource?: RecipeSource;
+}
+
+/** `GET /api/work-items/:wid/tasks/:tid/pipelines` 响应（含 supersede 关系）。 */
+export interface ListPipelinesResponse {
+  pipelineRuns: PipelineRun[];
+}
+
+/**
+ * `POST /api/work-items/:wid/tasks/:tid/pipeline/recipe-override` 请求体。
+ *
+ * 路径含 `/pipeline/` 段（spec §18.1），与 dashboard `setRecipeOverride`
+ * client method 严格对应。
+ */
+export interface SetRecipeOverrideRequest {
+  recipe: WorkflowRecipe;
+  /** 省略时 server 用 `x-issuepilot-operator` header。 */
+  operator?: string;
+}
+
+export interface SetRecipeOverrideResponse {
+  /** 写到 PipelineRun.recipe 或 TaskNode.pendingRecipe 后的最新值。 */
+  recipe: WorkflowRecipe;
+  recipeSource: RecipeSource;
+  /**
+   * 决议来源：
+   * - `pipeline_run`：override 已写到 PipelineRun.recipe（task 已 ready 且
+   *   PipelineRun 已创建）。
+   * - `pending`：override 写到 TaskNode.pendingRecipe，等 PipelineRun 创建时灌入。
+   */
+  appliedTo: "pipeline_run" | "pending";
+  pipelineRunId?: string;
+}
+
+/** `GET /api/agent-reports/:id` 响应。 */
+export interface GetAgentReportResponse {
+  agentReport: AgentReport;
+}
+
+/** `GET /api/work-items/:wid/tasks/:tid/agent-reports` 响应。 */
+export interface ListTaskAgentReportsResponse {
+  agentReports: AgentReportSummary[];
+}
+
+/** `GET /api/pipeline-runs/:id/agent-reports` 响应（URL 用复数）。 */
+export interface ListPipelineRunAgentReportsResponse {
+  agentReports: AgentReport[];
+}
+
+/** `POST /api/agent-reports/:id/revoke-ai-review` 响应（无 body 请求）。 */
+export interface RevokeAiReviewResponse {
+  agentReportId: string;
+  /** 撤回后的 mrPublication 状态，固定为 `revoked`。 */
+  status: "revoked";
+  revokedAt: string;
+}
+
+/** `POST /api/agent-reports/:id/retry` 请求体。 */
+export interface RetryAgentReportRequest {
+  operator?: string;
+  /** Operator-supplied retry reason；写入 dashboard timeline。 */
+  reason?: string;
+}
+
+export interface RetryAgentReportResponse {
+  pipelineRunId: string;
+  /** 新创建的 AgentReport ID（reviewer / test_evidence retry 时） */
+  agentReportId?: string;
+  /** 当 coder retry 时，新创建的 PipelineRun ID。 */
+  newPipelineRunId?: string;
+}
+
+/** `POST /api/agent-reports/:id/skip` 请求体。 */
+export interface SkipAgentReportRequest {
+  operator?: string;
+  reason?: string;
+}
+
+export interface SkipAgentReportResponse {
+  pipelineRunId: string;
+  agentReportId: string;
+  /** 跳过后 pipeline 推进到的下一 role 或终态。 */
+  nextRole: AgentRole | "awaiting_human_review";
+}
+
+/** `GET /api/workflows/:workflowId/roles/validate` 响应。 */
+export interface ValidateWorkflowRolesResponse {
+  valid: boolean;
+  errors: Array<{
+    code: string;
+    message: string;
+    /** 受影响的 role profile。 */
+    role?: AgentRole;
+  }>;
 }

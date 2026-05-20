@@ -23,7 +23,11 @@ import {
   type ParentHandoffDeps,
   type ParentHandoffWorkflow,
 } from "./handoff.js";
-import { applyTaskRunFinal, tickWorkItem } from "./orchestration.js";
+import {
+  applyTaskRunFinal,
+  tickWorkItem,
+  type TickResult,
+} from "./orchestration.js";
 import { validatePlanDraft } from "./plan-validation.js";
 import type { WorkItemPlanner } from "./planner.js";
 import * as ReportRenderer from "./render-report.js";
@@ -64,7 +68,7 @@ export interface WorkItemServiceDeps {
    * slots / dispatch wiring. Returns whatever tickWorkItem returns so
    * the caller can log how many tasks were dispatched.
    */
-  tick(workItem: WorkItem): Promise<void>;
+  tick(workItem: WorkItem): Promise<TickResult | void>;
   /**
    * Run aggregation + handoff for one WorkItem. Daemon owns the
    * label-mode transition rules; this service just asks for it.
@@ -354,7 +358,10 @@ export function createWorkItemService(
 
       // Kick the orchestration tick so independent (zero-dep) tasks
       // start dispatching right away.
-      await deps.tick(updatedWorkItem);
+      const tickResult = await deps.tick(updatedWorkItem);
+      if (tickResult?.dispatched.some((d) => shouldReconcileAfterDispatch(d))) {
+        await deps.reconcileWorkItem(workItemId);
+      }
 
       return { workItem: updatedWorkItem, plan: accepted };
     },
@@ -418,14 +425,16 @@ export function createWorkItemService(
         ts,
         detail: { workItemId, taskId, operator, retried: true },
       });
-      await deps.tick(wi);
+      const tickResult = await deps.tick(wi);
       // V4.2 review C2: after tick may have flipped the task back to
       // `running`, the WorkItem-level aggregate / parent label should
       // catch up (e.g. partial → running on retry-after-rework so the
       // parent Issue label swaps `ai-rework` → `ai-running`). Without
       // this reconcile, the label transition only happens when the
       // next dispatch settles, which is sometimes never.
-      await deps.reconcileWorkItem(workItemId);
+      if (tickResult?.dispatched.length) {
+        await deps.reconcileWorkItem(workItemId);
+      }
       return { ok: true } as const;
     },
 
@@ -625,12 +634,14 @@ export function createWorkItemService(
         detail: { workItemId, taskId, operator },
       });
       // Re-evaluate orchestration so the task may dispatch this tick.
-      await deps.tick(wi);
+      const tickResult = await deps.tick(wi);
       // V4.2 review C2 follow-through: unskip can push WorkItem.status
       // back from `partial` to `running` (the task is in flight again),
       // which the parent Issue label must reflect. See retryTask above
       // for the same rationale.
-      await deps.reconcileWorkItem(workItemId);
+      if (tickResult?.dispatched.length) {
+        await deps.reconcileWorkItem(workItemId);
+      }
       return { ok: true } as const;
     },
 
@@ -751,6 +762,25 @@ export function createWorkItemService(
 
 function errorResult(code: string, message: string): WorkItemServiceError {
   return { error: { code, message } };
+}
+
+function shouldReconcileAfterDispatch(
+  dispatch: TickResult["dispatched"][number],
+): boolean {
+  return dispatch.taskStatus === undefined
+    ? false
+    : isTerminalOrReviewTaskStatus(dispatch.taskStatus);
+}
+
+function isTerminalOrReviewTaskStatus(status: TaskNode["status"]): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "blocked" ||
+    status === "needs_rework" ||
+    status === "awaiting_human_review" ||
+    status === "skipped"
+  );
 }
 
 async function findWorkItemByIid(

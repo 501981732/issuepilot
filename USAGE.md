@@ -49,7 +49,8 @@ Visual versions:
   - [5.7 V4.1 Workflow Spine — plan a large issue end to end](#57-v41-workflow-spine--plan-a-large-issue-end-to-end)
   - [5.8 V4.2 Task Graph — graph view, replan, mark-rework, branch chaining, team-mode project switcher](#58-v42-task-graph--graph-view-replan-mark-rework-branch-chaining-team-mode-project-switcher)
   - [5.9 V4.3 Review Packet + Evidence — reviewer packet, evidence view, human confirmation](#59-v43-review-packet--evidence--reviewer-packet-evidence-view-human-confirmation)
-  - [5.10 Current V2 boundaries and gaps](#510-current-v2-boundaries-and-gaps)
+  - [5.10 V4.6 Multi-Agent Pipeline — Coder/Reviewer/Test-Evidence pipeline, recipe override, MR publish + revoke](#510-v46-multi-agent-pipeline--coderreviewertest-evidence-pipeline-recipe-override-mr-publish--revoke)
+  - [5.11 Current V2 boundaries and gaps](#511-current-v2-boundaries-and-gaps)
 - [Part 6 — Day-2 operations and troubleshooting](#part-6--day-2-operations-and-troubleshooting)
   - [6.1 Where to look](#61-where-to-look)
   - [6.2 Forensics for failed / blocked runs](#62-forensics-for-failed--blocked-runs)
@@ -1033,7 +1034,117 @@ V4.3 invariants worth knowing as an operator:
   reconciliation; evidence confirmation triggers a re-render but does not let
   synthetic task runs write parent labels directly.
 
-### 5.10 Current V2 boundaries and gaps
+### 5.10 V4.6 Multi-Agent Pipeline — Coder/Reviewer/Test-Evidence pipeline, recipe override, MR publish + revoke
+
+V4.6 layers a three-role pipeline (Coder → Reviewer → Test/Evidence) on
+top of the V4 workbench. The orchestrator drives the pipeline through a
+single Codex app-server with three role profiles, persists one
+`AgentReport` per role under a shared `PipelineRun`, and renders the
+result in the work-item detail page.
+
+1. **Recipes and override**. Each workflow declares a `default_recipe`
+   (`full_pipeline` / `coding_plus_reviewer` / `coding_only`). Before a
+   task starts you can change the recipe inline in the
+   `RecipeSelector` — the dashboard writes the override to
+   `task.pendingRecipe` via
+   `POST /api/work-items/:id/tasks/:taskId/recipe-override`. Once the
+   first agent is running, the selector locks and you must
+   retry / cancel to change roles.
+2. **Pipeline visualization**. The work-item detail page shows a
+   `PipelineProgress` strip with three steps (Coder → Reviewer →
+   Test/Evidence). Steps that the recipe disables render grayed; the
+   currently running role is highlighted; failed / partial / cancelled
+   reports color-code each badge with a screen-reader-safe label.
+3. **AgentReport tabs**. Below the pipeline strip, `AgentReportTabs`
+   exposes a tab per role:
+   - **Coder**: summary + last error (with diff snapshot links once the
+     V3 runner adapter lands).
+   - **Reviewer**: decision badge (`approve_with_comments` /
+     `request_changes` / `cannot_review`), severity-sorted findings,
+     inline comments, `mrPublication` status (`pending` / `published` /
+     `publish_failed` / `revoked` / `scope_insufficient` /
+     `skipped_by_config`), and the **Revoke AI Review** button.
+   - **Test/Evidence**: evidence items list (status `collected` /
+     `skipped` / `failed`).
+4. **Reviewer publishes to GitLab MR by default**. If the workflow
+   `reviewer.publish_to_mr` flag is on (default), the reviewer findings
+   become inline comments on the MR (1 summary note + N inline notes,
+   prefixed `[ai-reviewer]`). Publishing is fail soft: a publish error
+   keeps the reviewer report `complete` but stores
+   `mrPublication.status = publish_failed`; missing GitLab token scope
+   upgrades the report to `failed` / `scope_insufficient` and blocks
+   the TaskNode.
+5. **Revoke AI review**. The `Revoke AI Review` button (visible only
+   on the reviewer tab) calls
+   `POST /api/agent-reports/:agentReportId/revoke-ai-review`. It is
+   idempotent, deletes only the notes IssuePilot created (tracked via
+   `mrPublication.noteIds`), and flips `mrPublication.status` to
+   `revoked`. Disabled states (`pending` / `publish_failed` /
+   `skipped_by_config` / `revoked`) explain themselves through localized
+   tooltips.
+6. **Retry / skip a single role**. While the pipeline is in
+   `awaiting_rework` or `partial`, operators can
+   `POST /api/agent-reports/:id/retry` (re-runs the role within the
+   same `PipelineRun`; the new report supersedes the previous one) or
+   `POST /api/agent-reports/:id/skip` (marks the report `cancelled`
+   and lets `coordinator` advance to the next role).
+7. **Quality + improvements integration**. `/reports` adds a
+   **V4.6 By-role metrics** panel surfacing coder success,
+   reviewer approve / cannot_review / unavailable, and
+   test_evidence complete / partial rates. The V4.5 improvement loop
+   gains a `role_configuration` target so recommendations can push
+   reviewer / test_evidence role profile changes (prompt template,
+   sandbox, tool allow-list, severity threshold, …).
+8. **Cancel and resume**. Cancelling a task writes
+   `task.last_cancelled_at`; the next `startPipeline` clears the
+   timestamp before running the coder. `auto_advance` is suppressed
+   while `last_cancelled_at` is set, so the operator always re-confirms
+   the work resumes.
+
+CLI / HTTP cheat sheet (single-project mode; add
+`x-issuepilot-project: <id>` for team mode):
+
+```bash
+# 1. Inspect the active pipeline for a task
+curl http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/pipeline
+
+# 2. Read all AgentReports of the latest run
+curl 'http://127.0.0.1:4738/api/agent-reports?taskId=<taskId>'
+
+# 3. Override the recipe before the task starts
+curl -X POST -H 'content-type: application/json' \
+  -d '{"recipe":"coding_only"}' \
+  http://127.0.0.1:4738/api/work-items/<wi>/tasks/<taskId>/recipe-override
+
+# 4. Retry a single role (creates a superseding AgentReport in the same PipelineRun)
+curl -X POST http://127.0.0.1:4738/api/agent-reports/<agent_report_id>/retry
+
+# 5. Skip a role (coordinator advances to the next role; supersede chain unchanged)
+curl -X POST http://127.0.0.1:4738/api/agent-reports/<agent_report_id>/skip
+
+# 6. Revoke reviewer notes from the GitLab MR
+curl -X POST http://127.0.0.1:4738/api/agent-reports/<agent_report_id>/revoke-ai-review
+```
+
+V4.6 invariants worth knowing as an operator:
+
+- Each role gets its own prompt, sandbox, and tool allow-list; the
+  reviewer sandbox is `read_only_worktree` and test/evidence is
+  `read_only_source_write_evidence` by default — operators cannot
+  silently widen these from the dashboard.
+- GitLab tokens stay in process memory and never reach the dashboard,
+  store, or event log; `mrPublication.noteIds` is the only persisted
+  token-adjacent value and is rotated on revoke.
+- Skipping or cancelling a role does **not** delete the MR comments
+  reviewer already published; use the revoke button when you need to
+  remove them.
+- V4.6 keeps `ai-ready` / `ai-running` / `human-review` / `ai-rework` /
+  `ai-failed` / `ai-blocked` GitLab label state machine intact; the
+  TaskNode status simply gains
+  `running_coding` / `running_reviewer` / `running_test_evidence` /
+  `awaiting_human_review` for finer-grained dashboard rendering.
+
+### 5.11 Current V2 boundaries and gaps
 
 The main V2 surface is complete. **Explicitly out of scope** for V2 (will be
 handled in V3 / V4):

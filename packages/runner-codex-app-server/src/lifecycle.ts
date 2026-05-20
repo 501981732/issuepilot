@@ -37,6 +37,10 @@ export interface DriveResult {
   lastTurnId?: string | undefined;
   threadId?: string | undefined;
   failureReason?: string | undefined;
+  /** Last non-empty Codex notification message observed for the active turn. */
+  finalMessage?: string | undefined;
+  /** Successful dynamic tool calls completed during the lifecycle. */
+  completedToolCalls?: Array<{ tool: string; result: unknown }> | undefined;
 }
 
 interface DynamicToolCallParams {
@@ -134,9 +138,15 @@ function notificationOutcome(
   params: unknown,
   turnId: string,
   onEvent: (type: string, data?: unknown) => void,
+  onFinalMessage: (message: string) => void,
 ): TurnOutcome | undefined {
   const p = params as Record<string, unknown> | undefined;
   const currentTurnId = eventTurnId(p);
+
+  if (method === "turn/notification" && currentTurnId === turnId) {
+    const message = notificationMessage(p);
+    if (message) onFinalMessage(message);
+  }
 
   if (method === "turn/completed" && currentTurnId === turnId) {
     onEvent("turn_completed", params);
@@ -174,6 +184,7 @@ function waitForTurn(
   turnId: string,
   timeoutMs: number,
   onEvent: (type: string, data?: unknown) => void,
+  onFinalMessage: (message: string) => void,
 ): Promise<TurnOutcome> {
   return new Promise<TurnOutcome>((resolve) => {
     let settled = false;
@@ -192,7 +203,13 @@ function waitForTurn(
     };
 
     const consume: NotificationConsumer = (method, params) => {
-      const outcome = notificationOutcome(method, params, turnId, onEvent);
+      const outcome = notificationOutcome(
+        method,
+        params,
+        turnId,
+        onEvent,
+        onFinalMessage,
+      );
       if (outcome) {
         settle(outcome);
       }
@@ -215,6 +232,30 @@ export async function driveLifecycle(input: DriveInput): Promise<DriveResult> {
   const toolsByName = new Map(input.tools.map((tool) => [tool.name, tool]));
   const queuedNotifications: QueuedNotification[] = [];
   let notificationConsumer: NotificationConsumer | null = null;
+  let finalMessage: string | undefined;
+  const completedToolCalls: Array<{ tool: string; result: unknown }> = [];
+
+  const captureFinalMessage = (message: string): void => {
+    const trimmed = message.trim();
+    if (trimmed.length > 0) finalMessage = trimmed;
+  };
+
+  const resultBase = (): Pick<
+    DriveResult,
+    | "turnsUsed"
+    | "lastTurnId"
+    | "threadId"
+    | "finalMessage"
+    | "completedToolCalls"
+  > => ({
+    turnsUsed,
+    lastTurnId,
+    threadId,
+    ...(finalMessage ? { finalMessage } : {}),
+    ...(completedToolCalls.length > 0
+      ? { completedToolCalls: [...completedToolCalls] }
+      : {}),
+  });
 
   rpc.onNotification((method, params) => {
     if (notificationConsumer?.(method, params)) return;
@@ -269,6 +310,7 @@ export async function driveLifecycle(input: DriveInput): Promise<DriveResult> {
     onEvent("tool_call_started", params);
     try {
       const result = await tool.handler(call.arguments);
+      completedToolCalls.push({ tool: call.tool, result });
       onEvent("tool_call_completed", { ...call, result });
       return {
         success: true,
@@ -334,30 +376,27 @@ export async function driveLifecycle(input: DriveInput): Promise<DriveResult> {
       turnId,
       input.turnTimeoutMs,
       onEvent,
+      captureFinalMessage,
     );
     turnSettled = true;
 
     if (outcome.kind === "completed" && outcome.stop) {
-      return { status: "completed", turnsUsed, lastTurnId, threadId };
+      return { status: "completed", ...resultBase() };
     }
     if (outcome.kind === "failed") {
       return {
         status: "failed",
-        turnsUsed,
-        lastTurnId,
-        threadId,
+        ...resultBase(),
         failureReason: outcome.error,
       };
     }
     if (outcome.kind === "cancelled") {
-      return { status: "cancelled", turnsUsed, lastTurnId, threadId };
+      return { status: "cancelled", ...resultBase() };
     }
     if (outcome.kind === "timeout") {
       return {
         status: "timeout",
-        turnsUsed,
-        lastTurnId,
-        threadId,
+        ...resultBase(),
         failureReason: "Turn timed out",
       };
     }
@@ -367,9 +406,25 @@ export async function driveLifecycle(input: DriveInput): Promise<DriveResult> {
       !outcome.stop &&
       i === input.maxTurns - 1
     ) {
-      return { status: "completed", turnsUsed, lastTurnId, threadId };
+      return { status: "completed", ...resultBase() };
     }
   }
 
-  return { status: "completed", turnsUsed, lastTurnId, threadId };
+  return { status: "completed", ...resultBase() };
+}
+
+function notificationMessage(
+  params: Record<string, unknown> | undefined,
+): string | undefined {
+  const direct = params?.["message"];
+  if (typeof direct === "string") return direct;
+  const text = params?.["text"];
+  if (typeof text === "string") return text;
+  const item = params?.["item"];
+  if (item && typeof item === "object") {
+    const obj = item as Record<string, unknown>;
+    if (typeof obj["message"] === "string") return obj["message"];
+    if (typeof obj["text"] === "string") return obj["text"];
+  }
+  return undefined;
 }

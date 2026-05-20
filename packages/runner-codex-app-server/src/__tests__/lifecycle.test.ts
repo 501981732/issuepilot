@@ -239,6 +239,48 @@ describe("driveLifecycle", () => {
     expect(events).not.toContain("unknown_event");
   });
 
+  it("captures the last turn notification message as finalMessage", async () => {
+    const rpc = createFakeRpc(
+      new Map([
+        ["initialize", { serverInfo: { name: "codex", version: "1.0" } }],
+        ["thread/start", { threadId: "t1" }],
+        ["turn/start", { turnId: "u1" }],
+      ]),
+      [
+        {
+          method: "turn/notification",
+          params: { turnId: "u1", message: "working" },
+        },
+        {
+          method: "turn/notification",
+          params: { turnId: "u1", message: "final reviewer json" },
+        },
+        {
+          method: "turn/completed",
+          params: { turnId: "u1", stop: true },
+        },
+      ],
+    );
+
+    const result = await driveLifecycle({
+      rpc,
+      maxTurns: 1,
+      prompt: "Review",
+      title: "Review",
+      cwd: "/tmp/ws",
+      threadName: "test-thread",
+      sandboxType: "workspace-write",
+      approvalPolicy: "never",
+      turnSandboxPolicy: { type: "workspaceWrite" },
+      turnTimeoutMs: 5000,
+      tools: [],
+      onEvent: () => {},
+    });
+
+    expect(result.status).toBe("completed");
+    expect(result.finalMessage).toBe("final reviewer json");
+  });
+
   it("reports failed status on turn/failed", async () => {
     const rpc = createFakeRpc(
       new Map([
@@ -420,6 +462,9 @@ describe("driveLifecycle", () => {
     expect(events).toContain("tool_call_started");
     expect(events).toContain("tool_call_completed");
     expect(result.status).toBe("completed");
+    expect(result.completedToolCalls).toEqual([
+      { tool: "gitlab_get_issue", result: { ok: true } },
+    ]);
   });
 
   it("auto-approves command and file approval requests when approvalPolicy is never", async () => {

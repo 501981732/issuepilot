@@ -3,7 +3,14 @@ import { readFile } from "node:fs/promises";
 
 import {
   DEFAULT_RETENTION_CONFIG,
+  WORKFLOW_RECIPE_VALUES,
+  WorkflowConfigError as RoleConfigError,
+  parseRoleConfig,
+  type AgentRole,
   type RetentionConfig,
+  type WorkflowRecipe,
+  type WorkflowRoleConfig,
+  type WorkflowRolesConfig,
 } from "@issuepilot/shared-contracts";
 import matter from "gray-matter";
 import YAML from "yaml";
@@ -17,9 +24,38 @@ import type {
   HooksConfig,
   TrackerConfig,
   WorkflowConfig,
+  WorkflowConfigWarning,
   WorkflowSource,
   WorkspaceConfig,
 } from "./types.js";
+
+/**
+ * V4.6 spec §10：缺 `roles:` 时 fallback 到一份内置 best-effort 默认
+ * profile（仅 P0 提供；P1 之后会推动每个项目显式声明 roles）。
+ */
+const DEFAULT_ROLES_CONFIG: WorkflowRolesConfig = {
+  coder: {
+    role: "coder",
+    promptTemplate: "prompts/coder.md",
+    sandbox: "read_write_worktree",
+    timeoutSeconds: 1800,
+  },
+  reviewer: {
+    role: "reviewer",
+    promptTemplate: "prompts/reviewer.md",
+    sandbox: "read_only_worktree",
+    publishToMr: true,
+    severityThreshold: "medium",
+    maxInlineComments: 25,
+    timeoutSeconds: 900,
+  },
+  test_evidence: {
+    role: "test_evidence",
+    promptTemplate: "prompts/test-evidence.md",
+    sandbox: "read_only_source_write_evidence",
+    timeoutSeconds: 1200,
+  },
+};
 
 const ENV_VAR_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -55,6 +91,12 @@ const TrackerSchema = z.object({
     .string()
     .regex(ENV_VAR_NAME_REGEX, "must be a valid environment variable name")
     .optional(),
+  /**
+   * V4.6 spec §10：可选 token scope 要求列表。当 reviewer 启动前的
+   * scope probe 调用 GitLab `/personal_access_tokens/self` 时，缺少
+   * 此处任一 scope 视为 `cannot_review`。
+   */
+  token_scope_requirements: z.array(z.string().min(1)).optional(),
   active_labels: z
     .array(z.string().min(1))
     .min(1)
@@ -161,6 +203,23 @@ const WorkflowFrontMatterSchema = z.object({
   ci: CiSchema,
   retention: RetentionSchema,
   poll_interval_ms: z.number().int().min(1_000).default(10_000),
+  /**
+   * V4.6 spec §10：顶层 `default_recipe` 字段。缺省时 fallback 到
+   * `full_pipeline`（parse 时同时 emit warning，提示运维者升级）。
+   */
+  default_recipe: z.enum(WORKFLOW_RECIPE_VALUES).optional(),
+  /**
+   * V4.6 spec §10：顶层 `roles:` 节。缺省时 fallback 到内置默认 role
+   * profile，emit warning。这里只做 schema 级粗校验（必须是 object），
+   * 真正的字段校验交由 shared-contracts 的 `parseRoleConfig`。
+   */
+  roles: z
+    .object({
+      coder: z.record(z.string(), z.unknown()).optional(),
+      reviewer: z.record(z.string(), z.unknown()).optional(),
+      test_evidence: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
 });
 
 type WorkflowFrontMatter = z.infer<typeof WorkflowFrontMatterSchema>;
@@ -208,11 +267,16 @@ function buildWorkflowConfig(
   promptTemplate: string,
   source: WorkflowSource,
 ): WorkflowConfig {
+  const warnings: WorkflowConfigWarning[] = [];
+
   const tracker: TrackerConfig = {
     kind: fm.tracker.kind,
     baseUrl: fm.tracker.base_url,
     projectId: fm.tracker.project_id,
     ...(fm.tracker.token_env ? { tokenEnv: fm.tracker.token_env } : {}),
+    ...(fm.tracker.token_scope_requirements
+      ? { tokenScopeRequirements: [...fm.tracker.token_scope_requirements] }
+      : {}),
     activeLabels: fm.tracker.active_labels,
     runningLabel: fm.tracker.running_label,
     handoffLabel: fm.tracker.handoff_label,
@@ -274,7 +338,20 @@ function buildWorkflowConfig(
     cleanupIntervalMs: fm.retention.cleanup_interval_ms,
   };
 
-  return {
+  const defaultRecipe: WorkflowRecipe =
+    fm.default_recipe ?? "full_pipeline";
+  if (!fm.default_recipe) {
+    warnings.push({
+      code: "default_recipe_missing",
+      path: "default_recipe",
+      message:
+        "default_recipe 未声明，已 fallback 到 full_pipeline；若想保留 V4.5 旧行为，请显式声明 coding_only。",
+    });
+  }
+
+  const roles = buildRolesConfig(fm.roles, warnings);
+
+  const config: WorkflowConfig = {
     tracker,
     workspace,
     git,
@@ -286,8 +363,54 @@ function buildWorkflowConfig(
     pollIntervalMs: fm.poll_interval_ms,
     promptTemplate,
     source,
+    defaultRecipe,
+    roles,
   };
+  if (warnings.length > 0) config.warnings = warnings;
+  return config;
 }
+
+function buildRolesConfig(
+  raw: WorkflowFrontMatter["roles"],
+  warnings: WorkflowConfigWarning[],
+): WorkflowRolesConfig {
+  const target: WorkflowRolesConfig = {};
+  const order: AgentRole[] = ["coder", "reviewer", "test_evidence"];
+  for (const role of order) {
+    const rawRole = raw?.[role];
+    if (!rawRole) {
+      const defaultProfile = DEFAULT_ROLES_CONFIG[role];
+      if (defaultProfile) {
+        target[role] = defaultProfile as never;
+      }
+      warnings.push({
+        code: "role_default_used",
+        path: `roles.${role}`,
+        message: `roles.${role} 未声明，已 fallback 到内置默认 profile（spec §10）。`,
+      });
+      continue;
+    }
+    try {
+      const parsed = parseRoleConfig({ role, raw: rawRole });
+      target[role] = parsed as never;
+    } catch (cause) {
+      if (cause instanceof RoleConfigError) {
+        throw new WorkflowConfigError(cause.message, `roles.${role}`, {
+          cause,
+        });
+      }
+      throw cause;
+    }
+  }
+  return target;
+}
+
+/** Re-export 给上层（central / cli）使用，避免重复定义。 */
+export type {
+  WorkflowRoleConfig,
+  WorkflowRolesConfig,
+  WorkflowRecipe,
+};
 
 async function readWorkflowFile(filePath: string): Promise<string> {
   try {

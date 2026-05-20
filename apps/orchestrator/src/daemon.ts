@@ -20,13 +20,22 @@ import {
   spawnRpc,
 } from "@issuepilot/runner-codex-app-server";
 import type {
+  CoderAgentReport,
   IssuePilotInternalEvent,
+  ReviewerAgentReport,
   RunReportArtifact,
+  TaskNode,
+  TestEvidenceAgentReport,
+  WorkItem,
+  WorkflowRecipe,
 } from "@issuepilot/shared-contracts";
 import {
   createGitLabAdapter,
   createGitLabAdapterFromCredential,
   type GitLabAdapter,
+  type GitLabAdapterHandle,
+  type GitLabApi,
+  type GitLabClient,
 } from "@issuepilot/tracker-gitlab";
 import {
   createWorkflowLoader,
@@ -43,6 +52,19 @@ import {
 } from "@issuepilot/workspace";
 import { execa } from "execa";
 
+import { createCoderAgent } from "./agents/coder.js";
+import {
+  createCoderLifecycle,
+  createReviewerLifecycle,
+} from "./agents/codex-lifecycle.js";
+import { collectorsForTask } from "./agents/evidence-collectors.js";
+import { createReviewerAgent } from "./agents/reviewer.js";
+import { createTestEvidenceAgent } from "./agents/test-evidence.js";
+import { splitCommand } from "./codex/split-command.js";
+import {
+  publishReviewerToMr,
+  revokeReviewerMrComments as revokeReviewerMrCommentsHelper,
+} from "./gitlab/mr-comments.js";
 import { createImprovementService } from "./improvements/service.js";
 import { createImprovementStore } from "./improvements/store.js";
 import { runWorkspaceCleanupOnce } from "./maintenance/workspace-cleanup.js";
@@ -67,8 +89,26 @@ import {
   reconcile,
 } from "./orchestrator/reconcile.js";
 import { sweepReviewFeedbackOnce } from "./orchestrator/review-feedback.js";
-import { buildQualitySummary } from "./quality/aggregate.js";
-import { collectQualitySources } from "./quality/collect.js";
+import {
+  CoordinatorError,
+  createCoordinator,
+  type Coordinator,
+  type CoordinatorAgents,
+  type RoleProfileResolver,
+} from "./pipelines/coordinator.js";
+import {
+  buildPipelineRunReport,
+  taskStatusFromPipelineStatus,
+} from "./pipelines/report-artifact.js";
+import {
+  buildRoleProfile,
+  type CoderRoleProfile,
+  type ReviewerRoleProfile,
+  type TestEvidenceRoleProfile,
+} from "./pipelines/role-profile.js";
+import { createPipelineService } from "./pipelines/service.js";
+import { createPipelineStore, type PipelineStore } from "./pipelines/store.js";
+import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary.js";
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
@@ -314,70 +354,12 @@ export function syncHumanReviewFinalLabels(
 }
 
 /**
- * Tokenize a `codex.command` string into `{ command, args[] }`. Supports
- * single + double quoted segments so paths containing spaces survive the
- * trip from the workflow YAML through to `execa`. Without this, an absolute
- * path like `/Users/User Name/.local/bin/codex` would be split into three
- * tokens by the previous `split(/\s+/)` and `execa` would try to spawn
- * `/Users/User`.
- *
- * Rules (intentionally a subset of POSIX shell):
- *   - Whitespace separates tokens.
- *   - `"…"` and `'…'` create a single token; the surrounding quotes are
- *     stripped. Escapes are NOT honoured inside quotes — keep paths simple.
- *   - Unbalanced quotes throw, matching the bash behaviour of refusing to
- *     execute the line.
+ * V4.6 follow-up Task 4b：`splitCommand` 已经迁出到
+ * `./codex/split-command.ts`，避免 `agents/codex-lifecycle.ts` 通过
+ * `daemon.ts` 产生函数级循环引用。这里 re-export 一份保留向后兼容
+ * （`index.ts` / 测试仍按 `daemon.ts` 入口 import）。
  */
-export function splitCommand(command: string): {
-  command: string;
-  args: string[];
-} {
-  const trimmed = command.trim();
-  if (trimmed.length === 0) {
-    throw new Error("codex.command must not be empty");
-  }
-  const tokens: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let inToken = false;
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i]!;
-    if (quote) {
-      if (ch === quote) {
-        quote = null;
-      } else {
-        current += ch;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      inToken = true;
-      continue;
-    }
-    if (ch === " " || ch === "\t" || ch === "\n") {
-      if (inToken) {
-        tokens.push(current);
-        current = "";
-        inToken = false;
-      }
-      continue;
-    }
-    current += ch;
-    inToken = true;
-  }
-  if (quote) {
-    throw new Error(
-      `codex.command has an unbalanced ${quote} quote: ${command}`,
-    );
-  }
-  if (inToken) tokens.push(current);
-  if (tokens.length === 0) {
-    throw new Error("codex.command must not be empty");
-  }
-  const [cmd, ...args] = tokens;
-  return { command: cmd!, args };
-}
+export { splitCommand } from "./codex/split-command.js";
 
 async function hasNewCommits(
   cwd: string,
@@ -515,59 +497,9 @@ export async function startDaemon(
     workflowPath,
     path.resolve(workflow.workspace.root),
   ];
-  const improvementService = createImprovementService({
-    store: improvementStore,
-    allowedPathPrefixes: improvementSandbox,
-    resolveTargetPath: ({ template }) => {
-      // First-pass mapping per spec §7 / spec §10. We only resolve the two
-      // canonical targets that live at well-known paths; the other kinds stay
-      // `undefined` and patch preview surfaces `target_path_missing` until a
-      // future change adds a richer resolver.
-      switch (template.targetKind) {
-        case "workflow_front_matter":
-          return workflowPath;
-        case "project_rules":
-          return path.join(workflow.workspace.root, "AGENTS.md");
-        default:
-          return undefined;
-      }
-    },
-    buildQualitySummary: async (input) => {
-      const collected = await collectQualitySources({
-        metadata: { workflow: path.basename(workflowPath) },
-        reports: reportStore,
-        workItems: workItemStore,
-      });
-      return buildQualitySummary({
-        items: collected.items,
-        filters: {
-          from:
-            input.filters?.from ??
-            new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-          to: input.filters?.to ?? new Date().toISOString(),
-          window: input.filters?.window ?? "7d",
-          ...(input.filters?.workflow ? { workflow: input.filters.workflow } : {}),
-          ...(input.filters?.taskType ? { taskType: input.filters.taskType } : {}),
-          ...(input.filters?.status ? { status: input.filters.status } : {}),
-          ...(input.filters?.pattern ? { pattern: input.filters.pattern } : {}),
-        },
-        scope: { mode: "single-project" },
-        diagnostics: collected.diagnostics,
-      });
-    },
-  });
-  const workItemPlanner =
-    deps.workItemPlanner ?? createDefaultWorkItemPlanner();
-  const taskRunIndex = new Map<
-    string,
-    { workItemId: string; taskId: string }
-  >();
-  const runIndex = new Map<string, { projectSlug: string; issueIid: number }>();
-  const runCancelRegistry = createRunCancelRegistry();
-
   /**
-   * Resolve GitLab credentials before the server starts taking traffic. The
-   * order is:
+   * Resolve GitLab credentials before the V4.6 pipeline service / loop start
+   * taking traffic. The order is:
    *
    *   1. Test seam (`deps.createGitLab`) — kept for the existing in-memory
    *      e2e tests that drive the daemon entirely with fakes.
@@ -577,6 +509,13 @@ export async function startDaemon(
    * Failing fast here is intentional: spec §17 says the daemon should
    * refuse to start when neither credential source is available, with a
    * pointer at `issuepilot auth login`.
+   *
+   * V4.6 fix C3: this block is hoisted above the V4.6 pipeline assembly so
+   * the reviewer-revoke callback (`revokeReviewerMrComments`) can close
+   * over `gitlab` synchronously. Real production factories return a
+   * `GitLabAdapterHandle` (with `.client`); the legacy `deps.createGitLab`
+   * test seam may return a bare `GitLabAdapter` without `.client`, in
+   * which case the callback throws on invocation — never silently.
    */
   let gitlab: GitLabAdapter;
   if (deps.createGitLab) {
@@ -619,6 +558,529 @@ export async function startDaemon(
       });
     }
   }
+  /**
+   * V4.6 Multi-Agent Pipeline: pipeline + agent-report artifacts live under
+   * `<workspace.root>/.issuepilot/{pipelines,agent-reports}/...`. The store
+   * is lazy on disk so a daemon that never runs a V4.6 pipeline still
+   * exposes the routes (returning empty lists) without writing anything.
+   *
+   * Phase 9 Task 9.3: build a `Coordinator` with conservative agent
+   * stubs so the routes are reachable end-to-end. Real coder / reviewer /
+   * test_evidence agent runners land via Phase 5-7 wiring in a subsequent
+   * change; for now we surface a deterministic `CoordinatorError` whenever
+   * a route tries to actually execute an agent (retry / start-pipeline).
+   * Non-execution routes (get / list / setRecipeOverride / skip /
+   * revoke-ai-review / validateWorkflowRoles) work fully against the real
+   * `PipelineStore`. When the workflow is missing the V4.6 `default_recipe`
+   * / `roles` sections we skip wiring (with a friendly log) so the daemon
+   * stays bootable against legacy V4.5 workflow YAML — matches the plan's
+   * "missing workflow config → friendly log, does not crash" gate.
+   */
+  let pipelineService: ReturnType<typeof createPipelineService> | undefined;
+  let startPipelineForTask:
+    | ((input: {
+        workItem: WorkItem;
+        task: TaskNode;
+        pendingRecipe?: WorkflowRecipe;
+      }) => Promise<{
+        pipelineRunId: string;
+        branch: string;
+        taskStatus: TaskNode["status"];
+        mergeRequest?: {
+          iid: number;
+          url?: string;
+          state?: "opened" | "merged" | "closed";
+        };
+      }>)
+    | undefined;
+  // V4.6 review fix C4：把 pipelineStore 引用提到 if-block 外，让下面的
+  // `buildPipelineQualitySummary` callback 也能读到（启用 V4.6 时填实例，
+  // 未启用 V4.6 时保持 undefined，buildQualitySummary 行为不变）。
+  let pipelineStore: PipelineStore | undefined;
+  if (workflow.defaultRecipe && workflow.roles) {
+    pipelineStore = createPipelineStore({
+      root: path.join(workflow.workspace.root, ".issuepilot"),
+    });
+    const activePipelineStore = pipelineStore;
+    /**
+     * V4.6 follow-up Task 4b (review C1 part 2/3)：把 coder + reviewer
+     * 真正接到 `@issuepilot/runner-codex-app-server` 的
+     * `spawnRpc + driveLifecycle`。
+     *
+     * Codex 的 cwd 锚到 V4.5 `ensureWorktree` 的实际 layout
+     * (`<workspace.root>/<projectSlug>/<issueIid>`，见
+     * `packages/workspace/src/worktree.ts:204`)。V4.6 pipeline 自己
+     * 暂时还没接 ensureMirror / ensureWorktree —— 那仍是 V4.5
+     * dispatch path 的职责。所以当 issue 还没在 V4.5 路径上跑过
+     * 时，这里的 cwd 不存在，Codex spawn / driveLifecycle 会让
+     * lifecycle adapter 抛错；上游 `createCoderAgent` 把它翻成
+     * `runner_unavailable` 写入 AgentReport（spec §16.2 row 4），
+     * dashboard 看到失败而非 daemon 崩。把 worktree 主动 ensure
+     * 进 V4.6 pipeline 是 V4.7 范围。
+     */
+    const codexCwdFor = (workItem: WorkItem): string =>
+      path.join(
+        workflow.workspace.root,
+        slugify(workflow.tracker.projectId),
+        String(workItem.sourceIssue.iid),
+      );
+
+    const threadNameFor = ({
+      workItem,
+      task,
+      role,
+    }: {
+      workItem: WorkItem;
+      task: TaskNode;
+      role: "coder" | "reviewer" | "test_evidence";
+    }): string =>
+      `${workflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
+
+    /**
+     * V4.6 follow-up Task 4c — `publishLifecycleEvent` 接受 lifecycle
+     * adapter 透回来的 ctx，把 `issueIid` + `taskId` + `role` 写进
+     * `event.detail`，让 `publishEvent`（daemon.ts:884-922）能从
+     * `event.detail.issueIid` 解出 (projectSlug, issueIid) 真把事件
+     * 落到 eventStore；`runId` 也由占位升级为 task 粒度，dashboard 可
+     * 按 task / pipelineRunId 过滤。pipelineRunId 来自 closure 透传
+     * （adapter 没暴露 pipelineRun，但 daemon 装配层在每次 V4.6 agent
+     * run 时已经拿得到 input.pipelineRun.pipelineRunId）。
+     */
+    const publishLifecycleEvent = (input: {
+      role: "coder" | "reviewer" | "test_evidence";
+      type: string;
+      data: unknown;
+      workItem: WorkItem;
+      task: TaskNode;
+    }): void => {
+      publishEvent({
+        type: `codex_v46_${input.role}_${input.type}`,
+        runId: `pipeline-${input.task.taskId}-${input.role}`,
+        ts: new Date().toISOString(),
+        detail: {
+          data: input.data,
+          issueIid: input.workItem.sourceIssue.iid,
+          taskId: input.task.taskId,
+          role: input.role,
+        },
+      });
+    };
+    const gitlabToolsAdapter = {
+      getIssue: async (iid: number) => {
+        const fullIssue = await gitlab.getIssue(iid);
+        return {
+          ...fullIssue,
+          labels: [...fullIssue.labels],
+        };
+      },
+      transitionLabels: gitlab.transitionLabels,
+      createIssueNote: gitlab.createIssueNote,
+      updateIssueNote: (iid: number, noteId: number, update: { body: string }) =>
+        gitlab.updateIssueNote(iid, noteId, update.body),
+      createMergeRequest: gitlab.createMergeRequest,
+      updateMergeRequest: gitlab.updateMergeRequest,
+      getMergeRequest: gitlab.getMergeRequest,
+      listMergeRequestNotes: gitlab.listMergeRequestNotes,
+      getPipelineStatus: gitlab.getPipelineStatus,
+    };
+    const coderLifecycle = createCoderLifecycle({
+      codex: workflow.codex,
+      maxTurns: workflow.agent.maxTurns,
+      threadName: threadNameFor,
+      tools: (ctx) =>
+        createGitLabTools(gitlabToolsAdapter, {
+          id: String(ctx.workItem.sourceIssue.iid),
+          iid: ctx.workItem.sourceIssue.iid,
+          title: ctx.workItem.sourceIssue.title,
+          url: ctx.workItem.sourceIssue.url,
+          projectId: ctx.workItem.sourceIssue.projectId,
+          labels: [],
+        }),
+      onEvent: (type, data, ctx) =>
+        publishLifecycleEvent({
+          role: "coder",
+          type,
+          data,
+          workItem: ctx.workItem,
+          task: ctx.task,
+        }),
+    });
+
+    const reviewerLifecycle = createReviewerLifecycle({
+      codex: workflow.codex,
+      maxTurns: workflow.agent.maxTurns,
+      threadName: threadNameFor,
+      onEvent: (type, data, ctx) =>
+        publishLifecycleEvent({
+          role: "reviewer",
+          type,
+          data,
+          workItem: ctx.workItem,
+          task: ctx.task,
+        }),
+    });
+
+    const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
+    const reviewerAgent = createReviewerAgent({ lifecycle: reviewerLifecycle });
+    /**
+     * V4.6 follow-up Task 4c — test_evidence agent 接入真实
+     * collectors。`createTestEvidenceAgent` 自身不挂 Codex（spec §8.2 /
+     * §16.1：test_evidence 用 evidence collectors 路径，不必再起一次
+     * lifecycle），所以这里直接 new agent + 在 pipelineAgents.testEvidence
+     * 的 adapter 里按 task 注入 evidenceDir + collectors。
+     *
+     * evidenceDir 与 V4.5 `scanRunEvidence` 共享 `.issuepilot/evidence/`
+     * 父目录，但 partition 方式不同：V4.5 按 runId 切
+     * (`<taskWorktreePath>/.issuepilot/evidence/<runId>`)，V4.6 这里按
+     * taskId 切 (`<workspace.root>/<projectSlug>/<issueIid>/.issuepilot/
+     * evidence/<taskId>`)。前序 V4.5 dispatch / coder 写到 runId 子目录
+     * 的产物不会被本 collector 自动扫到 —— V4.6 默认 layout 的目标是给
+     * V4.6 自己的 evidence 产物留位（V4.7 接入 ensureWorktree 后 coder
+     * agent 会直接写到这里）。
+     */
+    const testEvidenceAgent = createTestEvidenceAgent({});
+    const evidenceDirFor = (workItem: WorkItem, task: TaskNode): string =>
+      path.join(
+        workflow.workspace.root,
+        slugify(workflow.tracker.projectId),
+        String(workItem.sourceIssue.iid),
+        ".issuepilot",
+        "evidence",
+        task.taskId,
+      );
+
+    /**
+     * Coordinator 的 `AgentRunInput` 不含 `cwd`（worktree path 是 daemon
+     * 装配层的事），所以这里建薄 adapter：补 `cwd`，narrow
+     * `RoleProfile` 到具体 role profile，再把 `CoderAgentResult` /
+     * `ReviewerAgentResult` 直接当作 `AgentRunResult` 返回（结构兼容）。
+     *
+     * V4.6 production gap closure：reviewer publisher 现在通过 coder report
+     * 里的 MR iid 反查 GitLab `diff_refs`，再调用 `publishReviewerToMr`
+     * 生成 summary + inline comments。找不到 MR / diff_refs 时 fail soft
+     * 写回 `publish_failed`，不让 pipeline 因发布装配问题崩溃。
+     */
+    const buildPublishFailed = (message: string) => ({
+      mrPublication: {
+        status: "publish_failed" as const,
+        noteIds: [],
+        lastError: {
+          code: "gitlab_rate_limited" as const,
+          message,
+        },
+      },
+      redactedFieldsAdded: [],
+      scopeInsufficient: false as const,
+    });
+
+    const pipelineAgents: CoordinatorAgents = {
+      coder: {
+        async run(input): Promise<
+          | { kind: "report"; report: CoderAgentReport }
+          | { kind: "cancelled"; cancelledAt: string }
+        > {
+          if (input.profile.role !== "coder") {
+            throw new CoordinatorError(
+              `coder agent received non-coder profile: ${input.profile.role}`,
+              "role_profile_invalid",
+            );
+          }
+          const coderProfile: CoderRoleProfile = input.profile;
+          return coderAgent.run({
+            workItem: input.workItem,
+            task: input.task,
+            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+            profile: coderProfile,
+            cwd: codexCwdFor(input.workItem),
+          });
+        },
+      },
+      reviewer: {
+        async run(input): Promise<
+          | { kind: "report"; report: ReviewerAgentReport }
+          | { kind: "cancelled"; cancelledAt: string }
+        > {
+          // coordinator 在调入 reviewer 之前已经把 profile.role 校验
+          // 成 "reviewer"（pipelines/coordinator.ts:324）。这里再校验
+          // 一次保留 narrow 路径，避免依赖上游不变量。
+          if (input.profile.role !== "reviewer") {
+            throw new CoordinatorError(
+              `reviewer agent received non-reviewer profile: ${input.profile.role}`,
+              "role_profile_invalid",
+            );
+          }
+          const reviewerProfile: ReviewerRoleProfile = input.profile;
+          return reviewerAgent.run({
+            workItem: input.workItem,
+            task: input.task,
+            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+            profile: reviewerProfile,
+            cwd: codexCwdFor(input.workItem),
+          });
+        },
+      },
+      testEvidence: {
+        async run(input): Promise<
+          | { kind: "report"; report: TestEvidenceAgentReport }
+          | { kind: "cancelled"; cancelledAt: string }
+        > {
+          if (input.profile.role !== "test_evidence") {
+            throw new CoordinatorError(
+              `test_evidence agent received non-test_evidence profile: ${input.profile.role}`,
+              "role_profile_invalid",
+            );
+          }
+          const teProfile: TestEvidenceRoleProfile = input.profile;
+          return testEvidenceAgent.run({
+            workItem: input.workItem,
+            task: input.task,
+            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+            profile: teProfile,
+            evidenceDir: evidenceDirFor(input.workItem, input.task),
+            collectors: collectorsForTask(input.task),
+          });
+        },
+      },
+      reviewerPublisher: {
+        async publish(input) {
+          const coderId = input.pipelineRun.agentReportIds.coder;
+          const coder = coderId
+            ? await activePipelineStore.getAgentReport({
+                taskId: input.task.taskId,
+                role: "coder",
+                agentReportId: coderId,
+              })
+            : null;
+          const mrIid =
+            coder?.role === "coder" ? coder.coder.mergeRequest?.iid : undefined;
+          if (!mrIid) {
+            return buildPublishFailed(
+              `cannot publish reviewer report ${input.reviewerReport.agentReportId}: coder report has no mergeRequest.iid`,
+            );
+          }
+          const client = (gitlab as GitLabAdapterHandle).client as
+            | GitLabClient<GitLabApi>
+            | undefined;
+          if (!client) {
+            return buildPublishFailed(
+              "GitLab adapter does not expose .client; cannot publish reviewer comments",
+            );
+          }
+          const mr = await gitlab.getMergeRequest(mrIid);
+          if (!mr.diffRefs) {
+            return buildPublishFailed(
+              `GitLab MR !${mrIid} did not include diff_refs; cannot create inline review comments`,
+            );
+          }
+          return publishReviewerToMr({
+            client,
+            reviewerReport: input.reviewerReport,
+            mrRef: { iid: mr.iid, ...mr.diffRefs },
+            publishToMr: input.profile.publishToMr,
+            requiredScope: "api",
+          });
+        },
+      },
+    };
+    const workflowRoles = workflow.roles;
+    const pipelineRoleProfileResolver: RoleProfileResolver = {
+      async resolveRoleProfile(role, { workItem, task }) {
+        const cfg = workflowRoles[role];
+        if (!cfg) return null;
+        return buildRoleProfile({
+          role: cfg,
+          workItem: {
+            id: workItem.workItemId,
+            iid: workItem.sourceIssue.iid,
+            title: workItem.title,
+            ...(workItem.goal ? { description: workItem.goal } : {}),
+          },
+          task: {
+            id: task.taskId,
+            title: task.title,
+            ...(task.goal ? { description: task.goal } : {}),
+          },
+        });
+      },
+    };
+    const pipelineCoordinator: Coordinator = createCoordinator({
+      pipelineStore,
+      agents: pipelineAgents,
+      roleProfileResolver: pipelineRoleProfileResolver,
+      taskWriter: {
+        updateTask: async ({ workItemId, taskId, patch }) => {
+          const plan = await workItemStore.getCurrentPlan(workItemId);
+          if (!plan) return;
+          const nextTasks = plan.tasks.map((t) =>
+            t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+          );
+          await workItemStore.saveTaskPlan({ ...plan, tasks: nextTasks });
+        },
+      },
+    });
+    startPipelineForTask = async ({ workItem, task, pendingRecipe }) => {
+      const result = await pipelineCoordinator.startPipeline({
+        workItem,
+        task,
+        workflowDefault: workflow.defaultRecipe,
+        ...(pendingRecipe ? { pendingRecipe } : {}),
+      });
+      const report = buildPipelineRunReport({
+        workItem,
+        pipelineRun: result.pipelineRun,
+        finalStatus: result.finalStatus,
+        reports: result.reports,
+      });
+      await reportStore.save(report);
+      const mergeRequest = report.mergeRequest
+        ? {
+            iid: report.mergeRequest.iid,
+            ...(report.mergeRequest.url ? { url: report.mergeRequest.url } : {}),
+            ...(report.mergeRequest.state
+              ? { state: report.mergeRequest.state }
+              : {}),
+          }
+        : undefined;
+      return {
+        pipelineRunId: result.pipelineRun.pipelineRunId,
+        branch: report.run.branch,
+        taskStatus: taskStatusFromPipelineStatus(result.finalStatus),
+        ...(mergeRequest ? { mergeRequest } : {}),
+      };
+    };
+    // V4.6 fix C3：把 PipelineService 的撤销契约接到真实的 GitLab API。
+    // 之前 `createPipelineService` 没传 `revokeReviewerMrComments`，导致
+    // dashboard 的 revoke 操作只翻本地 mrPublication.status = "revoked"，
+    // 但 GitLab 上的 note 一条都没删（spec §12 contract 失败）。下面的
+    // adapter 把 service 签名（agentReportId / noteIds / operator）翻译到
+    // gitlab/mr-comments.ts 的 helper 签名（client / mrIid / mrPublication），
+    // mrIid 通过同 task 下的 coder report.coder.mergeRequest.iid 反查。
+    const pipelineStoreForCallback = pipelineStore;
+    const pipelineRevokeCallback = async (input: {
+      agentReportId: string;
+      noteIds: string[];
+      operator?: string;
+    }): Promise<{ revokedAt: string }> => {
+      void input.operator;
+      const found =
+        await pipelineStoreForCallback.findAgentReportById(input.agentReportId);
+      if (!found || found.role !== "reviewer") {
+        throw new Error(
+          `daemon revoke callback: reviewer agent report ${input.agentReportId} not found`,
+        );
+      }
+      const run = await pipelineStoreForCallback.getPipelineRunByIdOnly({
+        pipelineRunId: found.report.pipelineRunId,
+      });
+      const coderId = run?.agentReportIds.coder;
+      const coder = coderId
+        ? await pipelineStoreForCallback.getAgentReport({
+            taskId: found.taskId,
+            role: "coder",
+            agentReportId: coderId,
+          })
+        : await pipelineStoreForCallback.latestAgentReportForRole({
+            taskId: found.taskId,
+            role: "coder",
+          });
+      const mrIid =
+        coder?.role === "coder" ? coder.coder.mergeRequest?.iid : undefined;
+      if (!mrIid) {
+        throw new Error(
+          `daemon revoke callback: cannot resolve mrIid for reviewer report ${input.agentReportId} (no coder report or no mergeRequest.iid)`,
+        );
+      }
+      const client = (gitlab as GitLabAdapterHandle).client as
+        | GitLabClient<GitLabApi>
+        | undefined;
+      if (!client) {
+        throw new Error(
+          "daemon revoke callback: GitLab adapter does not expose .client (test seam returned a bare GitLabAdapter); cannot delete MR notes",
+        );
+      }
+      const reviewerReport = found.report;
+      const mrPublication =
+        reviewerReport.role === "reviewer"
+          ? reviewerReport.reviewer.mrPublication
+          : { status: "revoked" as const, noteIds: [] };
+      await revokeReviewerMrCommentsHelper({
+        client,
+        mrIid,
+        mrPublication,
+        requiredScope: "api",
+      });
+      return { revokedAt: new Date().toISOString() };
+    };
+    pipelineService = createPipelineService({
+      pipelineStore,
+      coordinator: pipelineCoordinator,
+      workItems: {
+        getWorkItem: (id) => workItemStore.getWorkItem(id),
+        getTask: async ({ workItemId, taskId }) => {
+          const plan = await workItemStore.getCurrentPlan(workItemId);
+          return plan?.tasks.find((t) => t.taskId === taskId);
+        },
+        updateTask: async ({ workItemId, taskId, patch }) => {
+          const plan = await workItemStore.getCurrentPlan(workItemId);
+          if (!plan) return;
+          const nextTasks = plan.tasks.map((t) =>
+            t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+          );
+          await workItemStore.saveTaskPlan({ ...plan, tasks: nextTasks });
+        },
+      },
+      workflow: {
+        getDefaultRecipe: () => workflow.defaultRecipe,
+        getRoles: () => workflow.roles,
+      },
+      revokeReviewerMrComments: pipelineRevokeCallback,
+    });
+  } else {
+    console.warn(
+      "[issuepilot] V4.6 pipeline service skipped: workflow YAML is missing default_recipe or roles. Update the workflow to enable /api/work-items/.../pipeline endpoints (spec §10).",
+    );
+  }
+
+  const improvementService = createImprovementService({
+    store: improvementStore,
+    allowedPathPrefixes: improvementSandbox,
+    resolveTargetPath: ({ template }) => {
+      // First-pass mapping per spec §7 / spec §10. We only resolve the two
+      // canonical targets that live at well-known paths; the other kinds stay
+      // `undefined` and patch preview surfaces `target_path_missing` until a
+      // future change adds a richer resolver.
+      switch (template.targetKind) {
+        case "workflow_front_matter":
+          return workflowPath;
+        case "project_rules":
+          return path.join(workflow.workspace.root, "AGENTS.md");
+        default:
+          return undefined;
+      }
+    },
+    // V4.6 review follow-up (Issue 1)：improvement service 的
+    // buildQualitySummary callback 与 HTTP `/api/quality/summary` 路由
+    // 共享同一份 `buildPipelineQualitySummary` 实现，确保 byRole 切片
+    // 在两条路径上语义一致。未启用 V4.6 pipeline 时 pipelineStore 为
+    // undefined，等价于 V4.5 历史行为。
+    buildQualitySummary: createPipelineQualitySummaryCallback({
+      pipelineStore,
+      collectorDeps: {
+        metadata: { workflow: path.basename(workflowPath) },
+        reports: reportStore,
+        workItems: workItemStore,
+      },
+      scope: { mode: "single-project" },
+    }),
+  });
+  const workItemPlanner =
+    deps.workItemPlanner ?? createDefaultWorkItemPlanner();
+  const taskRunIndex = new Map<
+    string,
+    { workItemId: string; taskId: string }
+  >();
+  const runIndex = new Map<string, { projectSlug: string; issueIid: number }>();
+  const runCancelRegistry = createRunCancelRegistry();
 
   const publishEvent = (event: {
     type: string;
@@ -639,13 +1101,30 @@ export async function startDaemon(
       );
     const record = toEventRecord({ ...event, issue });
     eventBus.publish(record);
+    // V4.6 follow-up Task 4c review: lifecycle events from
+    // createCoderLifecycle / createReviewerLifecycle ride synthetic
+    // runIds (`pipeline-<taskId>-<role>`) that never enter runIndex
+    // and never have a state.runs entry — those runs are coordinator-
+    // owned, not V4.5 dispatch-owned. Without consulting
+    // `event.detail.issueIid` / `iid` (the same fields the issue
+    // hydrator above already reads) the gate would short-circuit and
+    // `eventStore.append` would silently drop every codex_v46_*
+    // event. Accept any finite positive integer; non-numeric / 0 /
+    // negative values still bail out, matching the pre-4c behavior.
+    const detailIidRaw = event.detail["issueIid"] ?? event.detail["iid"];
+    const detailIid =
+      typeof detailIidRaw === "number" ||
+      (typeof detailIidRaw === "string" && detailIidRaw !== "")
+        ? Number(detailIidRaw)
+        : NaN;
     const issueIid =
       existing?.issueIid ??
       (typeof run?.["issue"] === "object" &&
       run["issue"] !== null &&
       "iid" in run["issue"]
         ? Number((run["issue"] as { iid: unknown }).iid)
-        : undefined);
+        : undefined) ??
+      (Number.isFinite(detailIid) && detailIid > 0 ? detailIid : undefined);
     if (!issueIid || !Number.isFinite(issueIid)) return;
     const key = existing ?? runKey(workflow, issueIid);
     runIndex.set(record.runId, key);
@@ -780,17 +1259,18 @@ export async function startDaemon(
         taskWorktreePath,
         runId: finalReport.runId,
       });
-      publishEvent({
-        type: "work_item_evidence_indexed",
-        runId: finalReport.runId,
-        ts: new Date().toISOString(),
-        detail: {
-          count: scan.entries.length,
-          oversizedCount: scan.oversized.length,
-          rejectedCount: scan.rejected.length,
-          manifestUsed: scan.manifestUsed,
-        },
-      });
+      const publishIndexed = () =>
+        publishEvent({
+          type: "work_item_evidence_indexed",
+          runId: finalReport.runId,
+          ts: new Date().toISOString(),
+          detail: {
+            count: scan.entries.length,
+            oversizedCount: scan.oversized.length,
+            rejectedCount: scan.rejected.length,
+            manifestUsed: scan.manifestUsed,
+          },
+        });
 
       const existingEvidence = finalReport.evidence ?? [];
       const nextEvidence = mergeReportEvidence(existingEvidence, scan);
@@ -804,7 +1284,10 @@ export async function startDaemon(
       const followUpsChanged =
         JSON.stringify(finalReport.handoff.followUps) !==
         JSON.stringify(nextFollowUps);
-      if (!evidenceChanged && !followUpsChanged) return;
+      if (!evidenceChanged && !followUpsChanged) {
+        publishIndexed();
+        return;
+      }
 
       const { evidence: _evidence, ...reportWithoutEvidence } = finalReport;
       const patchedReport: RunReportArtifact =
@@ -824,7 +1307,16 @@ export async function startDaemon(
                 followUps: nextFollowUps,
               },
             };
-      await reportStore.save(patchedReport);
+      try {
+        await reportStore.save(patchedReport);
+        publishIndexed();
+      } catch (err) {
+        // The scanner succeeded even if the patch write failed. Preserve the
+        // indexed event for observability, then let the outer handler emit the
+        // failure event with the save error.
+        publishIndexed();
+        throw err;
+      }
     } catch (err) {
       publishEvent({
         type: "work_item_evidence_index_failed",
@@ -901,9 +1393,10 @@ export async function startDaemon(
       const plan = await workItemStore.getCurrentPlan(wi.workItemId);
       if (!plan || plan.status !== "accepted") return;
       const links = await workItemStore.listAllTaskRunLinks(wi.workItemId);
-      await tickWorkItemImpl(wi, plan, links, {
+      return tickWorkItemImpl(wi, plan, links, {
         availableSlots: () => slots.available(),
         getRunReport: (runId) => reportStore.get(runId),
+        ...(startPipelineForTask ? { startPipelineForTask } : {}),
         decideEffectiveBase: (input) =>
           decideEffectiveBase({
             task: input.task,
@@ -1475,6 +1968,12 @@ export async function startDaemon(
         workItems: workItemStore,
       },
       improvements: improvementService,
+      ...(pipelineService ? { pipelines: pipelineService } : {}),
+      // V4.6 review follow-up (Issue 1)：把 pipelineStore 透给
+      // /api/quality/summary 路由，让 dashboard `ByRolePanel` 的 byRole
+      // 切片在单 project 模式下真正落地。未启用 V4.6 时 pipelineStore
+      // 为 undefined，路由表现与历史一致。
+      ...(pipelineStore ? { pipelineStore } : {}),
     },
     { host, port },
   );

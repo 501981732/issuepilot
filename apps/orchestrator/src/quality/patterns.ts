@@ -1,4 +1,11 @@
-import type { FailurePatternId } from "@issuepilot/shared-contracts";
+import type {
+  AgentReport,
+  FailurePatternId,
+  LastErrorCode,
+  ReviewerDecision,
+} from "@issuepilot/shared-contracts";
+
+import { toFailurePatternId } from "../pipelines/failure-mapping.js";
 
 import type {
   QualityRunSourceItem,
@@ -224,4 +231,99 @@ export function classifyQualityPatterns(
 ): ClassifiedPattern[] {
   const patterns = item.kind === "run" ? classifyRun(item) : classifyTask(item);
   return dedupePatterns(patterns);
+}
+
+/**
+ * V4.6 增量分类器（spec §17.4 / plan Task 10.1）。给定一个最新的
+ * AgentReport，结合 `pipelines/failure-mapping.ts` 的单一 truth source 表，
+ * 输出对应的 V4.6 FailurePatternId。
+ *
+ * - 输入的 AgentReport 状态可能是 `failed` / `cancelled` / `incomplete` /
+ *   `complete`。
+ * - reviewer `complete` + `decision = "request_changes"` 单独映射到
+ *   `reviewer_requested_changes`（哪怕没有 lastError）。
+ * - reviewer / test_evidence `incomplete` + `lastError.code` 与 `failed`
+ *   走同一映射；没有 lastError 的 incomplete（如 evidence partial 但 collector
+ *   主动写 `incomplete`）映射到 `evidence_partial`。
+ * - `complete` 且无 decision/lastError → 没有失败模式，返回 []。
+ */
+export interface AgentFailureClassification {
+  patternId: FailurePatternId;
+  bucket:
+    | "reviewer"
+    | "test_evidence"
+    | "coder"
+    | "pipeline"
+    | "configuration"
+    | "infrastructure";
+  reason: string;
+}
+
+const bucketForPattern: Record<FailurePatternId, AgentFailureClassification["bucket"]> = {
+  "missing-tests": "test_evidence",
+  "unclear-requirements": "configuration",
+  "permission-issue": "configuration",
+  "environment-issue": "infrastructure",
+  "review-rework": "reviewer",
+  "ci-failure": "test_evidence",
+  "missing-evidence": "test_evidence",
+  reviewer_unavailable: "reviewer",
+  reviewer_requested_changes: "reviewer",
+  reviewer_cannot_review: "configuration",
+  evidence_unavailable: "test_evidence",
+  evidence_partial: "test_evidence",
+  pipeline_cancelled: "pipeline",
+  pipeline_init_failed: "pipeline",
+  role_profile_invalid: "configuration",
+  runner_unavailable: "infrastructure",
+  coding_failed: "coder",
+  sandbox_violation: "pipeline",
+  redaction_failed: "pipeline",
+  storage_full: "infrastructure",
+};
+
+export function classifyAgentFailure(
+  report: AgentReport,
+): AgentFailureClassification | null {
+  if (report.role === "reviewer" && report.status === "complete") {
+    const decision: ReviewerDecision = report.reviewer.decision;
+    if (decision === "request_changes") {
+      return {
+        patternId: "reviewer_requested_changes",
+        bucket: bucketForPattern.reviewer_requested_changes,
+        reason: report.reviewer.summary || "reviewer requested changes",
+      };
+    }
+    if (decision === "cannot_review") {
+      return {
+        patternId: "reviewer_cannot_review",
+        bucket: bucketForPattern.reviewer_cannot_review,
+        reason: report.reviewer.summary || "reviewer cannot review",
+      };
+    }
+    if (decision === "approve_with_comments") return null;
+  }
+
+  if (report.status === "complete") return null;
+
+  const lastError = report.lastError;
+  if (!lastError) {
+    if (report.role === "test_evidence" && report.status === "incomplete") {
+      return {
+        patternId: "evidence_partial",
+        bucket: bucketForPattern.evidence_partial,
+        reason: "evidence collection partial without explicit lastError",
+      };
+    }
+    return null;
+  }
+  const code: LastErrorCode = lastError.code;
+  const patternId = toFailurePatternId(code);
+  if (!patternId) return null;
+  const id = patternId as FailurePatternId;
+  return {
+    patternId: id,
+    bucket: bucketForPattern[id] ?? "pipeline",
+    reason: lastError.message ?? code,
+  };
 }

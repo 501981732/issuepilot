@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import type { WorkItemDetailResponse } from "@issuepilot/shared-contracts";
+import type {
+  AgentReport,
+  GetPipelineResponse,
+  WorkItemDetailResponse,
+} from "@issuepilot/shared-contracts";
 import { screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,10 +11,31 @@ import enMessages from "../../../i18n/messages/en.json";
 import { renderWithIntl as render } from "../../../test/intl";
 
 import WorkItemDetailRoute from "./page";
-import { getWorkItem } from "../../../lib/api";
+import {
+  ApiError,
+  getAgentReport,
+  getPipeline,
+  getWorkItem,
+} from "../../../lib/api";
 
 vi.mock("../../../lib/api", () => ({
+  ApiError: class ApiError extends Error {
+    code: string | undefined;
+    constructor(
+      message: string,
+      public readonly status: number,
+      public readonly body: unknown,
+    ) {
+      super(message);
+      if (body && typeof body === "object") {
+        const code = (body as { code?: unknown }).code;
+        if (typeof code === "string") this.code = code;
+      }
+    }
+  },
   getWorkItem: vi.fn(),
+  getPipeline: vi.fn(),
+  getAgentReport: vi.fn(),
 }));
 
 // `next/headers` is only available inside the Next.js runtime; in vitest
@@ -45,8 +70,7 @@ vi.mock("next-intl/server", async () => {
     return typeof cur === "string" ? cur : key;
   }
   function makeTranslator(namespace?: string) {
-    const t = (key: string) =>
-      lookup(namespace ? `${namespace}.${key}` : key);
+    const t = (key: string) => lookup(namespace ? `${namespace}.${key}` : key);
     return Object.assign(t, { rich: t });
   }
   return {
@@ -65,12 +89,25 @@ vi.mock("../../../components/work-items/work-item-detail", () => ({
     initial,
     initialView,
     project,
+    pipelinesByTask,
+    agentReportsByTask,
   }: {
     initial: WorkItemDetailResponse;
     initialView?: string;
     project?: string;
+    pipelinesByTask?: Record<string, GetPipelineResponse>;
+    agentReportsByTask?: Record<
+      string,
+      Partial<Record<AgentReport["role"], AgentReport>>
+    >;
   }) => (
-    <div data-testid="detail" data-view={initialView} data-project={project}>
+    <div
+      data-testid="detail"
+      data-view={initialView}
+      data-project={project}
+      data-pipeline-count={Object.keys(pipelinesByTask ?? {}).length}
+      data-agent-task-count={Object.keys(agentReportsByTask ?? {}).length}
+    >
       {initial.workItem.workItemId}
     </div>
   ),
@@ -109,10 +146,35 @@ function makeDetail(): WorkItemDetailResponse {
   };
 }
 
+function makeDetailWithTask(): WorkItemDetailResponse {
+  const detail = makeDetail();
+  const task = {
+    taskId: "T1",
+    title: "T1",
+    goal: "g",
+    scope: "s",
+    dependsOn: [],
+    suggestedValidation: [],
+    status: "ready" as const,
+    runIds: [],
+    riskLevel: "medium" as const,
+  };
+  return {
+    ...detail,
+    plan: {
+      ...detail.plan,
+      current: { ...detail.plan.current, tasks: [task] },
+    },
+    tasks: [task],
+  };
+}
+
 describe("WorkItemDetailRoute (SSR)", () => {
   beforeEach(() => {
     cookieStore.clear();
     vi.mocked(getWorkItem).mockReset();
+    vi.mocked(getPipeline).mockReset();
+    vi.mocked(getAgentReport).mockReset();
   });
 
   it("attaches the persisted active project header so team-mode SSR does not return 400", async () => {
@@ -156,6 +218,59 @@ describe("WorkItemDetailRoute (SSR)", () => {
     expect(screen.getByTestId("detail")).toHaveAttribute(
       "data-view",
       "evidence",
+    );
+  });
+
+  it("soft-skips 404 pipeline data during SSR", async () => {
+    vi.mocked(getWorkItem).mockResolvedValue(makeDetailWithTask());
+    vi.mocked(getPipeline).mockRejectedValue(
+      new ApiError("missing", 404, { code: "pipeline_run_not_found" }),
+    );
+
+    const page = await WorkItemDetailRoute({
+      params: Promise.resolve({ id: "wi_42" }),
+    });
+    render(page);
+
+    expect(screen.getByTestId("detail")).toHaveAttribute(
+      "data-pipeline-count",
+      "0",
+    );
+  });
+
+  it("surfaces 503 pipeline wiring errors during SSR", async () => {
+    vi.mocked(getWorkItem).mockResolvedValue(makeDetailWithTask());
+    vi.mocked(getPipeline).mockRejectedValue(
+      new ApiError("Pipeline service missing", 503, {
+        code: "pipelines_unavailable",
+      }),
+    );
+
+    const page = await WorkItemDetailRoute({
+      params: Promise.resolve({ id: "wi_42" }),
+    });
+    render(page);
+
+    expect(screen.getByText("Pipeline service missing")).toBeInTheDocument();
+  });
+
+  it("does not pass null pipelineRun responses into the V4.6 panel", async () => {
+    vi.mocked(getWorkItem).mockResolvedValue(makeDetailWithTask());
+    vi.mocked(getPipeline).mockResolvedValue({
+      pipelineRun: null,
+      agentReports: [],
+      pendingRecipe: "full_pipeline",
+      pendingRecipeSource: "workflow_default",
+    });
+
+    const page = await WorkItemDetailRoute({
+      params: Promise.resolve({ id: "wi_42" }),
+    });
+    render(page);
+
+    expect(screen.getByTestId("detail")).toHaveAttribute(
+      "data-pipeline-count",
+      "0",
     );
   });
 });

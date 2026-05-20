@@ -21,6 +21,13 @@
     "params": { "turnId": "u1", "message": "starting work on issue" }
   },
   {
+    "notify": "turn/notification",
+    "params": {
+      "turnId": "u1",
+      "message": "```json\n{\"summary\":\"No blocking issues found.\",\"decision\":\"approve_with_comments\",\"confidence\":0.9,\"risks\":[],\"evidenceRequest\":[],\"findings\":[],\"inlineComments\":[]}\n```"
+    }
+  },
+  {
     "tool_call": {
       "callId": "c1",
       "tool": "gitlab_create_issue_note",

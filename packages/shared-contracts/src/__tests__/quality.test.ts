@@ -62,7 +62,7 @@ describe("quality analytics contracts", () => {
     expect(JSON.parse(JSON.stringify(response))).toEqual(response);
   });
 
-  it("enumerates failure pattern ids", () => {
+  it("enumerates failure pattern ids (V4.4 + V4.6 增量)", () => {
     expect(new Set(FAILURE_PATTERN_ID_VALUES)).toEqual(
       new Set([
         "missing-tests",
@@ -72,9 +72,62 @@ describe("quality analytics contracts", () => {
         "review-rework",
         "ci-failure",
         "missing-evidence",
+        "reviewer_unavailable",
+        "reviewer_requested_changes",
+        "reviewer_cannot_review",
+        "evidence_unavailable",
+        "evidence_partial",
+        "pipeline_cancelled",
+        "pipeline_init_failed",
+        "role_profile_invalid",
+        "runner_unavailable",
+        "coding_failed",
+        "sandbox_violation",
+        "redaction_failed",
+        "storage_full",
       ]),
     );
     expect(isFailurePatternId("permission-issue")).toBe(true);
+    expect(isFailurePatternId("reviewer_cannot_review")).toBe(true);
+    expect(isFailurePatternId("sandbox_violation")).toBe(true);
     expect(isFailurePatternId("unknown")).toBe(false);
+  });
+
+  it("optionally carries V4.6 byRole slice", () => {
+    const response: QualitySummaryResponse = {
+      scope: { mode: "single-project" },
+      filters: {
+        from: "2026-05-12T00:00:00.000Z",
+        to: "2026-05-19T23:59:59.999Z",
+        window: "7d",
+      },
+      metrics: [],
+      trends: [],
+      failurePatterns: [],
+      drilldown: [],
+      dimensions: [],
+      diagnostics: { invalidReportCount: 0 },
+      byRole: {
+        coderSuccessRate: 80,
+        reviewerApproveRate: 60,
+        reviewerCannotReviewRate: 20,
+        reviewerUnavailableRate: 0,
+        testEvidenceCompleteRate: 100,
+        testEvidencePartialRate: 0,
+        counts: {
+          coderComplete: 8,
+          coderFailed: 1,
+          coderCancelled: 1,
+          reviewerApprove: 6,
+          reviewerRequestChanges: 2,
+          reviewerCannotReview: 2,
+          reviewerUnavailable: 0,
+          testEvidenceComplete: 10,
+          testEvidencePartial: 0,
+          testEvidenceUnavailable: 0,
+        },
+      },
+    };
+    expect(JSON.parse(JSON.stringify(response))).toEqual(response);
   });
 });

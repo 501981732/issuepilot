@@ -3,11 +3,13 @@ import { dirname, join } from "node:path";
 
 import { redact } from "@issuepilot/observability";
 import type {
+  TaskNode,
   TaskPlan,
   TaskRunLink,
   WorkItem,
   WorkItemReport,
 } from "@issuepilot/shared-contracts";
+import { legacyRunningStateToV46 } from "@issuepilot/shared-contracts";
 
 /**
  * V4.1 Work Item Store。
@@ -126,6 +128,29 @@ export function createWorkItemStore(
     }
   }
 
+  /**
+   * V4.6 spec §8.0 / §16.2：把 TaskNode.status 中遗留的 `running` 升级为
+   * `running_coding`。仅在读路径上做（saveTaskPlan 写入的是新值时
+   * 直接保留），这样既不破坏旧仓库快照，也避免重复写盘。
+   */
+  function migrateTaskNode(task: TaskNode): TaskNode {
+    if (task.status === "running") {
+      return { ...task, status: legacyRunningStateToV46(task.status) };
+    }
+    return task;
+  }
+
+  function migratePlan(plan: TaskPlan): TaskPlan {
+    if (!Array.isArray(plan.tasks) || plan.tasks.length === 0) return plan;
+    let mutated = false;
+    const tasks = plan.tasks.map((t) => {
+      const next = migrateTaskNode(t);
+      if (next !== t) mutated = true;
+      return next;
+    });
+    return mutated ? { ...plan, tasks } : plan;
+  }
+
   function indexPlan(plan: TaskPlan): void {
     plansById.set(plan.planId, plan);
     let bucket = plansByWorkItem.get(plan.workItemId);
@@ -158,9 +183,9 @@ export function createWorkItemStore(
       if (!entry.endsWith(".json")) continue;
       const planId = entry.slice(0, -".json".length);
       if (plansById.has(planId)) continue;
-      const plan = await readJson<TaskPlan>(join(dir, entry));
-      if (!plan) continue;
-      indexPlan(plan);
+      const raw = await readJson<TaskPlan>(join(dir, entry));
+      if (!raw) continue;
+      indexPlan(migratePlan(raw));
     }
   }
 

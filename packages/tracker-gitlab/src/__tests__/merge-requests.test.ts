@@ -181,6 +181,36 @@ describe("getMergeRequest", () => {
       state: "opened",
     });
   });
+
+  it("maps GitLab diff_refs into camelCase diffRefs", async () => {
+    const show = vi.fn(async () =>
+      mrRow({
+        iid: 6,
+        diff_refs: {
+          base_sha: "base123",
+          start_sha: "start123",
+          head_sha: "head123",
+        },
+      }),
+    );
+    const client = makeClient({
+      MergeRequests: {
+        all: vi.fn(),
+        create: vi.fn(),
+        edit: vi.fn(),
+        show,
+      },
+    });
+    expect(await getMergeRequest(client, 6)).toEqual(
+      expect.objectContaining({
+        diffRefs: {
+          baseSha: "base123",
+          startSha: "start123",
+          headSha: "head123",
+        },
+      }),
+    );
+  });
 });
 
 describe("findMergeRequestBySourceBranch", () => {

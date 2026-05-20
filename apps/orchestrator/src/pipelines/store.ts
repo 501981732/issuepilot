@@ -1,0 +1,853 @@
+/**
+ * V4.6 spec §9：PipelineRun + AgentReport 持久化层。
+ *
+ * 目录布局（在 single 模式 root = `~/.issuepilot`；team 模式 root =
+ * `<workflow.workspace.root>` per project）：
+ *
+ * ```
+ * <root>/
+ *   pipelines/<workItemId>/<taskId>/<pipelineRunId>.json
+ *   agent-reports/<taskId>/<role>/<agentReportId>.json
+ *   agent-reports/<taskId>/<role>/index.json
+ * ```
+ *
+ * 写入前一律过 `@issuepilot/observability/redact`，token / secret 被
+ * 替换为 `[REDACTED]`；store 不做 redactedFields[] 自动追踪（由 agent
+ * 在写之前显式标记），但保证写盘时即使遗漏也由 redact 兜底。
+ *
+ * 路径含 `..` 或绝对路径越权 → `PipelineStorePathError`，防止 task /
+ * report 之间越权访问磁盘；读取损坏 JSON → `PipelineStoreReadError`。
+ */
+
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+
+import { redact } from "@issuepilot/observability";
+import {
+  type AgentReport,
+  type AgentRole,
+  type PipelineRun,
+  isAgentReport,
+  isPipelineRun,
+} from "@issuepilot/shared-contracts";
+
+import type {
+  AgentReportRoleIndex,
+  ListPipelinesForTaskItem,
+  PipelineStorePaths,
+  SaveAgentReportOptions,
+} from "./types.js";
+
+export class PipelineStorePathError extends Error {
+  override readonly name = "PipelineStorePathError";
+
+  constructor(
+    message: string,
+    public readonly path: string,
+  ) {
+    super(message);
+  }
+}
+
+export class PipelineStoreReadError extends Error {
+  override readonly name = "PipelineStoreReadError";
+
+  constructor(
+    message: string,
+    public readonly path: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
+
+/**
+ * V4.6 follow-up Important #2：内部 helper 把 `index.json` 的更新拆成
+ * stage + commit 两步。`stageIndex` 写完暂存文件后返回此 handle，
+ * `commitStagedIndex(staged)` 做 atomic rename，`discardStagedIndex(staged)`
+ * 做 best-effort unlink。
+ */
+type StagedIndex = {
+  /** 暂存文件的绝对路径，已经写完 + fsync 但还没 rename 到 `indexPath`。 */
+  tmp: string;
+  /** 最终 `index.json` 路径，commit 时 `rename(tmp, indexPath)` 完成切换。 */
+  indexPath: string;
+};
+
+const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+const assertSafeSegment = (segment: string, role: string): void => {
+  if (!segment || segment.includes("..") || segment.includes("/")) {
+    throw new PipelineStorePathError(
+      `${role} segment contains illegal characters: ${segment}`,
+      segment,
+    );
+  }
+  if (!SAFE_SEGMENT.test(segment)) {
+    throw new PipelineStorePathError(
+      `${role} segment must match ${SAFE_SEGMENT}: ${segment}`,
+      segment,
+    );
+  }
+};
+
+const ensureRoleSegment = (role: AgentRole): void => {
+  if (role !== "coder" && role !== "reviewer" && role !== "test_evidence") {
+    throw new PipelineStorePathError(`unknown role: ${role}`, role);
+  }
+};
+
+const buildPaths = (root: string): PipelineStorePaths => ({
+  pipelineRunPath: ({ workItemId, taskId, pipelineRunId }) => {
+    assertSafeSegment(workItemId, "workItemId");
+    assertSafeSegment(taskId, "taskId");
+    assertSafeSegment(pipelineRunId, "pipelineRunId");
+    return path.join(
+      root,
+      "pipelines",
+      workItemId,
+      taskId,
+      `${pipelineRunId}.json`,
+    );
+  },
+  agentReportPath: ({ taskId, role, agentReportId }) => {
+    assertSafeSegment(taskId, "taskId");
+    ensureRoleSegment(role);
+    assertSafeSegment(agentReportId, "agentReportId");
+    return path.join(
+      root,
+      "agent-reports",
+      taskId,
+      role,
+      `${agentReportId}.json`,
+    );
+  },
+  agentReportIndexPath: ({ taskId, role }) => {
+    assertSafeSegment(taskId, "taskId");
+    ensureRoleSegment(role);
+    return path.join(root, "agent-reports", taskId, role, "index.json");
+  },
+});
+
+/**
+ * V4.6 follow-up Important #2：写盘走 `staging-file (write + fsync) →
+ * rename` 的 atomic 模式。
+ *
+ * - 暂存文件名带 `randomUUID` 后缀，避免并发 supersede / save 之间
+ *   争抢同名 tmp 文件。
+ * - `fh.sync()` 保证内容真正落盘后再 rename，POSIX rename 本身是原子
+ *   的，所以 `rename` 成功 ⇔ 目标文件可见且完整。
+ * - 整段 `open + write + sync + close + rename` 都包在同一个 try/catch
+ *   里：任意一步失败（write/fsync 期间 ENOSPC、rename 失败等）都
+ *   best-effort `unlink` 暂存文件，避免 role 目录残留半完成 tmp。
+ *   unlink 错误吞掉，让原始错误传播。
+ */
+const writeJsonAtomic = async (
+  destination: string,
+  payload: unknown,
+): Promise<void> => {
+  await mkdir(path.dirname(destination), { recursive: true });
+  const redacted = redact(payload);
+  const tmp = `${destination}.${randomUUID()}.tmp`;
+  const { open, rename, unlink } = await import("node:fs/promises");
+  try {
+    const fh = await open(tmp, "w");
+    try {
+      await fh.writeFile(`${JSON.stringify(redacted, null, 2)}\n`, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, destination);
+  } catch (cause) {
+    await unlink(tmp).catch(() => undefined);
+    throw cause;
+  }
+};
+
+const readJsonSafe = async <T>(
+  filePath: string,
+  guard: (value: unknown) => value is T,
+): Promise<T> => {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+      throw cause;
+    }
+    throw new PipelineStoreReadError(
+      `failed to read ${path.basename(filePath)}`,
+      filePath,
+      { cause },
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new PipelineStoreReadError(
+      `corrupt JSON in ${path.basename(filePath)}`,
+      filePath,
+      { cause },
+    );
+  }
+  if (!guard(parsed)) {
+    throw new PipelineStoreReadError(
+      `JSON in ${path.basename(filePath)} does not match expected schema`,
+      filePath,
+    );
+  }
+  return parsed;
+};
+
+export interface PipelineStore {
+  /** spec §8.1：写入 PipelineRun 到 `<root>/pipelines/<wid>/<tid>/<prid>.json`。 */
+  savePipelineRun(run: PipelineRun): Promise<void>;
+  /** 读最新一次 PipelineRun（按 createdAt 倒序）。 */
+  latestForTask(input: {
+    workItemId: string;
+    taskId: string;
+  }): Promise<PipelineRun | null>;
+  /** 列出某 task 全部 PipelineRun，按 createdAt 倒序，标 latest=true 给 supersede 末端。 */
+  listForTask(input: {
+    workItemId: string;
+    taskId: string;
+  }): Promise<ListPipelinesForTaskItem[]>;
+  /** 按 pipelineRunId 直接读，不走 task path（dashboard 详情页用）。 */
+  getPipelineRunById(input: {
+    workItemId: string;
+    taskId: string;
+    pipelineRunId: string;
+  }): Promise<PipelineRun | null>;
+  /**
+   * V4.6 follow-up Important #4：无 workItemId 上下文的反查。
+   *
+   * 走 `<root>/pipelines/<wid>/<tid>/<pipelineRunId>.json` 全盘扫描定位
+   * PipelineRun，给 `listPipelineRunAgentReports` / `retryAgentReport` /
+   * `skipAgentReport` 这种只持有 `pipelineRunId` 的 HTTP 入口用。
+   *
+   * 与 `findAgentReportById` 同源：先 `assertSafeSegment` 防止 `..`
+   * 注入；目录或文件 ENOENT 一律返回 `null`，把存在性判断收敛到一处。
+   * V4.6 把 `pipelines/<wid>/<tid>/` 单层文件 layout 当作真相源，对于
+   * P0 目标的本地单机闭环这点扫描成本是有界且可接受的。
+   */
+  getPipelineRunByIdOnly(input: {
+    pipelineRunId: string;
+  }): Promise<PipelineRun | null>;
+  /** spec §8.1：把 prevId.supersededBy = nextId 写回；nextId.supersedes = prevId。 */
+  supersede(input: {
+    workItemId: string;
+    taskId: string;
+    prevId: string;
+    nextId: string;
+  }): Promise<void>;
+
+  /** spec §8.2 / §9：写 AgentReport + 同步 supersede 链 index.json。 */
+  saveAgentReport(
+    report: AgentReport,
+    options?: SaveAgentReportOptions,
+  ): Promise<void>;
+  /** 读某个 AgentReport（按 taskId + role + id 定位）。 */
+  getAgentReport(input: {
+    taskId: string;
+    role: AgentRole;
+    agentReportId: string;
+  }): Promise<AgentReport | null>;
+  /** 列 task 下某 role 的所有 AgentReport（含 supersede 链信息）。 */
+  listAgentReportsForRole(input: {
+    taskId: string;
+    role: AgentRole;
+  }): Promise<{
+    reports: AgentReport[];
+    index: AgentReportRoleIndex;
+  }>;
+  /** 取 task 下某 role 的最新 AgentReport（非 superseded）。 */
+  latestAgentReportForRole(input: {
+    taskId: string;
+    role: AgentRole;
+  }): Promise<AgentReport | null>;
+  /**
+   * spec §8.2 / §10.3：把 `prev.supersededBy = nextId` 与
+   * `next.supersedes = prevId` 双向写回，并在 role index.json 的
+   * `supersedeChain[]` 追加 `{ from, to }`。任一报告不存在 → 抛
+   * `PipelineStoreReadError`。
+   *
+   * 原子性契约（V4.6 follow-up Important #2）：**atomic via index
+   * commit**——`index.json` 是 supersede 链的唯一 source of truth，
+   * `listAgentReportsForRole` / `latestAgentReportForRole` 仅读 index。
+   * 中途失败时 staging tmp index 被丢弃，`index.json` 文件不变；但
+   * 个别 `<reportId>.json` 可能携带在失败前已写盘的部分
+   * `supersededBy` / `supersedes` 字段，**消费方必须以 index 为准、
+   * 不要直接读 raw 字段**。重跑 `supersedeAgentReport` 是幂等的：
+   * `agentReportIds` 与 `supersedeChain` 都做了 dedupe，重试会收敛
+   * 到成功状态（见对应单测）。
+   *
+   * 并发说明：调用方需要按 `(taskId, role)` 串行化；并发 supersede
+   * 调用可能丢失 `supersedeChain` 条目（pre-existing 限制，本次修
+   * 复未涉及）。
+   */
+  supersedeAgentReport(input: {
+    taskId: string;
+    role: AgentRole;
+    prevId: string;
+    nextId: string;
+  }): Promise<void>;
+  /**
+   * V4.6 Phase 9：通过 AgentReport id 在 `<root>/agent-reports/` 下扫描
+   * 定位文件（`<taskId>/<role>/<agentReportId>.json`），返回 report +
+   * taskId + role。找不到返回 null。
+   *
+   * 单一 AgentReport 落盘路径同时编码了 taskId + role，所以扫描总能拿
+   * 到完整身份。orchestrator HTTP API（`/api/agent-reports/:id/...`）
+   * 用本方法做反查。
+   */
+  findAgentReportById(agentReportId: string): Promise<
+    | {
+        taskId: string;
+        role: AgentRole;
+        report: AgentReport;
+      }
+    | null
+  >;
+  /**
+   * V4.6 review fix C4：跨 task / role 列出所有 AgentReport，用于
+   * `buildQualitySummary({ agentReports })` 计算 byRole 切片。
+   *
+   * 遍历 `<root>/agent-reports/<taskId>/<role>/*.json`（跳过
+   * `index.json`），按 `startedAt >= sinceIso` 过滤；默认排除
+   * `supersededBy != null` 的报告以避免重复计数。
+   *
+   * agent-reports 目录尚未创建时返回 `[]`，便于 V4.5 工作流共存。
+   */
+  listAllAgentReports(opts?: {
+    /** 过滤 startedAt >= sinceIso；默认无下限（全部）。 */
+    sinceIso?: string;
+    /** 默认 false：过滤 supersededBy != null。 */
+    includeSuperseded?: boolean;
+  }): Promise<AgentReport[]>;
+  /** 暴露 path builder 给上层（如测试 / 维护脚本）。 */
+  readonly paths: PipelineStorePaths;
+  readonly root: string;
+}
+
+export interface CreatePipelineStoreOptions {
+  root: string;
+}
+
+export const createPipelineStore = (
+  opts: CreatePipelineStoreOptions,
+): PipelineStore => {
+  const root = opts.root;
+  const paths = buildPaths(root);
+
+  const readIndex = async (input: {
+    taskId: string;
+    role: AgentRole;
+  }): Promise<AgentReportRoleIndex> => {
+    const indexPath = paths.agentReportIndexPath(input);
+    try {
+      const raw = await readFile(indexPath, "utf8");
+      const parsed = JSON.parse(raw) as AgentReportRoleIndex;
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        Array.isArray(parsed.agentReportIds)
+      ) {
+        return parsed;
+      }
+      throw new PipelineStoreReadError(
+        `index.json malformed for role ${input.role}`,
+        indexPath,
+      );
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+        return {
+          taskId: input.taskId,
+          role: input.role,
+          agentReportIds: [],
+          supersedeChain: [],
+          latestAgentReportId: null,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      if (cause instanceof PipelineStoreReadError) throw cause;
+      throw new PipelineStoreReadError(
+        `failed to read index.json for role ${input.role}`,
+        indexPath,
+        { cause },
+      );
+    }
+  };
+
+  /**
+   * V4.6 follow-up Important #2：把 `<root>/agent-reports/<taskId>/<role>/
+   * index.json` 内容写到一个带 `randomUUID` 后缀的暂存文件，并在 close
+   * 之前 `fh.sync()` 让磁盘真正落盘。返回 `StagedIndex`，由调用方决定
+   * 何时通过 `commitStagedIndex` 做 atomic `rename(tmp, indexPath)`，
+   * 或者 `discardStagedIndex` best-effort 清理。
+   *
+   * 整段 `open + write + sync + close` 都包在同一个 try/catch 里：
+   * 任意一步失败（ENOSPC、I/O 错误等）都会 best-effort `unlink` 暂存
+   * 文件并把原始错误向上抛——调用方此刻还没拿到 handle，自然没法做
+   * `discardStagedIndex`，所以清理责任落在 `stageIndex` 自己。
+   */
+  const stageIndex = async (
+    idx: AgentReportRoleIndex,
+  ): Promise<StagedIndex> => {
+    const indexPath = paths.agentReportIndexPath({
+      taskId: idx.taskId,
+      role: idx.role,
+    });
+    await mkdir(path.dirname(indexPath), { recursive: true });
+    const tmp = `${indexPath}.${randomUUID()}.tmp`;
+    const { open, unlink } = await import("node:fs/promises");
+    try {
+      const fh = await open(tmp, "w");
+      try {
+        await fh.writeFile(
+          `${JSON.stringify(redact(idx), null, 2)}\n`,
+          "utf8",
+        );
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+    } catch (cause) {
+      await unlink(tmp).catch(() => undefined);
+      throw cause;
+    }
+    return { tmp, indexPath };
+  };
+
+  const commitStagedIndex = async (staged: StagedIndex): Promise<void> => {
+    const { rename, unlink } = await import("node:fs/promises");
+    try {
+      await rename(staged.tmp, staged.indexPath);
+    } catch (cause) {
+      await unlink(staged.tmp).catch(() => undefined);
+      throw cause;
+    }
+  };
+
+  const discardStagedIndex = async (staged: StagedIndex): Promise<void> => {
+    const { unlink } = await import("node:fs/promises");
+    await unlink(staged.tmp).catch(() => undefined);
+  };
+
+  /** stage + commit 的 convenience helper（saveAgentReport 走的非 supersede 路径用）。 */
+  const writeIndex = async (idx: AgentReportRoleIndex): Promise<void> => {
+    const staged = await stageIndex(idx);
+    try {
+      await commitStagedIndex(staged);
+    } catch (cause) {
+      await discardStagedIndex(staged);
+      throw cause;
+    }
+  };
+
+  return {
+    paths,
+    root,
+
+    async savePipelineRun(run: PipelineRun): Promise<void> {
+      const destination = paths.pipelineRunPath({
+        workItemId: run.workItemId,
+        taskId: run.taskId,
+        pipelineRunId: run.pipelineRunId,
+      });
+      await writeJsonAtomic(destination, run);
+    },
+
+    async getPipelineRunById(input) {
+      const destination = paths.pipelineRunPath(input);
+      try {
+        return await readJsonSafe(destination, isPipelineRun);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+        if (cause instanceof PipelineStoreReadError) throw cause;
+        throw cause;
+      }
+    },
+
+    async getPipelineRunByIdOnly({ pipelineRunId }) {
+      // 防御性校验，避免在路径里塞 `..` 越权扫描 / 拼出别的 task 的文件。
+      assertSafeSegment(pipelineRunId, "pipelineRunId");
+      const pipelinesRoot = path.join(root, "pipelines");
+      let wids: string[];
+      try {
+        wids = await readdir(pipelinesRoot);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw cause;
+      }
+      for (const wid of wids) {
+        if (!SAFE_SEGMENT.test(wid)) continue;
+        let taskDirs: string[];
+        try {
+          taskDirs = await readdir(path.join(pipelinesRoot, wid));
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw cause;
+        }
+        for (const tid of taskDirs) {
+          if (!SAFE_SEGMENT.test(tid)) continue;
+          const candidate = path.join(
+            pipelinesRoot,
+            wid,
+            tid,
+            `${pipelineRunId}.json`,
+          );
+          try {
+            return await readJsonSafe(candidate, isPipelineRun);
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+            if (cause instanceof PipelineStoreReadError) throw cause;
+            throw cause;
+          }
+        }
+      }
+      return null;
+    },
+
+    async listForTask(input) {
+      assertSafeSegment(input.workItemId, "workItemId");
+      assertSafeSegment(input.taskId, "taskId");
+      const taskDir = path.join(
+        root,
+        "pipelines",
+        input.workItemId,
+        input.taskId,
+      );
+      let entries: string[];
+      try {
+        entries = await readdir(taskDir);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw cause;
+      }
+      const runs: PipelineRun[] = [];
+      for (const name of entries) {
+        if (!name.endsWith(".json")) continue;
+        const filePath = path.join(taskDir, name);
+        try {
+          const run = await readJsonSafe(filePath, isPipelineRun);
+          runs.push(run);
+        } catch (cause) {
+          // 单条损坏不阻塞其他 run 的读取；error 由调用方决定如何上报。
+          if (cause instanceof PipelineStoreReadError) {
+            throw cause;
+          }
+          throw cause;
+        }
+      }
+      runs.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      return runs.map((run) => ({
+        pipelineRun: run,
+        latest: !run.supersededBy,
+      }));
+    },
+
+    async latestForTask(input) {
+      const items = await this.listForTask(input);
+      const latest = items.find((it) => it.latest);
+      return latest?.pipelineRun ?? null;
+    },
+
+    async supersede({ workItemId, taskId, prevId, nextId }) {
+      const prev = await this.getPipelineRunById({
+        workItemId,
+        taskId,
+        pipelineRunId: prevId,
+      });
+      const next = await this.getPipelineRunById({
+        workItemId,
+        taskId,
+        pipelineRunId: nextId,
+      });
+      if (!prev || !next) {
+        throw new PipelineStoreReadError(
+          `cannot supersede: prev=${!!prev} next=${!!next}`,
+          paths.pipelineRunPath({ workItemId, taskId, pipelineRunId: prevId }),
+        );
+      }
+      const updatedPrev: PipelineRun = {
+        ...prev,
+        supersededBy: nextId,
+        updatedAt: new Date().toISOString(),
+      };
+      const updatedNext: PipelineRun = {
+        ...next,
+        supersedes: prevId,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.savePipelineRun(updatedPrev);
+      await this.savePipelineRun(updatedNext);
+    },
+
+    async saveAgentReport(report, options) {
+      const destination = paths.agentReportPath({
+        taskId: report.taskId,
+        role: report.role,
+        agentReportId: report.agentReportId,
+      });
+      await writeJsonAtomic(destination, report);
+
+      if (options?.updateIndex === false) return;
+
+      const idx = await readIndex({
+        taskId: report.taskId,
+        role: report.role,
+      });
+      if (!idx.agentReportIds.includes(report.agentReportId)) {
+        idx.agentReportIds.push(report.agentReportId);
+      }
+      idx.latestAgentReportId = report.agentReportId;
+      idx.updatedAt = new Date().toISOString();
+      await writeIndex(idx);
+    },
+
+    async getAgentReport(input) {
+      const destination = paths.agentReportPath(input);
+      try {
+        return await readJsonSafe(destination, isAgentReport);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+        if (cause instanceof PipelineStoreReadError) throw cause;
+        throw cause;
+      }
+    },
+
+    async listAgentReportsForRole(input) {
+      const idx = await readIndex(input);
+      const reports: AgentReport[] = [];
+      for (const id of idx.agentReportIds) {
+        const r = await this.getAgentReport({
+          taskId: input.taskId,
+          role: input.role,
+          agentReportId: id,
+        });
+        if (r) reports.push(r);
+      }
+      return { reports, index: idx };
+    },
+
+    async latestAgentReportForRole(input) {
+      const idx = await readIndex(input);
+      if (!idx.latestAgentReportId) return null;
+      return this.getAgentReport({
+        taskId: input.taskId,
+        role: input.role,
+        agentReportId: idx.latestAgentReportId,
+      });
+    },
+
+    async listAllAgentReports(opts) {
+      const sinceIso = opts?.sinceIso;
+      const includeSuperseded = opts?.includeSuperseded ?? false;
+      const agentReportsRoot = path.join(root, "agent-reports");
+      let taskDirs: string[];
+      try {
+        taskDirs = await readdir(agentReportsRoot);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw cause;
+      }
+      const out: AgentReport[] = [];
+      for (const taskId of taskDirs) {
+        if (!SAFE_SEGMENT.test(taskId)) continue;
+        const taskDir = path.join(agentReportsRoot, taskId);
+        let roleEntries: string[];
+        try {
+          roleEntries = await readdir(taskDir);
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw cause;
+        }
+        for (const roleEntry of roleEntries) {
+          if (
+            roleEntry !== "coder" &&
+            roleEntry !== "reviewer" &&
+            roleEntry !== "test_evidence"
+          ) {
+            continue;
+          }
+          const roleDir = path.join(taskDir, roleEntry);
+          let files: string[];
+          try {
+            files = await readdir(roleDir);
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw cause;
+          }
+          for (const name of files) {
+            if (!name.endsWith(".json")) continue;
+            // spec §9：每个 role 目录里 index.json 是 supersede 链 sentinel，
+            // 不是 AgentReport 本体；跳过。
+            if (name === "index.json") continue;
+            const filePath = path.join(roleDir, name);
+            try {
+              const report = await readJsonSafe(filePath, isAgentReport);
+              if (sinceIso && report.startedAt < sinceIso) continue;
+              if (!includeSuperseded && report.supersededBy) continue;
+              out.push(report);
+            } catch (cause) {
+              if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+              // V4.6 review follow-up (Issue 2)：单条损坏 / schema 不匹配
+              // 的 AgentReport JSON 不应该阻塞整个 byRole 切片。把这种
+              // 损坏条目静默跳过，让其它 task / role 仍能产出 quality
+              // 分析；运维侧通过 diagnostics + 文件 / readJsonSafe 自身的
+              // 错误日志察觉到具体损坏文件。
+              if (cause instanceof PipelineStoreReadError) continue;
+              throw cause;
+            }
+          }
+        }
+      }
+      return out;
+    },
+
+    async findAgentReportById(agentReportId) {
+      // 防御性校验，避免在路径里塞 `..` 越权扫描。
+      assertSafeSegment(agentReportId, "agentReportId");
+      const agentReportsRoot = path.join(root, "agent-reports");
+      let taskDirs: string[];
+      try {
+        taskDirs = await readdir(agentReportsRoot);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw cause;
+      }
+      for (const taskId of taskDirs) {
+        if (!SAFE_SEGMENT.test(taskId)) continue;
+        for (const role of ["coder", "reviewer", "test_evidence"] as const) {
+          const candidate = paths.agentReportPath({
+            taskId,
+            role,
+            agentReportId,
+          });
+          try {
+            const report = await readJsonSafe(candidate, isAgentReport);
+            return { taskId, role, report };
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+            if (cause instanceof PipelineStoreReadError) throw cause;
+            throw cause;
+          }
+        }
+      }
+      return null;
+    },
+
+    async supersedeAgentReport({ taskId, role, prevId, nextId }) {
+      const prev = await this.getAgentReport({
+        taskId,
+        role,
+        agentReportId: prevId,
+      });
+      const next = await this.getAgentReport({
+        taskId,
+        role,
+        agentReportId: nextId,
+      });
+      if (!prev || !next) {
+        throw new PipelineStoreReadError(
+          `cannot supersede AgentReport: prev=${!!prev} next=${!!next}`,
+          paths.agentReportPath({ taskId, role, agentReportId: prevId }),
+        );
+      }
+      const updatedPrev = {
+        ...prev,
+        supersededBy: nextId,
+      } as AgentReport;
+      const updatedNext = {
+        ...next,
+        supersedes: prevId,
+      } as AgentReport;
+
+      // V4.6 follow-up Important #2：crash-atomic via index commit。
+      // 在内存里组装 next idx → stage 到 tmp index → 写 next/prev
+      // AgentReport → atomic rename(tmpIndex, indexPath) 一次切换 index。
+      // 个别 `<reportId>.json` 可能携带在失败前已写盘的部分字段；
+      // 消费方以 index 为准，retry 收敛见 supersedeAgentReport docstring。
+      const idx = await readIndex({ taskId, role });
+      if (!idx.agentReportIds.includes(prevId)) {
+        idx.agentReportIds.push(prevId);
+      }
+      if (!idx.agentReportIds.includes(nextId)) {
+        idx.agentReportIds.push(nextId);
+      }
+      const alreadyLinked = idx.supersedeChain.some(
+        (link) => link.from === prevId && link.to === nextId,
+      );
+      if (!alreadyLinked) {
+        idx.supersedeChain.push({ from: prevId, to: nextId });
+      }
+      idx.latestAgentReportId = nextId;
+      idx.updatedAt = new Date().toISOString();
+
+      const staged = await stageIndex(idx);
+      try {
+        await this.saveAgentReport(updatedNext, { updateIndex: false });
+        await this.saveAgentReport(updatedPrev, { updateIndex: false });
+        await commitStagedIndex(staged);
+      } catch (cause) {
+        await discardStagedIndex(staged);
+        throw cause;
+      }
+    },
+  };
+};
+
+export interface ProjectScope {
+  /** 任意 project 标识符，用于 team 模式按项目隔离。 */
+  projectId: string;
+  /** 该项目的 pipeline / agent-report 目录根（例如 workflow.workspace.root）。 */
+  root: string;
+}
+
+export interface PipelineStoreByProject {
+  get(projectId: string): PipelineStore | undefined;
+  upsert(scope: ProjectScope): PipelineStore;
+  list(): Array<{ projectId: string; store: PipelineStore }>;
+}
+
+/**
+ * spec §9 / V4.4：team 模式下每个 project 一份独立 pipeline store，
+ * 落点目录互不重叠。
+ */
+export const createPipelineStoresByProject = (
+  scopes: ProjectScope[],
+): PipelineStoreByProject => {
+  const map = new Map<string, PipelineStore>();
+  for (const scope of scopes) {
+    map.set(scope.projectId, createPipelineStore({ root: scope.root }));
+  }
+  return {
+    get(projectId) {
+      return map.get(projectId);
+    },
+    upsert(scope) {
+      const existing = map.get(scope.projectId);
+      if (existing && existing.root === scope.root) return existing;
+      const store = createPipelineStore({ root: scope.root });
+      map.set(scope.projectId, store);
+      return store;
+    },
+    list() {
+      return Array.from(map.entries()).map(([projectId, store]) => ({
+        projectId,
+        store,
+      }));
+    },
+  };
+};
+
+/** 在测试 / 维护时确认目录存在（spec §9 三层布局可选 prepare）。 */
+export const ensurePipelineDirs = async (root: string): Promise<void> => {
+  await mkdir(path.join(root, "pipelines"), { recursive: true });
+  await mkdir(path.join(root, "agent-reports"), { recursive: true });
+};
+
+export type { AgentReportRoleIndex } from "./types.js";

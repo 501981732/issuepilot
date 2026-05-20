@@ -1,8 +1,19 @@
 import { describe, it, expect, expectTypeOf } from "vitest";
 
-import type {
-  ReviewComment,
-  ReviewFeedbackSummary,
+import {
+  REVIEWER_DECISION_VALUES,
+  FINDING_SEVERITY_VALUES,
+  INLINE_COMMENT_SEVERITY_VALUES,
+  MR_PUBLICATION_STATUS_VALUES,
+  ReviewerSummaryTooLongError,
+  assertReviewerSummaryLength,
+  isMrPublicationRevocable,
+  isReviewerDecision,
+  type MrPublication,
+  type ReviewerFinding,
+  type ReviewerInlineComment,
+  type ReviewComment,
+  type ReviewFeedbackSummary,
 } from "../review.js";
 
 describe("@issuepilot/shared-contracts/review", () => {
@@ -74,5 +85,87 @@ describe("@issuepilot/shared-contracts/review", () => {
     expect(summary.comments).toHaveLength(1);
     expect(summary.comments[0]?.author).toBe("alice");
     expect(summary.comments[0]?.resolved).toBe(false);
+  });
+
+  it("REVIEWER_DECISION_VALUES 严格三态", () => {
+    expect([...REVIEWER_DECISION_VALUES]).toEqual([
+      "approve_with_comments",
+      "request_changes",
+      "cannot_review",
+    ]);
+    expect(isReviewerDecision("approve_with_comments")).toBe(true);
+    expect(isReviewerDecision("approved")).toBe(false);
+  });
+
+  it("FINDING_SEVERITY_VALUES vs INLINE_COMMENT_SEVERITY_VALUES", () => {
+    expect([...FINDING_SEVERITY_VALUES]).toEqual([
+      "low",
+      "medium",
+      "high",
+      "critical",
+    ]);
+    // spec §11：low 永不进 inline，只进主 note
+    expect([...INLINE_COMMENT_SEVERITY_VALUES]).toEqual([
+      "medium",
+      "high",
+      "critical",
+    ]);
+  });
+
+  it("ReviewerFinding 可省 locationHint.lineRange", () => {
+    const finding: ReviewerFinding = {
+      severity: "high",
+      category: "security",
+      message: "Token logged at debug level",
+      locationHint: { filePath: "src/auth.ts" },
+    };
+    expect(JSON.parse(JSON.stringify(finding))).toEqual(finding);
+  });
+
+  it("ReviewerInlineComment 必填 file+lineRange", () => {
+    const ic: ReviewerInlineComment = {
+      filePath: "src/auth.ts",
+      lineRange: { start: 10, end: 12 },
+      severity: "critical",
+      category: "security",
+      message: "Avoid logging tokens",
+      suggestedFix: "Use logger.debug masking",
+    };
+    expect(JSON.parse(JSON.stringify(ic))).toEqual(ic);
+  });
+
+  it("MR_PUBLICATION_STATUS_VALUES 五项 + revocable 仅 published", () => {
+    expect(new Set(MR_PUBLICATION_STATUS_VALUES)).toEqual(
+      new Set([
+        "pending",
+        "published",
+        "publish_failed",
+        "skipped_by_config",
+        "revoked",
+      ]),
+    );
+    expect(isMrPublicationRevocable("published")).toBe(true);
+    expect(isMrPublicationRevocable("pending")).toBe(false);
+    expect(isMrPublicationRevocable("publish_failed")).toBe(false);
+    expect(isMrPublicationRevocable("skipped_by_config")).toBe(false);
+    expect(isMrPublicationRevocable("revoked")).toBe(false);
+  });
+
+  it("MrPublication 持有 noteIds 与可选 publishedAt", () => {
+    const pub: MrPublication = {
+      status: "published",
+      noteIds: ["12345", "12346"],
+      publishedAt: "2026-05-19T00:00:10.000Z",
+    };
+    expect(JSON.parse(JSON.stringify(pub))).toEqual(pub);
+  });
+
+  it("assertReviewerSummaryLength 在 4000 字符上限处抛 ReviewerSummaryTooLongError", () => {
+    const ok = "x".repeat(4000);
+    expect(() => assertReviewerSummaryLength(ok)).not.toThrow();
+    const tooLong = "x".repeat(4001);
+    expect(() => assertReviewerSummaryLength(tooLong)).toThrow(
+      ReviewerSummaryTooLongError,
+    );
   });
 });

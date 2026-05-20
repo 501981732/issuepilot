@@ -1,7 +1,10 @@
 import type {
   AcceptWorkItemPlanRequest,
+  AgentRole,
   ConfirmEvidenceResponse,
   FailurePatternId,
+  GetAgentReportResponse,
+  GetPipelineResponse,
   ImprovementActionRequest,
   ImprovementActionResponse,
   ImprovementGenerateRequest,
@@ -11,17 +14,29 @@ import type {
   ImprovementRecommendationFilters,
   ImprovementRecommendationsListResponse,
   IssuePilotEvent,
+  ListPipelineRunAgentReportsResponse,
+  ListPipelinesResponse,
+  ListTaskAgentReportsResponse,
   MarkTaskReworkRequest,
   OrchestratorStateSnapshot,
   QualityStatusFilter,
   QualitySummaryResponse,
   ReplanTaskRequest,
   ReportsListResponse,
+  RetryAgentReportRequest,
+  RetryAgentReportResponse,
+  RevokeAiReviewResponse,
   RunDetailResponse,
   RunRecord,
   RunReportSummary,
   RunStatus,
+  SetRecipeOverrideRequest,
+  SetRecipeOverrideResponse,
+  SkipAgentReportRequest,
+  SkipAgentReportResponse,
   TaskPlan,
+  ValidateWorkflowRolesResponse,
+  WorkflowRecipe,
   WorkItem,
   WorkItemDetailResponse,
   WorkItemEvidenceResponse,
@@ -761,5 +776,152 @@ export function previewImprovementPatch(
     `/api/improvements/recommendations/${encodeURIComponent(id)}/patch-preview`,
     body,
     effective,
+  );
+}
+
+/**
+ * V4.6 Multi-Agent Pipeline dashboard client helpers (spec §18). All URLs
+ * are strictly aligned with the Fastify routes registered in
+ * `apps/orchestrator/src/pipelines/routes.ts`:
+ *
+ * - `GET /api/work-items/:wid/tasks/:tid/pipeline`
+ * - `GET /api/work-items/:wid/tasks/:tid/pipelines`
+ * - `GET /api/agent-reports/:id`
+ * - `GET /api/work-items/:wid/tasks/:tid/agent-reports[?role=&include_superseded=]`
+ * - `GET /api/pipeline-runs/:id/agent-reports`
+ * - `POST /api/work-items/:wid/tasks/:tid/pipeline/recipe-override`
+ * - `POST /api/agent-reports/:id/revoke-ai-review`
+ * - `POST /api/agent-reports/:id/retry`
+ * - `POST /api/agent-reports/:id/skip`
+ * - `GET /api/workflows/:workflowId/roles/validate`
+ *
+ * All helpers honour the module-level active project header
+ * (`x-issuepilot-project`) via the existing `apiGet` / `postWorkItemAction`
+ * plumbing.
+ */
+export function getPipeline(
+  workItemId: string,
+  taskId: string,
+  opts: ApiGetOptions = {},
+): Promise<GetPipelineResponse> {
+  return apiGet<GetPipelineResponse>(
+    `/api/work-items/${encodeURIComponent(workItemId)}/tasks/${encodeURIComponent(taskId)}/pipeline`,
+    opts,
+  );
+}
+
+export function listPipelines(
+  workItemId: string,
+  taskId: string,
+  opts: ApiGetOptions = {},
+): Promise<ListPipelinesResponse> {
+  return apiGet<ListPipelinesResponse>(
+    `/api/work-items/${encodeURIComponent(workItemId)}/tasks/${encodeURIComponent(taskId)}/pipelines`,
+    opts,
+  );
+}
+
+export function getAgentReport(
+  agentReportId: string,
+  opts: ApiGetOptions = {},
+): Promise<GetAgentReportResponse> {
+  return apiGet<GetAgentReportResponse>(
+    `/api/agent-reports/${encodeURIComponent(agentReportId)}`,
+    opts,
+  );
+}
+
+export interface ListTaskAgentReportsParams {
+  role?: AgentRole;
+  includeSuperseded?: boolean;
+}
+
+export function listTaskAgentReports(
+  workItemId: string,
+  taskId: string,
+  params: ListTaskAgentReportsParams = {},
+  opts: ApiGetOptions = {},
+): Promise<ListTaskAgentReportsResponse> {
+  const query = new URLSearchParams();
+  if (params.role) query.set("role", params.role);
+  if (params.includeSuperseded) query.set("include_superseded", "true");
+  const qs = query.toString();
+  return apiGet<ListTaskAgentReportsResponse>(
+    `/api/work-items/${encodeURIComponent(workItemId)}/tasks/${encodeURIComponent(taskId)}/agent-reports${qs ? `?${qs}` : ""}`,
+    opts,
+  );
+}
+
+export function listPipelineRunAgentReports(
+  pipelineRunId: string,
+  opts: ApiGetOptions = {},
+): Promise<ListPipelineRunAgentReportsResponse> {
+  return apiGet<ListPipelineRunAgentReportsResponse>(
+    `/api/pipeline-runs/${encodeURIComponent(pipelineRunId)}/agent-reports`,
+    opts,
+  );
+}
+
+export function setRecipeOverride(
+  workItemId: string,
+  taskId: string,
+  recipe: WorkflowRecipe,
+  opts: OperatorActionOptions = {},
+): Promise<SetRecipeOverrideResponse> {
+  const body: SetRecipeOverrideRequest = { recipe };
+  if (opts.operator) body.operator = opts.operator;
+  return postWorkItemAction<SetRecipeOverrideResponse>(
+    `/api/work-items/${encodeURIComponent(workItemId)}/tasks/${encodeURIComponent(taskId)}/pipeline/recipe-override`,
+    body,
+    opts,
+  );
+}
+
+export function revokeAiReview(
+  agentReportId: string,
+  opts: OperatorActionOptions = {},
+): Promise<RevokeAiReviewResponse> {
+  return postWorkItemAction<RevokeAiReviewResponse>(
+    `/api/agent-reports/${encodeURIComponent(agentReportId)}/revoke-ai-review`,
+    {},
+    opts,
+  );
+}
+
+export function retryAgentReport(
+  agentReportId: string,
+  body: RetryAgentReportRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<RetryAgentReportResponse> {
+  const effective: OperatorActionOptions =
+    body.operator && !opts.operator ? { ...opts, operator: body.operator } : opts;
+  return postWorkItemAction<RetryAgentReportResponse>(
+    `/api/agent-reports/${encodeURIComponent(agentReportId)}/retry`,
+    body,
+    effective,
+  );
+}
+
+export function skipAgentReport(
+  agentReportId: string,
+  body: SkipAgentReportRequest = {},
+  opts: OperatorActionOptions = {},
+): Promise<SkipAgentReportResponse> {
+  const effective: OperatorActionOptions =
+    body.operator && !opts.operator ? { ...opts, operator: body.operator } : opts;
+  return postWorkItemAction<SkipAgentReportResponse>(
+    `/api/agent-reports/${encodeURIComponent(agentReportId)}/skip`,
+    body,
+    effective,
+  );
+}
+
+export function validateWorkflowRoles(
+  workflowId: string,
+  opts: ApiGetOptions = {},
+): Promise<ValidateWorkflowRolesResponse> {
+  return apiGet<ValidateWorkflowRolesResponse>(
+    `/api/workflows/${encodeURIComponent(workflowId)}/roles/validate`,
+    opts,
   );
 }

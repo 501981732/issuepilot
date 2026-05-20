@@ -372,4 +372,178 @@ describe("startTeamDaemon", () => {
       await handle.stop();
     }
   });
+
+  /**
+   * V4.6 Phase 9 Task 9.3: per-project pipeline services are wired only
+   * for projects whose workflow declares both `default_recipe` and
+   * `roles`. Projects missing those V4.6 fields are skipped with a
+   * `console.warn`; the daemon stays bootable and routes for the
+   * configured projects still work end-to-end.
+   */
+  it("wires V4.6 pipelinesByProject for projects with default_recipe + roles and skips legacy projects", async () => {
+    const loadTeamConfig = vi.fn(async () => baseConfig());
+    const enabledProjects = [
+      {
+        id: "project-a",
+        name: "Project A",
+        projectPath: "/srv/issuepilot-config/projects/project-a.yaml",
+        workflowProfilePath: "/srv/issuepilot-config/workflows/a.md",
+        effectiveWorkflowPath: "/tmp/a.workflow.md",
+        enabled: true as const,
+        workflow: {
+          source: {
+            path: "/tmp/a.workflow.md",
+            sha256: "sha",
+            loadedAt: new Date(0).toISOString(),
+          },
+          tracker: {
+            kind: "gitlab",
+            baseUrl: "https://gitlab.example",
+            projectId: "group/project-a",
+            handoffLabel: "human-review",
+          },
+          agent: {
+            command: "codex",
+            args: [],
+            timeoutMs: 60_000,
+            maxConcurrentAgents: 1,
+            cwd: null,
+            envAllow: [],
+            stdinPrompt: false,
+          },
+          retry: { maxAttempts: 1, backoffMs: 1000 },
+          workspace: { root: "/tmp/issuepilot-test-a" },
+          defaultRecipe: "full_pipeline",
+          roles: {
+            coder: {
+              role: "coder",
+              promptTemplate: "/tmp/c.md",
+              promptTemplateHash: "deadbeef",
+              sandbox: "read_write_worktree",
+            },
+            reviewer: {
+              role: "reviewer",
+              promptTemplate: "/tmp/r.md",
+              promptTemplateHash: "deadbeef",
+              sandbox: "read_only_worktree",
+            },
+            test_evidence: {
+              role: "test_evidence",
+              promptTemplate: "/tmp/t.md",
+              promptTemplateHash: "deadbeef",
+              sandbox: "read_only_source_write_evidence",
+            },
+          },
+        },
+        lastPollAt: null,
+        activeRuns: 0,
+      },
+      {
+        id: "project-legacy",
+        name: "Project Legacy (no V4.6)",
+        projectPath: "/srv/issuepilot-config/projects/project-legacy.yaml",
+        workflowProfilePath: "/srv/issuepilot-config/workflows/legacy.md",
+        effectiveWorkflowPath: "/tmp/legacy.workflow.md",
+        enabled: true as const,
+        workflow: {
+          source: {
+            path: "/tmp/legacy.workflow.md",
+            sha256: "sha",
+            loadedAt: new Date(0).toISOString(),
+          },
+          tracker: {
+            kind: "gitlab",
+            baseUrl: "https://gitlab.example",
+            projectId: "group/project-legacy",
+            handoffLabel: "human-review",
+          },
+          agent: {
+            command: "codex",
+            args: [],
+            timeoutMs: 60_000,
+            maxConcurrentAgents: 1,
+            cwd: null,
+            envAllow: [],
+            stdinPrompt: false,
+          },
+          retry: { maxAttempts: 1, backoffMs: 1000 },
+          workspace: { root: "/tmp/issuepilot-test-legacy" },
+          // No defaultRecipe / roles — legacy V4.5 fixture.
+        },
+        lastPollAt: null,
+        activeRuns: 0,
+      },
+    ] as never;
+    const registry: ProjectRegistry = {
+      enabledProjects: () => enabledProjects,
+      project: () => undefined,
+      summaries: () => summaries,
+      updateProjectPoll: () => {},
+      updateProjectActiveRuns: () => {},
+    };
+    const createProjectRegistry = vi.fn(async () => registry);
+    const leaseStore: LeaseStore = {
+      acquire: vi.fn(async () => null),
+      release: vi.fn(async () => undefined),
+      heartbeat: vi.fn(async () => null),
+      expireStale: vi.fn(async () => []),
+      active: vi.fn(async () => []),
+      activeCount: () => 0,
+    };
+    const createLeaseStore = vi.fn(() => leaseStore);
+    const createServer = vi.fn(async (deps: ServerDeps) => {
+      createdDeps = deps;
+      const close = vi.fn(async () => {});
+      const fake: FakeServer = {
+        listening: true,
+        close,
+        server: { address: () => ({ port: 4738 }) },
+      };
+      createdApp = fake;
+      return fake as never;
+    });
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let handle: Awaited<ReturnType<typeof startTeamDaemon>> | undefined;
+    try {
+      handle = await startTeamDaemon(
+        {
+          configPath: "/srv/issuepilot.team.yaml",
+          host: "127.0.0.1",
+          port: 4738,
+        },
+        {
+          loadTeamConfig,
+          createProjectRegistry,
+          createServer,
+          createLeaseStore,
+        },
+      );
+      expect(createdDeps?.pipelinesByProject?.has("project-a")).toBe(true);
+      expect(createdDeps?.pipelinesByProject?.has("project-legacy")).toBe(
+        false,
+      );
+
+      const pipelineA = createdDeps?.pipelinesByProject?.get("project-a");
+      expect(pipelineA).toBeDefined();
+      const result = await pipelineA!.validateWorkflowRoles({
+        workflowId: "default",
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.valid).toBe(true);
+      }
+
+      expect(
+        warn.mock.calls.some(([msg]) =>
+          String(msg).includes(
+            "V4.6 pipeline service skipped for project project-legacy",
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+      if (handle) await handle.stop();
+    }
+  });
 });

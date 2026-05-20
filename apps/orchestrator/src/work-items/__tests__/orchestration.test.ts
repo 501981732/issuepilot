@@ -43,6 +43,10 @@ function task(over: Partial<TaskNode> & Pick<TaskNode, "taskId">): TaskNode {
     status: over.status ?? "ready",
     runIds: over.runIds ?? [],
     riskLevel: over.riskLevel ?? "low",
+    ...(over.pendingRecipe ? { pendingRecipe: over.pendingRecipe } : {}),
+    ...(over.pendingRecipeSource
+      ? { pendingRecipeSource: over.pendingRecipeSource }
+      : {}),
   };
 }
 
@@ -502,6 +506,83 @@ describe("tickWorkItem", () => {
     expect(captured).toEqual([{ taskId: "t1" }]);
     const dispatchedEvent = events.find((e) => e.type === "task_run_dispatched");
     expect(dispatchedEvent?.detail.chainedFrom).toBeUndefined();
+  });
+
+  it("V4.6 production: starts PipelineRun instead of legacy dispatch when pipeline starter is wired", async () => {
+    const started: Array<{ taskId: string; pendingRecipe?: string }> = [];
+    const legacyDispatches: string[] = [];
+    const savedLinks: TaskRunLink[] = [];
+    const savedNodes: Array<{ taskId: string; patch: Partial<TaskNode> }> = [];
+    const deps: OrchestrationDeps = {
+      availableSlots: () => 5,
+      getRunReport: async () => undefined,
+      dispatchTask: async (t) => {
+        legacyDispatches.push(t.taskId);
+        return { runId: `run_${t.taskId}`, branch: `ai/42-${t.taskId}` };
+      },
+      startPipelineForTask: async ({ task, pendingRecipe }) => {
+        started.push({
+          taskId: task.taskId,
+          ...(pendingRecipe ? { pendingRecipe } : {}),
+        });
+        return {
+          pipelineRunId: `pr_${task.taskId}`,
+          branch: `issuepilot/${task.taskId}`,
+          taskStatus: "completed",
+          mergeRequest: {
+            iid: 42,
+            url: "https://gitlab.example.com/mr/42",
+            state: "opened",
+          },
+        };
+      },
+      saveTaskRunLink: async (link) => {
+        savedLinks.push(link);
+      },
+      saveTaskNode: async (taskId, patch) => {
+        savedNodes.push({ taskId, patch });
+      },
+      emit: () => {},
+    };
+    const p = plan([
+      task({
+        taskId: "t1",
+        status: "ready",
+        pendingRecipe: "coding_plus_reviewer",
+      }),
+    ]);
+
+    const result = await tickWorkItem(workItem, p, [], deps);
+
+    expect(started).toEqual([
+      { taskId: "t1", pendingRecipe: "coding_plus_reviewer" },
+    ]);
+    expect(legacyDispatches).toEqual([]);
+    expect(savedLinks).toEqual([
+      expect.objectContaining({
+        taskId: "t1",
+        runId: "pr_t1",
+        branch: "issuepilot/t1",
+        status: "completed",
+        reportId: "pr_t1",
+        mergeRequest: {
+          iid: 42,
+          url: "https://gitlab.example.com/mr/42",
+          state: "opened",
+        },
+      }),
+    ]);
+    expect(savedNodes).toEqual([
+      { taskId: "t1", patch: { status: "completed" } },
+    ]);
+    expect(result.dispatched).toEqual([
+      {
+        taskId: "t1",
+        runId: "pr_t1",
+        branch: "issuepilot/t1",
+        taskStatus: "completed",
+      },
+    ]);
   });
 });
 

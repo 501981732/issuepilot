@@ -5,7 +5,9 @@ import type {
   TaskPlan,
   TaskRunLink,
   WorkItem,
+  WorkflowRecipe,
 } from "@issuepilot/shared-contracts";
+import { isWorkflowRecipe } from "@issuepilot/shared-contracts";
 
 import type { EffectiveBaseDecision } from "./branch-chain.js";
 
@@ -84,6 +86,24 @@ export interface OrchestrationDeps {
   ): Promise<{ runId: string; branch: string }>;
 
   /**
+   * V4.6 production path: when wired, ready tasks start a multi-agent
+   * PipelineRun instead of the legacy synthetic dispatch path. The
+   * coordinator owns TaskNode status updates and AgentReport persistence, so
+   * tickWorkItem must not write TaskRunLink / running patches after this
+   * returns.
+   */
+  startPipelineForTask?(input: {
+    workItem: WorkItem;
+    task: TaskNode;
+    pendingRecipe?: WorkflowRecipe;
+  }): Promise<{
+    pipelineRunId: string;
+    branch: string;
+    taskStatus: TaskNodeStatus;
+    mergeRequest?: TaskRunLink["mergeRequest"];
+  }>;
+
+  /**
    * V4.2: returns the effective base branch decision for a ready task.
    * Optional so existing callers (tests pre-dating chaining) keep
    * working — when absent, tickWorkItem behaves like V4.1 and uses the
@@ -128,7 +148,12 @@ export interface OrchestrationDeps {
 }
 
 export interface TickResult {
-  dispatched: Array<{ taskId: string; runId: string; branch: string }>;
+  dispatched: Array<{
+    taskId: string;
+    runId: string;
+    branch: string;
+    taskStatus?: TaskNodeStatus;
+  }>;
   /** Tasks that stayed `blocked_by_dependency` because upstream MR isn't merged. */
   blockedByDependency: string[];
   /** Tasks that were ready but did not get a slot this tick. */
@@ -317,6 +342,43 @@ export async function tickWorkItem(
     }
     slots -= 1;
 
+    if (deps.startPipelineForTask) {
+      const pendingRecipe = isWorkflowRecipe(t.pendingRecipe)
+        ? t.pendingRecipe
+        : undefined;
+      const startInput: {
+        workItem: WorkItem;
+        task: TaskNode;
+        pendingRecipe?: WorkflowRecipe;
+      } = {
+        workItem,
+        task: t,
+        ...(pendingRecipe ? { pendingRecipe } : {}),
+      };
+      const pipeline = await deps.startPipelineForTask(startInput);
+      await deps.saveTaskRunLink({
+        taskId: t.taskId,
+        runId: pipeline.pipelineRunId,
+        attempt: 1,
+        status: pipeline.taskStatus,
+        reportId: pipeline.pipelineRunId,
+        branch: pipeline.branch,
+        ...(pipeline.mergeRequest
+          ? { mergeRequest: pipeline.mergeRequest }
+          : {}),
+        startedAt: ts,
+        ...(isTerminalTaskStatus(pipeline.taskStatus) ? { completedAt: ts } : {}),
+      });
+      await deps.saveTaskNode(t.taskId, { status: pipeline.taskStatus });
+      dispatched.push({
+        taskId: t.taskId,
+        runId: pipeline.pipelineRunId,
+        branch: pipeline.branch,
+        taskStatus: pipeline.taskStatus,
+      });
+      continue;
+    }
+
     const dispatchOpts: { baseOverride?: string; chainedFrom?: string } = {};
     if (decision.kind === "chain-from-upstream") {
       dispatchOpts.baseOverride = decision.baseBranch;
@@ -369,6 +431,17 @@ export async function tickWorkItem(
   }
 
   return { dispatched, blockedByDependency, blockedBySlots };
+}
+
+function isTerminalTaskStatus(status: TaskNodeStatus): boolean {
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "blocked" ||
+    status === "needs_rework" ||
+    status === "awaiting_human_review" ||
+    status === "skipped"
+  );
 }
 
 /**

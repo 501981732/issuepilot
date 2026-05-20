@@ -2,8 +2,10 @@ import {
   FAILURE_PATTERN_ID_VALUES,
   QUALITY_METRIC_ID_VALUES,
   QUALITY_STATUS_FILTER_VALUES,
+  type AgentReport,
   type FailurePatternId,
   type FailurePatternSummary,
+  type QualityByRoleSlice,
   type QualityDimension,
   type QualityDirection,
   type QualityDrilldownItem,
@@ -16,7 +18,11 @@ import {
 } from "@issuepilot/shared-contracts";
 
 import { applyQualityFilters, qualityItemId } from "./filters.js";
-import { classifyQualityPatterns, type ClassifiedPattern } from "./patterns.js";
+import {
+  classifyAgentFailure,
+  classifyQualityPatterns,
+  type ClassifiedPattern,
+} from "./patterns.js";
 import type {
   QualityRunSourceItem,
   QualitySourceItem,
@@ -28,6 +34,97 @@ export interface BuildQualitySummaryInput {
   filters: QualitySummaryFilters;
   scope: QualitySummaryResponse["scope"];
   diagnostics: QualitySummaryResponse["diagnostics"];
+  /**
+   * V4.6 增量：传入当前窗口内的 AgentReport 列表用于计算 byRole 切片。
+   * 老 caller 不传等于 undefined，结果不会带 byRole。
+   */
+  agentReports?: AgentReport[];
+}
+
+/**
+ * V4.6 by-role 切片（spec §17.4 / plan Task 10.2）。统计窗口内每个 role 的
+ * 终态 AgentReport：
+ * - coder：`complete` 计入 success；`failed` / `cancelled` 计入对应分母。
+ * - reviewer：按 decision 分桶；`failed` / `cancelled` 计入 unavailable。
+ * - test_evidence：按 status `complete` / `incomplete` / `failed` / `cancelled`
+ *   分桶；`failed` / `cancelled` 当 `unavailable`。
+ */
+export function buildByRoleSlice(reports: AgentReport[]): QualityByRoleSlice {
+  let coderComplete = 0;
+  let coderFailed = 0;
+  let coderCancelled = 0;
+  let reviewerApprove = 0;
+  let reviewerRequestChanges = 0;
+  let reviewerCannotReview = 0;
+  let reviewerUnavailable = 0;
+  let testEvidenceComplete = 0;
+  let testEvidencePartial = 0;
+  let testEvidenceUnavailable = 0;
+  for (const report of reports) {
+    if (report.role === "coder") {
+      if (report.status === "complete") coderComplete += 1;
+      else if (report.status === "failed") coderFailed += 1;
+      else if (report.status === "cancelled") coderCancelled += 1;
+    } else if (report.role === "reviewer") {
+      if (report.status === "complete") {
+        const decision = report.reviewer.decision;
+        if (decision === "approve_with_comments") reviewerApprove += 1;
+        else if (decision === "request_changes") reviewerRequestChanges += 1;
+        else if (decision === "cannot_review") reviewerCannotReview += 1;
+      } else if (report.status === "failed" || report.status === "cancelled") {
+        reviewerUnavailable += 1;
+      }
+    } else if (report.role === "test_evidence") {
+      if (report.status === "complete") testEvidenceComplete += 1;
+      else if (report.status === "incomplete") testEvidencePartial += 1;
+      else if (report.status === "failed" || report.status === "cancelled") {
+        testEvidenceUnavailable += 1;
+      }
+    }
+  }
+  const coderTotal = coderComplete + coderFailed + coderCancelled;
+  const reviewerTotal =
+    reviewerApprove +
+    reviewerRequestChanges +
+    reviewerCannotReview +
+    reviewerUnavailable;
+  const testEvidenceTotal =
+    testEvidenceComplete + testEvidencePartial + testEvidenceUnavailable;
+  const pct = (num: number, den: number): number | undefined =>
+    den === 0 ? undefined : round((num / den) * 100);
+  return {
+    ...(coderTotal > 0
+      ? { coderSuccessRate: pct(coderComplete, coderTotal) ?? 0 }
+      : {}),
+    ...(reviewerTotal > 0
+      ? {
+          reviewerApproveRate: pct(reviewerApprove, reviewerTotal) ?? 0,
+          reviewerCannotReviewRate:
+            pct(reviewerCannotReview, reviewerTotal) ?? 0,
+          reviewerUnavailableRate: pct(reviewerUnavailable, reviewerTotal) ?? 0,
+        }
+      : {}),
+    ...(testEvidenceTotal > 0
+      ? {
+          testEvidenceCompleteRate:
+            pct(testEvidenceComplete, testEvidenceTotal) ?? 0,
+          testEvidencePartialRate:
+            pct(testEvidencePartial, testEvidenceTotal) ?? 0,
+        }
+      : {}),
+    counts: {
+      coderComplete,
+      coderFailed,
+      coderCancelled,
+      reviewerApprove,
+      reviewerRequestChanges,
+      reviewerCannotReview,
+      reviewerUnavailable,
+      testEvidenceComplete,
+      testEvidencePartial,
+      testEvidenceUnavailable,
+    },
+  };
 }
 
 const METRIC_LABELS: Record<QualityMetricId, string> = {
@@ -48,6 +145,19 @@ const PATTERN_LABELS: Record<FailurePatternId, string> = {
   "review-rework": "Review rework",
   "ci-failure": "CI failure",
   "missing-evidence": "Missing evidence",
+  reviewer_unavailable: "Reviewer unavailable",
+  reviewer_requested_changes: "Reviewer requested changes",
+  reviewer_cannot_review: "Reviewer cannot review",
+  evidence_unavailable: "Evidence unavailable",
+  evidence_partial: "Evidence partial",
+  pipeline_cancelled: "Pipeline cancelled",
+  pipeline_init_failed: "Pipeline init failed",
+  role_profile_invalid: "Role profile invalid",
+  runner_unavailable: "Runner unavailable",
+  coding_failed: "Coding failed",
+  sandbox_violation: "Sandbox violation",
+  redaction_failed: "Redaction failed",
+  storage_full: "Storage full",
 };
 
 const STATUS_LABELS: Record<QualityStatusFilter, string> = {
@@ -146,6 +256,15 @@ interface MetricSlice {
   reviewHitRate: { numerator: number; denominator: number };
   missingEvidenceRate: { numerator: number; denominator: number };
   durations: number[];
+}
+
+interface AgentPatternEntry {
+  itemId: string;
+  pattern: ClassifiedPattern;
+  report: AgentReport;
+  projectId: string;
+  workflow: string;
+  updatedAt: string;
 }
 
 function emptySlice(): MetricSlice {
@@ -343,9 +462,96 @@ function buildTrend(
   return trends;
 }
 
+function agentReportTime(report: AgentReport): string {
+  return report.completedAt ?? report.startedAt;
+}
+
+function agentReportHref(report: AgentReport): string {
+  if (report.workItemId) {
+    return `/work-items/${encodeURIComponent(report.workItemId)}?agentReport=${encodeURIComponent(report.agentReportId)}`;
+  }
+  return `/work-items?agentReport=${encodeURIComponent(report.agentReportId)}`;
+}
+
+function agentReportStatusMatches(
+  report: AgentReport,
+  status: NonNullable<QualitySummaryFilters["status"]>,
+): boolean {
+  switch (status) {
+    case "run-failed":
+      return report.status === "failed";
+    case "run-blocked":
+      return (
+        report.status === "failed" &&
+        (report.lastError?.code === "scope_insufficient" ||
+          report.lastError?.code === "reviewer_unavailable" ||
+          report.lastError?.code === "redaction_failed" ||
+          report.lastError?.code === "storage_full")
+      );
+    case "report-incomplete":
+      return report.status === "incomplete";
+    case "run-completed":
+      return report.status === "complete";
+    case "task-needs-rework":
+      return report.lastError?.code === "reviewer_requested_changes";
+    case "task-skipped":
+      return false;
+  }
+}
+
+function buildAgentPatternEntries(
+  reports: AgentReport[] | undefined,
+  filters: QualitySummaryFilters,
+  scope: QualitySummaryResponse["scope"],
+): AgentPatternEntry[] {
+  if (!reports) return [];
+  const fromMs = Date.parse(filters.from);
+  const toMs = Date.parse(filters.to);
+  const projectId =
+    scope.mode === "team-project" && scope.projectId
+      ? scope.projectId
+      : "single-project";
+  const workflow =
+    filters.workflow && filters.workflow.length > 0
+      ? filters.workflow
+      : "v4.6-agent-report";
+
+  const out: AgentPatternEntry[] = [];
+  for (const report of reports) {
+    const updatedAt = agentReportTime(report);
+    const updatedMs = Date.parse(updatedAt);
+    if (
+      !Number.isNaN(fromMs) &&
+      !Number.isNaN(toMs) &&
+      (updatedMs < fromMs || updatedMs > toMs)
+    ) {
+      continue;
+    }
+    const classified = classifyAgentFailure(report);
+    if (!classified) continue;
+    if (filters.status && !agentReportStatusMatches(report, filters.status)) {
+      continue;
+    }
+    if (filters.pattern && classified.patternId !== filters.pattern) continue;
+    out.push({
+      itemId: `agent-report:${report.agentReportId}`,
+      pattern: {
+        patternId: classified.patternId,
+        reason: classified.reason,
+      },
+      report,
+      projectId,
+      workflow,
+      updatedAt,
+    });
+  }
+  return out;
+}
+
 function buildPatternSummaries(
   items: QualitySourceItem[],
   itemPatterns: Map<string, ClassifiedPattern[]>,
+  agentEntries: AgentPatternEntry[] = [],
 ): FailurePatternSummary[] {
   const summaries = new Map<
     FailurePatternId,
@@ -387,7 +593,32 @@ function buildPatternSummaries(
     }
   }
 
-  const totalItems = items.length;
+  for (const entry of agentEntries) {
+    const pattern = entry.pattern;
+    const summary = summaries.get(pattern.patternId) ?? {
+      count: 0,
+      drilldownCount: 0,
+      topProject: new Map<string, number>(),
+      topWorkflow: new Map<string, number>(),
+    };
+    summary.count += 1;
+    summary.drilldownCount += 1;
+    summary.topProject.set(
+      entry.projectId,
+      (summary.topProject.get(entry.projectId) ?? 0) + 1,
+    );
+    summary.topWorkflow.set(
+      entry.workflow,
+      (summary.topWorkflow.get(entry.workflow) ?? 0) + 1,
+    );
+    if (!summary.latestUpdatedAt || entry.updatedAt > summary.latestUpdatedAt) {
+      summary.latestUpdatedAt = entry.updatedAt;
+      summary.latestReason = pattern.reason;
+    }
+    summaries.set(pattern.patternId, summary);
+  }
+
+  const totalItems = items.length + agentEntries.length;
   const out: FailurePatternSummary[] = [];
   for (const [patternId, entry] of summaries) {
     const topProject = [...entry.topProject.entries()].sort(
@@ -445,6 +676,7 @@ function reasonFor(
 function buildDrilldown(
   items: QualitySourceItem[],
   itemPatterns: Map<string, ClassifiedPattern[]>,
+  agentEntries: AgentPatternEntry[] = [],
 ): QualityDrilldownItem[] {
   const out: QualityDrilldownItem[] = [];
   for (const item of items) {
@@ -491,6 +723,38 @@ function buildDrilldown(
       });
     }
   }
+  for (const entry of agentEntries) {
+    out.push({
+      itemId: entry.itemId,
+      patternIds: [entry.pattern.patternId],
+      reason: entry.pattern.reason,
+      projectId: entry.projectId,
+      workflow: entry.workflow,
+      taskType: entry.report.role,
+      task: {
+        taskId: entry.report.taskId,
+        title: `${entry.report.role} report`,
+      },
+      agentReport: {
+        agentReportId: entry.report.agentReportId,
+        role: entry.report.role,
+        status: entry.report.status,
+      },
+      ...(entry.report.pipelineRunId
+        ? {
+            run: {
+              runId: entry.report.pipelineRunId,
+              status: entry.report.status,
+            },
+          }
+        : {}),
+      updatedAt: entry.updatedAt,
+      target: {
+        kind: "agent-report",
+        href: agentReportHref(entry.report),
+      },
+    });
+  }
   out.sort(
     (a, b) =>
       b.updatedAt.localeCompare(a.updatedAt) ||
@@ -499,7 +763,10 @@ function buildDrilldown(
   return out;
 }
 
-function buildDimensions(items: QualitySourceItem[]): QualityDimension[] {
+function buildDimensions(
+  items: QualitySourceItem[],
+  agentEntries: AgentPatternEntry[] = [],
+): QualityDimension[] {
   const dims: QualityDimension[] = [];
   const workflowCounts = new Map<string, number>();
   const taskTypeCounts = new Map<string, number>();
@@ -514,6 +781,20 @@ function buildDimensions(items: QualitySourceItem[]): QualityDimension[] {
     taskTypeCounts.set(
       item.taskType,
       (taskTypeCounts.get(item.taskType) ?? 0) + 1,
+    );
+  }
+  for (const entry of agentEntries) {
+    workflowCounts.set(
+      entry.workflow,
+      (workflowCounts.get(entry.workflow) ?? 0) + 1,
+    );
+    taskTypeCounts.set(
+      entry.report.role,
+      (taskTypeCounts.get(entry.report.role) ?? 0) + 1,
+    );
+    patternCounts.set(
+      entry.pattern.patternId,
+      (patternCounts.get(entry.pattern.patternId) ?? 0) + 1,
     );
   }
 
@@ -558,6 +839,9 @@ function buildDimensions(items: QualitySourceItem[]): QualityDimension[] {
       const classified = classifyQualityPatterns(item).map((p) => p.patternId);
       if (classified.includes(pattern)) count += 1;
     }
+    count += agentEntries.filter(
+      (entry) => entry.pattern.patternId === pattern,
+    ).length;
     if (count > 0) patternCounts.set(pattern, count);
   }
 
@@ -620,12 +904,28 @@ export function buildQualitySummary(
 
   const currentSlice = computeSlice(inWindow);
   const previousSlice = computeSlice(previousItems);
+  const agentPatternEntries = buildAgentPatternEntries(
+    input.agentReports,
+    filters,
+    scope,
+  );
 
   const metrics = buildMetrics(currentSlice, previousSlice);
   const trends = buildTrend(inWindow, filters);
-  const failurePatterns = buildPatternSummaries(inWindow, allClassified);
-  const drilldown = buildDrilldown(inWindow, allClassified);
-  const dimensions = buildDimensions(inWindow);
+  const failurePatterns = buildPatternSummaries(
+    inWindow,
+    allClassified,
+    agentPatternEntries,
+  );
+  const drilldown = buildDrilldown(
+    inWindow,
+    allClassified,
+    agentPatternEntries,
+  );
+  const dimensions = buildDimensions(inWindow, agentPatternEntries);
+  const byRole = input.agentReports
+    ? buildByRoleSlice(input.agentReports)
+    : undefined;
 
   return {
     scope,
@@ -636,5 +936,6 @@ export function buildQualitySummary(
     drilldown,
     dimensions,
     diagnostics,
+    ...(byRole ? { byRole } : {}),
   };
 }

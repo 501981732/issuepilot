@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
-import type { WorkItemDetailResponse } from "@issuepilot/shared-contracts";
+import type {
+  GetPipelineResponse,
+  WorkItemDetailResponse,
+} from "@issuepilot/shared-contracts";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -98,8 +101,12 @@ beforeEach(() => {
 describe("WorkItemDetail", () => {
   it("shows plan editor with Accept / Regenerate when plan is draft and hides task list", () => {
     render(<WorkItemDetail initial={draftDetail()} operator="alice" />);
-    expect(screen.getByRole("button", { name: "Accept plan" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Regenerate" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Accept plan" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Regenerate" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("T1 Title")).toBeInTheDocument();
     // task list (groups) hidden until accepted
     expect(screen.queryByText("Tasks")).not.toBeInTheDocument();
@@ -110,6 +117,28 @@ describe("WorkItemDetail", () => {
     expect(screen.getByText("Tasks")).toBeInTheDocument();
     // Title appears both in plan editor and task list
     expect(screen.getAllByText("T1 Title").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not render V4.6 pipeline sections for null pipelineRun responses", () => {
+    const pipelinesByTask: Record<string, GetPipelineResponse> = {
+      T1: {
+        pipelineRun: null,
+        agentReports: [],
+        pendingRecipe: "full_pipeline",
+        pendingRecipeSource: "workflow_default",
+      },
+    };
+    render(
+      <WorkItemDetail
+        initial={acceptedDetail()}
+        operator="alice"
+        pipelinesByTask={pipelinesByTask}
+        agentReportsByTask={{}}
+      />,
+    );
+    expect(
+      document.querySelector('[data-component="v46-pipeline-sections"]'),
+    ).not.toBeInTheDocument();
   });
 
   it("calls acceptWorkItemPlan with edits + reloads on Accept", async () => {
@@ -196,7 +225,9 @@ describe("WorkItemDetail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
 
-    expect(screen.getByText("No evidence matches this filter.")).toBeInTheDocument();
+    expect(
+      screen.getByText("No evidence matches this filter."),
+    ).toBeInTheDocument();
     expect(getWorkItemGraph).not.toHaveBeenCalled();
   });
 
@@ -212,9 +243,7 @@ describe("WorkItemDetail", () => {
     render(<WorkItemDetail initial={acceptedDetail()} operator="alice" />);
 
     fireEvent.click(screen.getByRole("button", { name: /Evidence/ }));
-    await waitFor(() =>
-      expect(window.location.search).toBe("?view=evidence"),
-    );
+    await waitFor(() => expect(window.location.search).toBe("?view=evidence"));
 
     fireEvent.click(screen.getByRole("button", { name: /List/ }));
     await waitFor(() => expect(window.location.search).toBe(""));

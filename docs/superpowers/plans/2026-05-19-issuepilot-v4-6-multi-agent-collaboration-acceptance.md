@@ -1,0 +1,242 @@
+# IssuePilot V4.6 Multi-Agent Collaboration 验收清单
+
+日期：2026-05-19
+状态：production-ready 本地单机闭环已完成（2026-05-20 production gap closure 通过）
+
+关联文档：
+
+- 设计 spec：`docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
+- 实施计划：`docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`
+- V4 总设计：`docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+- 兼容前提：V4.1~V4.5 acceptance 清单（同目录）。
+
+## 验收标准（spec §24）
+
+> 与 design spec §24 一一对齐。任意一条未完成不得进入 release。
+
+- [x] **(1) Coder → Reviewer → Test/Evidence pipeline**：coordinator
+  按 recipe 顺序串联三个 role，单一 Codex app-server 多 role profile
+  驱动；`pipelines/coordinator.ts` + 8 个 unit suite 覆盖（success / failed
+  / cancelled / partial / publish / scope_insufficient / supersede /
+  retry）。
+- [x] **(2) AgentReport 三角色独立持久化**：`PipelineStore` 写入
+  `agent-reports/<role>/<agent_report_id>.json` + `index.json`，supersede
+  双向链；`pipelines/store.ts` 全套测试覆盖 round trip / supersede chain。
+- [x] **(3) WorkflowRolesConfig 可校验**：`packages/workflow` 在 YAML
+  解析阶段 fail closed（缺 role / prompt-template hash 校验失败 / sandbox
+  非白名单 → `warnings[]`），并由 `/api/workflows/_validate-roles` 暴露给
+  dashboard。
+- [x] **(4) Recipe 三档**：`full_pipeline` / `coding_plus_reviewer` /
+  `coding_only`；`workflowDefault` + operator `pendingRecipe`（写入 task
+  `pendingRecipe` 字段并由 dashboard `RecipeSelector` 操作）；启动后 lock。
+- [x] **(5) PipelineRun 状态机**：覆盖 9 个 status（pending /
+  running_coding / running_reviewer / running_test_evidence /
+  awaiting_human_review / awaiting_rework / partial / failed /
+  cancelled），TaskNode 对应增加 `running_coding` / `running_reviewer`
+  / `running_test_evidence` / `awaiting_human_review`，dashboard
+  `task-list` / `task-graph` 全部上色。
+- [x] **(6) Reviewer publish production wiring + fail soft**：service 层
+  `reviewerPublisher` / dashboard 状态 / fail-soft 语义已实现；production
+  daemon 与 team daemon 通过 tracker-gitlab MR `diff_refs` 注入
+  `publishReviewerToMr()`，reviewer findings 可真实推到 GitLab MR。
+- [x] **(7) Revoke AI Review**：`POST /api/agent-reports/:id/revoke-ai-review`
+  幂等地把 reviewer 在 GitLab MR 上的 note 删除并写
+  `mrPublication.status = revoked`；dashboard `RevokeAiReviewButton`
+  根据 `mrPublication.status` 启用/禁用并显示原因（i18n 全覆盖）。
+- [x] **(8) Cancel + last_cancelled_at**：cancel 写入 task
+  `last_cancelled_at`，下一次 startPipeline 自动清零；`auto_advance` 在
+  `last_cancelled_at` 存在时被抑制；`pipelines/__tests__/auto-advance.test.ts`
+  + e2e `cancel mid-pipeline` 覆盖。
+- [x] **(9) V4.4 quality + V4.5 improvements 接入**：`FailurePatternId`
+  增加 13 个 V4.6 值（reviewer_* / evidence_* / pipeline_* /
+  role_profile_invalid / sandbox_violation / coding_failed / redaction_failed
+  / storage_full）；`QualitySummaryResponse.byRole` 切片；`ImprovementTargetKind`
+  新增 `role_configuration`；dashboard `ByRolePanel` 渲染 6 个 metric tile。
+- [x] **(10) 不破坏现有 V4.1-V4.5**：旧工作单元在 store 读取 lazy
+  migration；dashboard `V46PipelineSections` 仅在 SSR 传入
+  `pipelinesByTask` 时渲染；orchestrator 旧 V4.2 dispatch 路径保留；e2e
+  suite 与 V4.3 / V4.4 / V4.5 e2e 并存通过。
+
+## 验证命令
+
+```bash
+# Shared contracts
+pnpm --filter @issuepilot/shared-contracts exec vitest run
+
+# Orchestrator: pipeline + quality + improvements + e2e
+pnpm --filter @issuepilot/orchestrator exec vitest run \
+  src/pipelines \
+  src/quality \
+  src/improvements \
+  src/server/__tests__/server.test.ts \
+  src/__tests__/v4-6-multi-agent-e2e.test.ts
+
+# Dashboard: lib + components + reports + work-items
+pnpm --filter @issuepilot/dashboard exec vitest run
+
+# 项目级别 gate（任选其一，发布前必须有一种通过）
+bash scripts/ci-equivalent-check.sh
+# 或
+pnpm -r build && pnpm -r lint && pnpm -r test
+
+# 白空格检查
+git diff --check
+```
+
+## 验证记录
+
+- 2026-05-19：`@issuepilot/shared-contracts` 全测通过（含 13 个新
+  `FailurePatternId` / `role_configuration` / `QualityByRoleSlice`
+  断言）。
+- 2026-05-19：`@issuepilot/orchestrator` 全测通过：
+  - 8 个 V4.6 pipeline unit suite（coordinator / store / service /
+    routes / recipe / role-profile / auto-advance / failure-mapping）
+    全绿；
+  - `quality/__tests__/patterns.test.ts` + `aggregate.test.ts` 新增
+    `classifyAgentFailure` + `buildByRoleSlice` 用例全绿；
+  - `improvements/__tests__/templates.test.ts` 新增
+    `role_configuration` 模板用例全绿；
+  - `src/__tests__/v4-6-multi-agent-e2e.test.ts`（本次新增）8 个 e2e
+    场景全绿，覆盖 spec §22.7 全部 7 个核心 + 2 个 plan 补充场景；
+  - server / daemon 测试 PASS；
+- 2026-05-19：`@issuepilot/dashboard` 全测通过（44 文件 / 276 用例），
+  含 V4.6 新增 6 个 agent-report-tabs 用例 / 9 个 revoke 用例 / 12 个
+  recipe 用例 / pipeline-progress 用例 / quality by-role 用例。
+- 2026-05-19：`tsc -b apps/dashboard` 与 `tsc -b apps/orchestrator`
+  PASS；`eslint --max-warnings 0` 覆盖新增 / 修改文件 PASS。
+- 2026-05-19：`git diff --check` PASS（commit 前）。
+- 待发布前：在 CI host 上跑 `bash scripts/ci-equivalent-check.sh`，
+  把输出贴到 PR 描述。
+
+## 视觉验证
+
+- 启动本地 daemon + dashboard 后，打开任意进入 V4.6 pipeline 的工作单元
+  详情页，应能看到：
+  1. `PipelineProgress` 三步可视化（Coder → Reviewer → Test/Evidence），
+     当前 running role 高亮 + recipe badge。
+  2. `RecipeSelector` 在 task 启动前可切换三档；启动后 lock 并显示
+     pending recipe（如果有）。
+  3. `AgentReportTabs` 三 tab：reviewer 面板含 decision badge、findings
+     表格（按 severity 排序）、inline 评论列表、MR publication 状态、
+     `RevokeAiReviewButton`；test_evidence 面板列 evidenceItems。
+- 进入 `/reports` 页面，`ByRolePanel` 渲染 6 个 V4.6 metric tile（含
+  coder success / reviewer approve / cannot_review / unavailable /
+  test_evidence complete / partial），未提供字段以 `—` 占位。
+- 截图脚本仍走 `scripts/release/screenshots.sh`（与 V4.5 acceptance
+  一致），新增 `v4-6-pipeline.png` / `v4-6-reports-by-role.png` 两张
+  对照截图。
+
+## Review follow-up（2026-05-20）
+
+V4.6 code review 标记 4 项 Critical + 5 项 Important。补救实施计划：
+`docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`。
+
+- [x] C1 daemon 装配真实 coder / reviewer / test_evidence agent runner +
+  RoleProfileResolver（Task 4a `7c75a54` / 4b `b068d9d` / 4c `d1af0e1`）。
+  Reviewer MR publisher 已 deferred 到 tracker-gitlab 扩 `diff_refs` 之后，
+  目前 coordinator 在 publisher 缺失时维持
+  `mrPublication = "pending" | "skipped_by_config"`，dashboard 仍可显示。
+- [x] C2 CoderPanel 字段从 `summary` 修正为 `diffSummary`，回归测试覆盖
+  （commit `33c7b13`）。
+- [x] C3 daemon 注入 `revokeReviewerMrComments`，service 撤销时清空
+  `mrPublication.noteIds` 并把 reviewer report 升级为 `revoked`
+  （commits `dca4684` / `fccb4da`）。
+- [x] C4 daemon `buildQualitySummary` 注入 `agentReports`，让
+  `QualitySummaryResponse.byRole` 真有数据，dashboard `ByRolePanel` 端到端
+  可用（commit `5db756f`）。
+- [x] Important 1 PipelineStore.supersede staging-file + rename crash-safe
+  （commit `618fe04`）。
+- [x] Important 2 `service.retryAgentReport` reverse-lookup（commit `bd1de13`）。
+- [x] Important 3 `agent_not_configured` → HTTP 503（commit `423b45e`）。
+- [x] Important 4 dashboard SSR fetch 并发上限 8（commit `0fe290e`）。
+- [x] Important 5 `AgentReportTabs` discriminated-union narrowing
+  （commit `bdbfcd5`）。
+
+新增 daemon-level 集成测试：
+- `apps/orchestrator/src/__tests__/daemon-pipeline-wiring.test.ts` 覆盖
+  `/api/quality/summary` byRole 路径（单 + team mode）、`revoke-ai-review`
+  真删 GitLab note、retry 路径走 coder + reviewer + 后续 testEvidence。
+- `apps/orchestrator/src/__tests__/daemon-task4b-wiring.test.ts` 用
+  `mockedCreateCoordinator` 抓 daemon 注入的 `CoordinatorAgents`，断言
+  coder / reviewer / testEvidence 都不再是 stub，并覆盖 `publishEvent`
+  gate accepts `detail.issueIid` 回归（4c review C1）。
+- `apps/orchestrator/src/agents/__tests__/codex-lifecycle.test.ts` 14 个
+  用例覆盖 lifecycle adapter 全部分支 + `onTurnActive` / ctx 透传。
+- `apps/orchestrator/src/codex/__tests__/split-command.test.ts` 5 个用例。
+
+复跑 `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh` 全 5 stage PASS。
+最终 verification gate（不带 `SKIP_E2E`）由 Task 10 后的 empty
+checkpoint commit 收尾。
+
+## Production gap closure（2026-05-20）
+
+上一轮 follow-up 已修复当时记录的 4 项 Critical + 5 项 Important，并通过
+`SKIP_E2E=1` 本地 gate；复审确认的 production gaps 已在下一轮计划中收口：
+`docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
+
+- [x] 生产 work-item acceptance / dashboard 路径能真实启动
+  `PipelineCoordinator.startPipeline()`，不再只走 legacy `dispatchTask`
+  或测试专用入口。
+- [x] Workflow loader 在生产入口生成 `roles.*.promptTemplateHash`，daemon
+  装配 role profile 不再依赖调用方补 `resolveWorkflow()`。
+- [x] Codex lifecycle adapter 捕获最终 agent 输出；reviewer 不再因为
+  `rawMessage: ""` 固定 `parse_failed`，coder report 有真实 diff / branch
+  摘要。
+- [x] GitLab tracker 返回 MR `diff_refs`，daemon 注入
+  `publishReviewerToMr()`，reviewer inline comments 可真实 publish + revoke。
+- [x] Team daemon revoke、AgentReport failure pattern drilldown、dashboard
+  500 / 503 error visibility 全部补齐。
+- [x] 完整 gate 与 fake GitLab / fake Codex 验收通过后，README / CHANGELOG
+  状态已升级为 V4.6 production-ready。
+
+验证记录：
+
+- 2026-05-20：targeted tests 通过：orchestrator
+  `daemon-task4b-wiring` / `team/daemon` / `server` / `quality/aggregate`、
+  shared-contracts `api`、dashboard work-item SSR / detail / quality analytics。
+- 2026-05-20：`scripts/ci-equivalent-check.sh` 全 stage PASS（`tsc -b`、
+  scripts tsc、Next build、eslint、per-package vitest、`tests/e2e` 51 tests、
+  `git diff --check`）。
+
+## Post-review repair（2026-05-20）
+
+Production gap closure 后再次复审，发现 coder MR、PipelineRun 完成同步、
+same-pipeline publish / revoke、AgentReport drilldown 和 status-filtered
+quality failures 仍有闭环风险；本轮已完成二次修复：
+
+- coder lifecycle 从成功的 `gitlab_create_merge_request` tool result 提取
+  `mergeRequest`，daemon / team daemon 对 V4.6 coder 注入真实 GitLab tools。
+- V4.6 `PipelineRun` 完成后同步写 `RunReportArtifact`、`TaskRunLink` 和
+  `TaskNode`，让 work-item aggregate、handoff 与 downstream dependencies
+  能感知 `awaiting_human_review`。
+- reviewer publish / revoke 按同一个 `pipelineRun.agentReportIds.coder`
+  定位 MR，避免误用同 task 的更新 report。
+- `AgentReport.workItemId` 进入 shared contract，quality drilldown 指向真实
+  work-item detail。
+- `run-failed` / `run-blocked` 等 status filter 下仍保留匹配的 V4.6
+  `AgentReport.lastError` failure rows。
+
+Post-review targeted verification：
+
+- `packages/runner-codex-app-server` lifecycle tests：11 passed。
+- `apps/orchestrator` targeted suites：150 passed。
+- `apps/dashboard` quality analytics tests：10 passed。
+- `npx tsc -b packages/shared-contracts packages/runner-codex-app-server
+  packages/workflow packages/tracker-gitlab apps/orchestrator apps/dashboard`
+  PASS。
+- `git diff --check` PASS。
+- `bash scripts/ci-equivalent-check.sh` 全 stage PASS：`tsc -b`、scripts
+  tsc、Next build、eslint、per-package vitest、`tests/e2e` 51 tests、
+  `git diff --check`。
+
+## Out-of-Scope 自检
+
+- ✅ 没改 `RunStatus` / `PipelineStatus` 历史 enum；V4.6 `PipelineRunStatus`
+  为独立 enum。
+- ✅ 没改 `ai-ready` / `ai-running` / `human-review` / `ai-rework` /
+  `ai-failed` / `ai-blocked` label 状态机。
+- ✅ 没引入 Postgres / 后台 job / LLM 兜底。
+- ✅ 没把 token / 凭据写入 store / dashboard / event / prompt。
+- ✅ 没触碰 `elixir/` 目录。
+- ✅ `/api/quality/summary` 已存在字段语义未变；只在 schema 上新增
+  `byRole` 切片字段（可选）。

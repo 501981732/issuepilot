@@ -15,7 +15,9 @@ describe("V4.5 improvement contracts", () => {
       "prompt_template",
       "project_rules",
       "skill_instruction",
+      "role_configuration",
     ]);
+    expect(isImprovementTargetKind("role_configuration")).toBe(true);
     expect(IMPROVEMENT_RECOMMENDATION_STATUS_VALUES).toEqual([
       "open",
       "accepted",

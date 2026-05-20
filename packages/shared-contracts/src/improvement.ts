@@ -14,6 +14,9 @@ export const IMPROVEMENT_TARGET_KIND_VALUES = [
   "prompt_template",
   "project_rules",
   "skill_instruction",
+  // V4.6 增量（spec §17 / plan Task 10.3）：把 reviewer / test_evidence
+  // role profile 视作可调改的目标，比如 sandbox / tools / prompt 模板路径。
+  "role_configuration",
 ] as const;
 
 export type ImprovementTargetKind =

@@ -205,6 +205,254 @@ describe("parseWorkflowFile", () => {
     });
   });
 
+  it("V4.6: 缺 default_recipe 时 fallback 到 full_pipeline 并 emit warning", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+---
+hello
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.defaultRecipe).toBe("full_pipeline");
+    expect(
+      cfg.warnings?.some((w) => w.code === "default_recipe_missing"),
+    ).toBe(true);
+  });
+
+  it("V4.6: 显式 default_recipe = coding_only 透传", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+default_recipe: coding_only
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.defaultRecipe).toBe("coding_only");
+    expect(
+      cfg.warnings?.some((w) => w.code === "default_recipe_missing"),
+    ).toBe(false);
+  });
+
+  it("V4.6: 非法 default_recipe 抛 WorkflowConfigError", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+default_recipe: nope
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      /default_recipe/,
+    );
+  });
+
+  it("V4.6: roles 块解析 reviewer 字段 + sandbox + run.command allow", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+roles:
+  coder:
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+    tools:
+      - name: gitlab.create_mr
+      - name: run.command
+        allow:
+          - "pnpm build"
+          - "pnpm --filter * test"
+    timeout_seconds: 1800
+  reviewer:
+    prompt_template: "prompts/reviewer.md"
+    sandbox: read_only_worktree
+    publish_to_mr: true
+    severity_threshold: medium
+    max_inline_comments: 25
+    timeout_seconds: 900
+  test_evidence:
+    prompt_template: "prompts/test-evidence.md"
+    sandbox: read_only_source_write_evidence
+    timeout_seconds: 1200
+---
+prompt body
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.roles.coder?.promptTemplate).toBe("prompts/coder.md");
+    expect(cfg.roles.coder?.sandbox).toBe("read_write_worktree");
+    expect(cfg.roles.coder?.tools).toEqual([
+      { name: "gitlab.create_mr" },
+      {
+        name: "run.command",
+        allow: ["pnpm build", "pnpm --filter * test"],
+      },
+    ]);
+    expect(cfg.roles.reviewer?.promptTemplate).toBe("prompts/reviewer.md");
+    if (cfg.roles.reviewer?.role === "reviewer") {
+      expect(cfg.roles.reviewer.publishToMr).toBe(true);
+      expect(cfg.roles.reviewer.severityThreshold).toBe("medium");
+      expect(cfg.roles.reviewer.maxInlineComments).toBe(25);
+    }
+    expect(cfg.roles.test_evidence?.sandbox).toBe(
+      "read_only_source_write_evidence",
+    );
+  });
+
+  it("V4.6: 缺 reviewer role → fallback 到默认 profile 并 emit warning", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+roles:
+  coder:
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.roles.reviewer?.promptTemplate).toBe("prompts/reviewer.md");
+    expect(
+      cfg.warnings?.some(
+        (w) => w.code === "role_default_used" && w.path === "roles.reviewer",
+      ),
+    ).toBe(true);
+  });
+
+  it("V4.6: tools allow ['*'] 抛 WorkflowConfigError 路径 = roles.coder", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+roles:
+  coder:
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+    tools:
+      - name: run.command
+        allow: ["*"]
+---
+hi
+`;
+    try {
+      parseWorkflowString(raw, "/tmp/wf.md");
+      expect.fail("expected WorkflowConfigError");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(WorkflowConfigError);
+      expect((cause as WorkflowConfigError).path).toBe("roles.coder");
+    }
+  });
+
+  it("V4.6: tools allow 仅允许 run.command", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+roles:
+  reviewer:
+    prompt_template: "prompts/reviewer.md"
+    sandbox: read_only_worktree
+    tools:
+      - name: gitlab.note_inline
+        allow: ["whatever"]
+---
+hi
+`;
+    try {
+      parseWorkflowString(raw, "/tmp/wf.md");
+      expect.fail("expected WorkflowConfigError");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(WorkflowConfigError);
+      expect((cause as WorkflowConfigError).path).toBe("roles.reviewer");
+    }
+  });
+
+  it("V4.6: 非法 sandbox 抛 WorkflowConfigError", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+roles:
+  coder:
+    prompt_template: "prompts/coder.md"
+    sandbox: workspace-write
+---
+hi
+`;
+    try {
+      parseWorkflowString(raw, "/tmp/wf.md");
+      expect.fail("expected WorkflowConfigError");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(WorkflowConfigError);
+      expect((cause as WorkflowConfigError).path).toBe("roles.coder");
+    }
+  });
+
+  it("V4.6: tracker.token_scope_requirements 透传", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+  token_scope_requirements:
+    - api
+    - read_repository
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.tracker.tokenScopeRequirements).toEqual([
+      "api",
+      "read_repository",
+    ]);
+  });
+
+  it("V4.6: tracker.token_scope_requirements 非数组抛错", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+  token_scope_requirements: "api"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      WorkflowConfigError,
+    );
+  });
+
   it("parses workflow content from a generated source path", () => {
     const raw = `---
 tracker:

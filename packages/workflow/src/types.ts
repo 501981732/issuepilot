@@ -9,6 +9,12 @@ export interface TrackerConfig {
    * (see spec §22 decision 3).
    */
   tokenEnv?: string;
+  /**
+   * V4.6 spec §10：可选的 token scope 要求列表（例如 `["api"]`）。
+   * orchestrator 在 reviewer 启动前做 token scope probe，缺 scope 时
+   * reviewer 进 `cannot_review`（spec §16）。
+   */
+  tokenScopeRequirements?: string[];
   activeLabels: string[];
   runningLabel: string;
   handoffLabel: string;
@@ -110,6 +116,30 @@ export interface WorkflowConfig {
   pollIntervalMs: number;
   promptTemplate: string;
   source: WorkflowSource;
+  /**
+   * V4.6 spec §10：workflow 顶层 `default_recipe` 字段。
+   * 缺省时 fallback 到 `full_pipeline`（V4.6 把三角色 pipeline 作为
+   * 新默认；若想保留 V4.5 单 coder 行为需显式声明 `coding_only`）。
+   */
+  defaultRecipe: WorkflowRecipe;
+  /**
+   * V4.6 spec §10：workflow 顶层 `roles:` 节。
+   * 缺省时 fallback 到内置 best-effort 默认 role profile（仅 P0 提供）。
+   * `parse.ts` emit `result.warnings[]` 提示运维者显式声明 roles。
+   */
+  roles: WorkflowRolesConfig;
+  /**
+   * Parser-emit 的可见警告（V4.6 default_recipe / roles 升级提示等）。
+   * 主流程不消费此字段；dashboard / CLI 用于提示运维者升级配置。
+   */
+  warnings?: WorkflowConfigWarning[];
+}
+
+export interface WorkflowConfigWarning {
+  code: string;
+  message: string;
+  /** YAML 字段路径，例如 `roles.coder` / `default_recipe`。 */
+  path: string;
 }
 
 export interface IssuePromptInfo {
@@ -127,9 +157,16 @@ export interface IssuePromptInfo {
 import type {
   RetentionConfig,
   ReviewFeedbackSummary,
+  WorkflowRecipe,
+  WorkflowRolesConfig,
 } from "@issuepilot/shared-contracts";
 
-export type { RetentionConfig, ReviewFeedbackSummary };
+export type {
+  RetentionConfig,
+  ReviewFeedbackSummary,
+  WorkflowRecipe,
+  WorkflowRolesConfig,
+};
 
 export interface PromptContext {
   issue: IssuePromptInfo;

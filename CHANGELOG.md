@@ -2,10 +2,1053 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased] V4.6 Multi-Agent Collaboration（plan 阶段）
+## [Unreleased] V4.6 Multi-Agent Collaboration（实施阶段）
+
+### Plan & Acceptance
+
+- 设计 spec：
+  `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`。
+- 实施计划：
+  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`。
+- 验收清单：
+  `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
+- V4 roadmap 更新：
+  `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
+  记录 V4.6 production-ready 本地单机闭环已完成；生产缺口收口记录见
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
+
+### Tests
+
+- `@issuepilot/shared-contracts`：扩展 `FailurePatternId` / `byRole` /
+  `role_configuration` 用例，全量 vitest 通过。
+- `@issuepilot/orchestrator`：8 个 V4.6 pipeline 套件（coordinator / store
+  / service / routes / recipe / role-profile / auto-advance /
+  failure-mapping）+ `quality/patterns` / `quality/aggregate` /
+  `improvements/templates` + `__tests__/v4-6-multi-agent-e2e.test.ts`
+  （本次新增，spec §22.7 全部 7 个核心 + 2 个 plan 补充共 8 个 e2e 场景
+  全绿）；production gap closure 后 orchestrator 全量 78 文件 / 925 用例通过。
+- `@issuepilot/dashboard`：44 个测试文件 / 281 个用例全部通过，新增
+  pipeline-progress / recipe-selector / revoke-ai-review-button /
+  agent-report-tabs / quality byRole 渲染断言，以及 work-item SSR 500 / 503
+  可见性回归。
+- `apps/orchestrator/src/server/__tests__/server.test.ts` 覆盖 V4.6 新
+  路由（pipeline / agent-reports / retry / skip / revoke /
+  recipe-override / validate-roles）。
+- 项目级 gate：`scripts/ci-equivalent-check.sh`（或 `pnpm -r build && lint
+  && test`）在发布前必须通过；本次 Phase 12 Task 12.6 单独跑过。
+
+### Notes
+
+- V4.6 不破坏现有 V4.1~V4.5 行为：
+  - GitLab label 状态机（`ai-ready` / `ai-running` / `human-review` /
+    `ai-rework` / `ai-failed` / `ai-blocked`）保持不动。
+  - 旧工作单元在 `pipelines/store.ts` 读取时做 lazy migration，dashboard
+    `V46PipelineSections` 仅在 SSR 传入 `pipelinesByTask` 时渲染，旧路径
+    自动回退到 V4.5。
+  - V4.4 `/api/quality/summary` 已存在字段语义不变；只新增可选 `byRole`
+    切片。
+- Reviewer publish 的 service 层、fail-soft 语义、production daemon
+  publisher、team daemon publisher/revoke 均已接入 GitLab MR `diff_refs`；
+  `mrPublication.noteIds` 可被 dashboard revoke 路径真实清理。
+- V4.6 **仅本地单机闭环**：未实现 Claude Code / 其他 runner adapter、
+  生产 worker 调度、Postgres 持久化、LLM 兜底；这些目标都留给 V3。
+- GitLab 凭据只在 process memory 中流转；`mrPublication.noteIds` 是唯一
+  持久化的 token 相邻值，revoke 时会轮转，绝不写入 store / dashboard /
+  event / prompt。
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up review fixes (critical C1-C4 + important
+  1-5) — consolidated summary**：详细 per-task 条目见本段下方。本次 follow-up
+  合并了上一轮 review 记录的修复，但复审确认 V4.6 仍未达到
+  production-ready：
+  - **C1** daemon 装配真实 coder / reviewer / test_evidence agent runner —
+    `apps/orchestrator/src/agents/codex-lifecycle.ts` 共用 lifecycle adapter
+    （Task 4a `7c75a54`）；`daemon.ts` + `team/daemon.ts` 接入 coder + reviewer
+    （Task 4b `b068d9d`）；test_evidence + 默认 scanner-snapshot collector
+    （Task 4c `d1af0e1`）。reviewer publisher 已 deferred 到 tracker-gitlab
+    扩 `diff_refs` 之后，daemon 内有注释 + spec §12 tracking；目前 coordinator
+    在 publisher 缺失时维持 `mrPublication = "pending" | "skipped_by_config"`。
+  - **C2** CoderPanel 字段从 `summary` 修正为 `diffSummary`，对应回归测试
+    （commit `33c7b13`）。
+  - **C3** daemon 注入 `revokeReviewerMrComments`，service 撤销时清空
+    `mrPublication.noteIds`，与 spec §12 一致（commits `dca4684` / `fccb4da`）。
+  - **C4** daemon `buildQualitySummary` 注入 `agentReports`，让
+    `QualitySummaryResponse.byRole` 与 dashboard `ByRolePanel` 真生效
+    （commit `5db756f`）。
+  - **Important 1** PipelineStore.supersede staging-file + rename crash-safe
+    （commit `618fe04`）。
+  - **Important 2** `service.retryAgentReport` 走 `store.getPipelineRunByIdOnly`
+    reverse-lookup（commit `bd1de13`）。
+  - **Important 3** `agent_not_configured` → HTTP 503 `service_unavailable`
+    路由映射（commit `423b45e`）。
+  - **Important 4** dashboard SSR fetch 并发上限 8（commit `0fe290e`）。
+  - **Important 5** `AgentReportTabs` 用 discriminated-union narrowing 替代
+    `as` 强转（commit `bdbfcd5`）。
+  - 验证：`SKIP_E2E=1 bash scripts/ci-equivalent-check.sh` 全 5 stage PASS；
+    新增 `daemon-pipeline-wiring.test.ts` + `daemon-task4b-wiring.test.ts`
+    + `codex-lifecycle.test.ts` + `split-command.test.ts` 共 27+ 个 V4.6
+    follow-up 直接相关用例全绿；最终 verification gate 见 Task 10 后的
+    empty checkpoint commit。
+  - 完整补救计划：
+    `docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`。
+- 2026-05-20 — **V4.6 production gap closure plan opened**：新增下一轮
+  production gap closure 计划，明确阻塞项包括生产 work-item 启动入口、
+  workflow role `promptTemplateHash`、Codex final output 捕获、GitLab MR
+  `diff_refs` publisher、team revoke、AgentReport failure drilldown 与
+  dashboard 500 / 503 可见性。完成该计划前，README / CHANGELOG / acceptance
+  只声明 “V4.6 基础实现已落地，production gap closure 进行中”。计划：
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
+- 2026-05-20 — **V4.6 production gap closure completed**：把 V4.6 从
+  “基础实现已落地”推进到本地单机 production-ready 闭环：
+  - workflow loader 生产入口调用 `resolveWorkflow()`，daemon 直接拿到稳定
+    `roles.*.promptTemplateHash`。
+  - work-item acceptance / dashboard operator 路径通过
+    `PipelineCoordinator.startPipeline()` 启动真实 `PipelineRun`，legacy
+    `dispatchTask` 作为 fallback 保留。
+  - Codex lifecycle adapter 捕获 final message；reviewer JSON 可解析，
+    coder report 写入真实 branch + diff summary。
+  - tracker-gitlab 映射 MR `diff_refs`；单 daemon 与 team daemon 注入
+    `publishReviewerToMr()` 和 `revokeReviewerMrComments()`，inline note
+    publish / revoke 走同一套 `noteIds` 审计路径。
+  - quality aggregate 把 V4.6 `AgentReport.lastError` 纳入
+    `failurePatterns` / drilldown；dashboard SSR 对 pipeline 500 / 503 不再
+    静默吞掉，并且 `pipelineRun: null` 不渲染空 V4.6 panel。
+  - 验证：`scripts/ci-equivalent-check.sh` 全 stage PASS（tsc、Next build、
+    eslint、per-package vitest、`tests/e2e` 51 tests、`git diff --check`）。
+- 2026-05-20 — **V4.6 post-review production repair**：复审后补齐 5 个
+  闭环缺口：coder lifecycle 记录 GitLab MR tool result；单 daemon / team
+  daemon 给 V4.6 coder 注入真实 GitLab tools；`PipelineRun` 完成后同步
+  `RunReportArtifact`、`TaskRunLink` 与 `TaskNode` 状态；reviewer publish /
+  revoke 使用同一 pipeline 的 coder report；quality AgentReport drilldown
+  指向真实 work-item，并且 status filter 不再隐藏 V4.6 agent failures。
+  - 验证：runner lifecycle 11 tests、orchestrator targeted 150 tests、
+    dashboard quality analytics 10 tests、宽 `tsc -b`、`git diff --check`
+    均通过；最终 `scripts/ci-equivalent-check.sh` 全 stage PASS（含
+    orchestrator 78 文件 / 928 用例、dashboard 44 文件 / 281 用例、
+    `tests/e2e` 51 用例）。
+- 2026-05-20 — **V4.6 follow-up Critical #1 part 3/3（单 daemon + team
+  daemon 接通 V4.6 test_evidence agent，移除最后一个
+  `agent_not_configured` stub）**：把 4a/4b 落地的
+  `createTestEvidenceAgent` 真正接到 `apps/orchestrator/src/daemon.ts`
+  和 `apps/orchestrator/src/team/daemon.ts` 的 V4.6 pipeline 装配块。
+  这之前两条 daemon 在 V4.6 pipeline 组装时把
+  `CoordinatorAgents.testEvidence` 打成
+  `CoordinatorError(..., "agent_not_configured")` 抛错 stub，导致 V4.6
+  pipeline 走到 reviewer 之后无法继续；4c 收口后 V4.6 multi-agent
+  pipeline 在单 + team 两条 daemon 上都不再有任何 stub。
+  - 新增 `apps/orchestrator/src/agents/evidence-collectors.ts`：导出
+    `createDefaultEvidenceCollectors()` / `collectorsForTask(task)`。
+    当前默认 collector 只有一条 `scanner-snapshot`：检查
+    `<evidenceDir>` 是否存在且非空——存在产物则 emit
+    `{kind:"command_output", target:"evidence-scanner",
+    source:"scanner", status:"collected", artifactPath:evidenceDir}`，
+    缺失则 emit `status:"skipped"`。诚实可落地的 4c 默认行为：把
+    V4.5 dispatch 路径已经写到 `<workspace.root>/<projectSlug>/
+    <issueIid>/.issuepilot/evidence/<taskId>` 的产物聚合成一条
+    evidence item，dashboard 能跳转 artifactPath；per-file 切片留给
+    V4.7（agent 协议需要扩 `CollectorOutcome | CollectorOutcome[]`
+    才能 emit 多条 item）。
+  - `daemon.ts` / `team/daemon.ts` 装 `createTestEvidenceAgent({})` 并
+    在 `pipelineAgents.testEvidence` 的 adapter 里：narrow profile 成
+    `TestEvidenceRoleProfile`（runtime guard +
+    `CoordinatorError("role_profile_invalid")`）、按 task 算
+    `evidenceDir` 路径（与 V4.5 `scanRunEvidence` 输出一致）、调
+    `collectorsForTask(task)` 拿默认 collector 集，再把
+    `testEvidenceAgent.run(...)` 的 `kind: "report"` / `kind:
+    "cancelled"` 结构直接当成 `AgentRunResult` 返回。
+  - **lifecycle adapter `onEvent` 扩成 3-arg**：
+    `CodexLifecycleOptions.onEvent: (type, data, ctx: { workItem, task,
+    role }) => void`。daemon 闭包之前用占位 `runId:
+    "pipeline-coder" / "pipeline-reviewer"` 调 `publishEvent`，
+    `daemon.ts:884-922` 里 `event.detail.issueIid` 找不到、
+    `runIndex.get(runId)` 也找不到→eventStore.append 直接 skip。4c 让
+    daemon 闭包从 ctx 取 `workItem.sourceIssue.iid` / `task.taskId` /
+    `role`，写入 `event.detail` 并把 `runId` 升级为
+    `pipeline-<taskId>-<role>`：eventStore 现在能真正落库，dashboard
+    可按 task / role 过滤 codex_v46_* 事件。team-mode 同理把 ctx
+    字段写到 `event.detail` 让 SSE consumer 能 fan-out。
+  - 测试：
+    - `agents/__tests__/codex-lifecycle.test.ts` 新增 2 条 describe
+      （`onEvent ctx 透传（Task 4c）`）：(a) 用 fake
+      `driveLifecycle` 主动触发 `input.onEvent('task_started', …)`，
+      断言 adapter 把 ctx 透到 daemon 注入的 3-arg 闭包，coder /
+      reviewer 各一次；(b) 未传 onEvent 时 adapter 给 lifecycle 一个
+      no-op，不抛错。
+    - `__tests__/daemon-task4b-wiring.test.ts` 把现有 4b 两条用例的
+      testEvidence 断言从「rejects `agent_not_configured`」改成
+      「resolves report + role + pipelineRunId + 至少 1 条 evidence
+      item」；并新增 `Task 4c — V4.6 daemon testEvidence wiring (C1
+      part 3/3)` describe，2 条用例：(a) 预先在 evidenceDir 写一个
+      `playwright.zip` dummy，断言 report.status="complete" +
+      items[0].status="collected" + `evidenceLinks=[evidenceDir]`；
+      (b) 故意送 coder profile 断言 narrow guard 翻成
+      `role_profile_invalid` 而不是把脏 profile 透给 agent。
+  - 验证：`scripts/ci-equivalent-check.sh`（SKIP_E2E=1）全 5 个 stage
+    通过：`tsc -b` clean、`tsc -p scripts/tsconfig.json` clean、`next
+    build` clean、`eslint --max-warnings 0` clean、orchestrator
+    vitest 78 文件 / 915 用例全绿、dashboard vitest 44 文件 / 277 用例
+    全绿、`git diff --check` clean。
+  - Review 修复（2026-05-20 commit amend，原 SHA `bf1e360`）：
+    - **Block 1（publishEvent gate 漏掉 codex_v46_* 事件）**：
+      `daemon.ts` `publishEvent` 的 issueIid 解析链原本只读
+      `runIndex.get(record.runId)` / `state.getRun(record.runId)`，
+      合成 runId `pipeline-<taskId>-<role>` 永远不在 map 里，导致
+      gate 在 `!issueIid` 处短路、`eventStore.append` 被静默跳过。
+      把 `event.detail.issueIid` / `event.detail.iid` 加入解析链
+      （仅接受 finite 正整数，复用上面 `fallbackEventIssue` 已经在
+      读的同一对字段），现在 codex_v46_* 事件真正落到
+      `<workspace.root>/.issuepilot/events/<projectSlug>-<iid>.jsonl`。
+      `team/daemon.ts` 没有自己的 eventStore append（事件统一走
+      `eventBus.publish`），同源 bug 不存在，仅在注释中标注。
+    - 回归测试：`__tests__/daemon-task4b-wiring.test.ts` 新增
+      `Task 4c review — publishEvent gate accepts detail.issueIid`
+      describe，真起 daemon、用 mocked driveLifecycle 触发
+      `onEvent("task_started", ...)`，轮询读 jsonl 文件断言
+      `type=codex_v46_coder_task_started` + 顶层
+      `issueIid` / `taskId` / `role` / `runId` /
+      `issue.iid` 字段全部正确（toEventRecord 把 detail flatten
+      到顶层；fallbackEventIssue 重建 issue 字段）。把 daemon.ts
+      gate 改动 stash 掉后这条测试必红 —— 已现场验证。
+    - **Block 2（empty evidenceDir → testEvidence failed）**：
+      之前 `scanner-snapshot` 在 evidenceDir 不存在 / 为空时 emit
+      `{kind:"item", status:"skipped"}`，agent 会把 final status
+      翻成 `failed` + `evidence_unavailable`（`test-evidence.ts:
+      189-204` 的 `allFailed = items.length > 0 && !hasCollected`
+      逻辑）。从 dashboard 看，「首跑还没攒证据」与「证据收集真的
+      失败」无法区分，UX 与保留 `agent_not_configured` 几乎等价。
+      修复：`agents/test-evidence.ts` `CollectorOutcome` 加一个
+      `{ kind: "noop" }` variant，agent 循环 `if (out.kind ===
+      "noop") continue;` 直接跳过；`scanner-snapshot` 在 evidenceDir
+      不存在 / 为空时 emit `{kind:"noop"}`。现在首跑 testEvidence
+      正确落 `status="complete"` + `evidenceItems=[]`。
+      测试：`agents/__tests__/test-evidence.test.ts` 新增 2 条
+      用例（混合 noop + collected 时 noop 被跳过；纯 noop 时
+      items.length===0 + status=complete）；`daemon-task4b-wiring.
+      test.ts` 把 4b 单 + team daemon 的「empty evidenceDir」断言
+      从 `status="failed" + evidence_unavailable` 改成
+      `status="complete" + evidenceItems=[]`；Task 4c collected
+      branch 测试不变（dummy file → status=complete + items[0].
+      status="collected" + artifactPath=evidenceDir）。
+    - **Nit（evidenceDirFor 注释失真）**：之前注释「与 V4.5
+      `scanRunEvidence` 输出路径一致」事实上不对，V4.5 按 runId
+      切 (`<taskWorktreePath>/.issuepilot/evidence/<runId>`)，V4.6
+      按 taskId 切 (`<workspace.root>/<projectSlug>/<issueIid>/
+      .issuepilot/evidence/<taskId>`)。两条 daemon 的 evidenceDirFor
+      注释已校正为「共享 `.issuepilot/evidence/` 父目录；V4.5
+      按 runId partition，V4.6 按 taskId partition」。
+  - 已知折中（TODO V4.7，源码注释已标注）：(a) 默认 collector 只
+    在有产物时 emit 一条快照式 evidence item；要 per-file 必须扩
+    agent `CollectorOutcome` 协议为 batch outcome（plan note 已
+    允许，但跨契约改动留给 V4.7）。(b) lifecycle adapter 仍未捕获
+    reviewer 的最终 message，4b 注释里的 `parse_failed` 现状不变。
+    (c) test_evidence agent 没有 codex lifecycle，所以暂时不需要
+    ctx threading；当未来 test_evidence 改成挂 lifecycle 时，4c
+    这套 adapter 已经把 ctx 通路开好。
+
+- 2026-05-20 — **V4.6 follow-up Critical #1 part 2/3（单 daemon + team
+  daemon 接通 V4.6 coder + reviewer agents）**：把 4a 落地的
+  `createCoderLifecycle` / `createReviewerLifecycle` 真正接到
+  `apps/orchestrator/src/daemon.ts` 和 `apps/orchestrator/src/team/
+  daemon.ts` 的 V4.6 pipeline 装配块。这之前两条 daemon 在 V4.6 pipeline
+  组装时统一把 `CoordinatorAgents.coder` / `reviewer` / `testEvidence`
+  打成 `CoordinatorError(..., "agent_not_configured")` 抛错 stub，导致
+  V4.6 pipeline 在 dashboard 一发起就 503；`RoleProfileResolver`
+  也只是返回 `null`，让 coordinator 直接抛 `role_profile_invalid`。
+  - daemon 内联以 `splitCommand + spawnRpc + driveLifecycle` 封装 coder /
+    reviewer 真实 lifecycle：先把工作目录 (`codexCwdFor`) 锚定到
+    `workflow.workspace.root/<projectSlug>/<issueIid>`（对齐
+    `packages/workspace/src/worktree.ts` 的 `ensureWorktree` 真实落盘形状；
+    V4.6 暂未由 daemon 主动调用 `ensureWorktree`，缺失 worktree 时 Codex
+    会因 cwd 不存在被 `mapCoderOutcome` / `mapReviewerOutcome` 翻成
+    `runner_unavailable` / `coding_failed` 落到 AgentReport，而不是 crash
+    daemon；正式 worktree 触发随 V4.7 上来）。
+  - `CoordinatorAgents` 注入薄 adapter：把 `AgentRunInput` narrow 成
+    `CoderRoleProfile` / `ReviewerRoleProfile`（runtime guard +
+    `CoordinatorError("role_profile_invalid")`），把 `cwd` 注入，再把
+    `coderAgent.run(...)` / `reviewerAgent.run(...)` 的 `kind: "report"`
+    / `kind: "cancelled"` 结构直接当成 `AgentRunResult` 返回。
+    `testEvidence.run()` 仍抛 `agent_not_configured`（Task 4c 接）。
+  - `pipelineRoleProfileResolver` 改为读 `workflow.roles` 并调
+    `buildRoleProfile({ role, workItem: {id, iid, title, description?},
+    task: {id, title, description?} })`；workflow 缺角色配置时仍返回
+    `null` 保留旧 503 路径，作为 dashboard 友好降级。
+  - reviewer publisher **故意不注入** CoordinatorAgents：spec §12 的
+    `publishReviewerToMr` 要求 `MrRef { iid, baseSha, startSha, headSha }`，
+    但 `packages/tracker-gitlab/src/merge-requests.ts:126-134` 的
+    `getMergeRequest` 当前只暴露 `{iid, webUrl, state}`，缺 diff_refs。
+    扩 `MergeRequestSummary` 是跨 package 改动，明确不在 critical-fix
+    范围内。coordinator 在 publisher 缺失时仍能跑：reviewer 报告正常落
+    盘，`mrPublication` 保持 agent 初始化值（`pending` /
+    `skipped_by_config`），dashboard 能完整显示。源码注释和 CHANGELOG
+    都明确把这一点 deferred 到 Tracking 项
+    `docs/superpowers/specs/2026-05-11-issuepilot-design.md §12`。
+  - 代码移动：`splitCommand` 从 `daemon.ts:343-392` 抽到新模块
+    `apps/orchestrator/src/codex/split-command.ts`，避免
+    `agents/codex-lifecycle.ts` 通过 `daemon.ts` 形成函数级循环引用；
+    `daemon.ts` 用 `export { splitCommand } from "./codex/split-command.js"`
+    保留向后兼容（既有 `index.ts` / 测试沿用 `daemon.ts` 入口 import）。
+  - 测试：新增 `apps/orchestrator/src/codex/__tests__/split-command.
+    test.ts`（5 条 smoke：简单命令 / 双引号路径 / 混合引号 / 空字符串
+    throws / 不平衡引号 throws）；新增 `apps/orchestrator/src/__tests__/
+    daemon-task4b-wiring.test.ts`（2 条：单 daemon + team daemon，
+    `vi.mock("@issuepilot/runner-codex-app-server", …)` 注入 fake
+    `spawnRpc` / `driveLifecycle`，再用 `vi.mock("../pipelines/
+    coordinator.js", …)` 透传 spy 抓取 daemon 真正注入的 agents +
+    resolver，断言 (a) `agents.coder.run(...)` 真的走过
+    `driveLifecycle`、(b) reviewer 同理、(c) `testEvidence` 仍抛
+    `agent_not_configured`、(d) `agents.reviewerPublisher` 未注入、
+    (e) `roleProfileResolver.resolveRoleProfile("coder", …)` 返回
+    `roleProfileId: "coder@…"` 且 prompt 渲染了 `{{task.title}}`）。
+  - 验证：`vitest run`（orchestrator 78 文件 / 911 用例）全绿；
+    `tsc -b apps/orchestrator` clean；`eslint --max-warnings 0` 五个
+    本次改动文件 clean。
+
+- 2026-05-20 — **V4.6 follow-up Critical #1 part 1/3（Codex lifecycle 适配器）**：
+  `apps/orchestrator/src/daemon.ts:618-643` 和 `apps/orchestrator/src/team/
+  daemon.ts:299-323` 当前对三个 V4.6 角色（coder / reviewer / test_evidence）
+  统一抛 `agent_not_configured`，导致 V4.6 pipeline 无法实际跑通。Critical #1
+  的核心是把 daemon 内既有的 `splitCommand + spawnRpc + driveLifecycle`
+  闭包（daemon.ts:1234-1296）抽成 reusable adapter，再在 4b（单 daemon）/
+  4c（team daemon）把三个角色逐一插上去。
+  - 新增 `apps/orchestrator/src/agents/codex-lifecycle.ts`：导出
+    `createCoderLifecycle(opts)` / `createReviewerLifecycle(opts)` 两个
+    工厂，分别实现 `CoderLifecycleRunner` / `ReviewerLifecycleRunner`。
+    `CodexLifecycleOptions` 接 `workflow.codex` + `workflow.agent.maxTurns`
+    + `threadName({ workItem, task, role })` 回调 + 可选 `tools()` /
+    `now()` / `onEvent()` 测试 seam。
+  - `mapCoderOutcome` 把 `DriveResult.status` 5 个值穷尽映射到
+    `CoderLifecycleOutcome`：`completed` → `kind: "completed"`，`failed` /
+    `timeout` / `blocked` → `kind: "failed"` 且 `reason: "coding_failed"`
+    （timeout 的 message 包含 `lifecycle timed out`），`cancelled` →
+    `kind: "cancelled"` 并用 `opts.now()` 写 `cancelledAt`。
+  - `mapReviewerOutcome` 同形状但 `reason: "reviewer_unavailable"`，
+    `completed` 走 `kind: "message"` 路径。
+  - 同步抛错（`splitCommand` / `spawnRpc` / `driveLifecycle` 任一阶段）
+    不被吞，直接冒泡，让上游 `createCoderAgent` / `createReviewerAgent`
+    自己的 `try { lifecycle.run() }` catch 翻成 `runner_unavailable` /
+    `sandbox_violation` / `reviewer_unavailable`（与 daemon 旧闭包行为
+    一致）。`rpc.close()` 写在 `finally`，无论成功 / reject / cancel 都
+    只关一次，匹配 daemon.ts:1294 的现行习惯。
+  - 已知折中（TODO V4.7，已在源码注释中标注）：lifecycle 本身不暴露
+    worktree diff 或 reviewer agent 的最终 message，所以
+    `CoderLifecycleRunResult.diffSummary` / `branch` 与
+    `ReviewerLifecycleResult.rawMessage` 都先 pass `""`；下游
+    `createCoderAgent` 已经在 `outcome.partial?.* ?? ""` 上做了兜底，
+    reviewer 侧的空 `rawMessage` 会被 `parseReviewerMessage` 翻成
+    `prompt_output_schema_mismatch`，再由 `createReviewerAgent` 转成
+    `parse_failed`——这是诚实的中间态，4b/4c 会把真正的 message 抓取
+    链路再补上来。
+  - `splitCommand` 复用 `daemon.ts:343` 既有导出（不搬走），避免引入
+    跨模块改动；目前 daemon 没有反向 import 本新模块，所以 4a 不构成
+    循环依赖。4b/4c 会让 daemon 反向 import 本模块，届时与 `daemon.ts`
+    的 `splitCommand` 形成函数级 cycle——ESM 下函数 cycle 在运行时安全，
+    但若觉得脆弱，4b 落地时可把 `splitCommand` 单独拆到 `shared/` 子
+    模块。
+  - 单测：新增 `apps/orchestrator/src/agents/__tests__/codex-lifecycle.
+    test.ts` 8 个用例（`vi.mock("@issuepilot/runner-codex-app-server", …)`
+    注入 fake `spawnRpc` / `driveLifecycle`）覆盖 coder
+    completed / failed / cancelled、spawn 同步抛错冒泡、driveLifecycle
+    reject 时 finally 仍 close、reviewer completed / failed、
+    `threadName` 收到正确 `role`。
+  - 验证：`vitest run src/agents/__tests__/codex-lifecycle` 8/8 全绿；
+    `tsc -b apps/orchestrator` clean；`eslint --max-warnings 0` 两文件
+    clean。本次 **不** 修改 `daemon.ts` / `team/daemon.ts` /
+    `coder.ts` / `reviewer.ts`——把 4a 收口在新文件 + 单测，4b/4c 再拿
+    本 adapter 替换 daemon 里的 `agent_not_configured` 兜底。
+
+- 2026-05-20 — **V4.6 follow-up Important #9（`AgentReportTabs` 用
+  discriminated-union narrowing）**：`apps/dashboard/components/work-items/
+  agent-report-tabs.tsx` 之前用 `activeRole === "coder" | "reviewer"` 分支
+  渲染 panel，再把 `activeReport` `as CoderAgentReport` /
+  `as ReviewerAgentReport` / `as TestEvidenceAgentReport` 强转传给 panel。
+  Task 1 已经收紧了 `CoderPanel`，本次收尾 reviewer / test_evidence：
+  - 改为 `activeReport.role === "coder" | "reviewer"`，让 TypeScript 自己
+    在 `AgentReport` 的 discriminated union 上做 narrowing，三个 panel 全部
+    直接接收 narrowed `activeReport`，删除三处 `as` 强转。
+  - `ROLES` 顺序与 `activeRole` 的 `data-testid` 语义（`agent-tab-${role}` /
+    `agent-empty-${activeRole}`）保持不动，仅把 panel-render 分支切到
+    `activeReport.role`。
+  - 防御性收益：若 `reports.reviewer` 因数据漂移塞进了 `CoderAgentReport`，
+    旧代码会渲染 `<ReviewerPanel>` 并在访问 `.reviewer` 时崩溃；新代码按
+    实际 `role` dispatch 到正确 panel，行为更安全。
+  - `CoderAgentReport` / `ReviewerAgentReport` / `TestEvidenceAgentReport`
+    type imports 仍保留给三个 panel 的入参签名。
+  - 验证：`vitest run components/work-items/agent-report-tabs` 7/7 全绿；
+    `tsc -b apps/dashboard` clean；`eslint --max-warnings 0
+    components/work-items/agent-report-tabs.tsx` clean。
+
+- 2026-05-20 — **V4.6 follow-up Important #8（dashboard SSR fetch 并发上
+  限）**：`apps/dashboard/app/work-items/[id]/page.tsx` 之前对每个 task 用
+  无界 `Promise.all` fetch pipeline，再 task-by-task `Promise.all` fetch 三
+  role agent-report；task 数量大时会向 orchestrator 同时打出 N + 3N 个
+  请求，把连接池打爆、SSR P95 时延爆炸。本次新增 module-scope
+  `withConcurrency(items, worker, concurrent = 8)` helper，用
+  `Promise.allSettled` + 8 并发上限同时给两个阶段限流：
+  - pipeline fetch：把 `taskIds.map` 包进 `withConcurrency`，单批 ≤ 8。
+  - agent-report fetch：把所有 task 的活跃 `agentReports` 摘要摊平成
+    `{ taskId, summary }[]`，全局走一次 `withConcurrency`，避免某个 task 内
+    supersede 链尾 fan-out 触发局部无界并发。
+  - 保留既有 fail-soft 语义：worker 内 `ApiError`（pipeline 404/400 →
+    `null`、agent-report 任意 `ApiError` → skip）；其它真实 transport /
+    编程错误 helper 仍向上 throw（保持与替换前 `Promise.all` 一致的失败
+    传播）。
+  - `pipelinesByTask` 中的 task 仍预置空 `{}` 桶，对消费者
+    `WorkItemDetail` 的 `agentReportsByTask[taskId] ?? {}` 行为保持等价。
+  - 验证：`vitest run app/work-items` 5/5 全绿；`tsc -b apps/dashboard`
+    clean；`eslint --max-warnings 0` clean。`next build` 跳过（tsc 已覆盖
+    SSR 组件类型）。
+
+- 2026-05-20 — **V4.6 follow-up Important #5（`agent_not_configured` 映射
+  503）**：spec §18.4 把 `service_unavailable` / HTTP 503 保留给 "agent
+  runner 未装配" 这类暂时性服务异常；当前
+  `apps/orchestrator/src/pipelines/service.ts` 在
+  `retryAgentReport` 的 `coordinator.retryRole` catch 块里把所有抛错都吞成
+  400 / `invalid_payload`，让 dashboard 无法区分配置错误与请求错误。本次：
+  - `packages/shared-contracts/src/api.ts`：`PipelineRouteErrorCode` 联合
+    新增 `"service_unavailable"`，并补 JSDoc 解释 503 语义；
+    `packages/shared-contracts/src/__tests__/api.test.ts` 严格枚举测试
+    扩展为 13 项。
+  - `apps/orchestrator/src/pipelines/routes.ts`：`statusFromCode` 新增
+    `case "service_unavailable": return 503`，顶部 JSDoc 同步增加 503
+    映射条目（TypeScript `never` exhaustiveness 强制覆盖）。
+  - `apps/orchestrator/src/pipelines/service.ts`：catch 分支 `instanceof
+    CoordinatorError && code === "agent_not_configured"` → 返回
+    `service_unavailable`，其它情况继续走 `invalid_payload`，并 import
+    `CoordinatorError` 类（与现有 `Coordinator` type-only 导入并列）。
+  - 测试：`service.test.ts` 新增两条用例（agent_not_configured →
+    service_unavailable；其它 Error → invalid_payload 回归保护）；
+    `routes.test.ts` 新增 HTTP-level 503 用例并扩展 `fail()` helper 的
+    code 联合。`vitest run apps/orchestrator/src/pipelines/__tests__`
+    174/174 全绿；`shared-contracts` 144/144 全绿；
+    `tsc -b apps/orchestrator packages/shared-contracts` 干净；
+    `eslint --max-warnings 0` 干净。
+
+- 2026-05-20 — **V4.6 follow-up Important #4（`retryAgentReport` 用真实
+  workItemId）**：`apps/orchestrator/src/pipelines/store.ts` 新增
+  `PipelineStore.getPipelineRunByIdOnly({ pipelineRunId })`，把 service 内
+  module-local 的 `scanPipelineRunById` 反查 helper 合并进 store 内部：
+  `<root>/pipelines/<wid>/<tid>/<pipelineRunId>.json` 全盘扫描，先
+  `assertSafeSegment(pipelineRunId, ...)` 防 `..` 注入，ENOENT / 找不到
+  统一返回 `null`，损坏 JSON 仍走 `PipelineStoreReadError`。
+  `apps/orchestrator/src/pipelines/service.ts` 删掉
+  `scanPipelineRunById`，把 `listPipelineRunAgentReports` / `retryAgentReport`
+  / `skipAgentReport` 三处的 `getPipelineRunById({ workItemId: "" }).catch + scan`
+  fallback 全部替换成 `pipelineStore.getPipelineRunByIdOnly({ pipelineRunId })`，
+  语义统一、对未来加严的 store 校验不再脆弱。测试：`store.test.ts` 新增
+  3 个用例（命中 / 未命中 / 越权 segment），`service.test.ts` 新增 1 个
+  回归用例锚定 `retryAgentReport` 调用了 `getPipelineRunByIdOnly` 且
+  完全不再调 `getPipelineRunById`。`vitest run` pipelines 全套 + e2e +
+  daemon wiring 共 185 项通过；`tsc -b apps/orchestrator` 干净；
+  `eslint --max-warnings 0` 干净。
+
+- 2026-05-19 — **V4.6 Phase 12（E2E + acceptance + docs + CHANGELOG 终稿）**：
+  - `apps/orchestrator/src/__tests__/v4-6-multi-agent-e2e.test.ts`：新增
+    multi-agent pipeline e2e 套件，覆盖 spec §22.7 + plan 补充共 8 个
+    场景（full_pipeline happy path、reviewer request_changes loop、
+    test_evidence partial → awaiting_human_review、reviewer cannot_review
+    via scope_insufficient、sandbox_violation 把 TaskNode 置 failed、
+    cancel mid-pipeline + last_cancelled_at 清空、coding_only recipe、
+    test_evidence retry supersede chain）。reviewer skip 通过
+    pipelines/service 用例覆盖，e2e 不再重复 mock。
+  - `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`：
+    V4.6 验收清单（spec §24 全部 10 条勾选 + 验证命令清单 + 视觉验证
+    + Out-of-Scope 自检）。
+  - `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`：
+    V4 总 spec 把 V4.6 从 _spec 已制定_ 推进到 _实施已完成_，详细列出
+    已交付能力并明确未实现项归到 V3。
+  - `README.md` / `README.zh-CN.md` / `README.en.md`：roadmap 段把 V4.6
+    标为已交付，列举 pipeline / publish + revoke / quality byRole /
+    role_configuration 能力。
+  - `USAGE.md` / `USAGE.zh-CN.md`：新增 §5.10 V4.6 多 agent pipeline 操作
+    手册（recipe 覆盖、pipeline 可视化、AgentReport tab、Reviewer publish
+    + revoke、retry/skip、cancel/resume、CLI/HTTP 速查、操作员不变式）。
+
+- 2026-05-19 — **V4.6 Phase 11（Dashboard UI 集成）**：
+  - `apps/dashboard/lib/api.ts`：新增 9 个 V4.6 API helper
+    （`getPipeline` / `listPipelines` / `getAgentReport` /
+    `listTaskAgentReports` / `listPipelineRunAgentReports` /
+    `setRecipeOverride` / `revokeAiReview` / `retryAgentReport` /
+    `skipAgentReport` / `validateWorkflowRoles`），统一通过
+    `withProjectHeader` 注入 `x-issuepilot-project`。配套
+    `apps/dashboard/lib/api.test.ts` 全覆盖 URL/方法/项目头/查询参数/
+    请求体/`ApiError` 透传断言。
+  - 新增四个 work-item 组件 + 同名 test：
+    - `pipeline-progress.tsx`：固定 Coder → Reviewer → Test/Evidence 三步
+      进度条，按 recipe 灰显未启用 role，按 AgentReport 状态着色，渲染
+      pending recipe badge。
+    - `recipe-selector.tsx`：三个 recipe 选项，启动后 lock，pending recipe
+      高亮，调用 `setRecipeOverride` 落盘并冒泡 `ApiError`。
+    - `revoke-ai-review-button.tsx`：仅 reviewer 角色显示，按
+      `mrPublication.status` 启用/禁用并显示 i18n 工具提示，二次确认后调用
+      `revokeAiReview`。
+    - `agent-report-tabs.tsx`：三 tab 静态布局，reviewer 面板含 decision
+      badge / findings（按 severity 排序）/ inline 评论 / MR publication
+      状态 / `RevokeAiReviewButton`，test_evidence 面板展示 evidenceItems。
+  - `apps/dashboard/components/work-items/work-item-detail.tsx`：接入
+    `pipelinesByTask` / `agentReportsByTask` 两个可选 prop；当且仅当 SSR 传入
+    V4.6 数据时，在 TaskList 下方渲染 `V46PipelineSections`
+    （PipelineProgress + RecipeSelector + AgentReportTabs），其余 task / 旧
+    工作单元行为保持 V4.5。
+  - `apps/dashboard/app/work-items/[id]/page.tsx`：并行 fetch 每个 task 的
+    PipelineRun 摘要与三 role 完整 AgentReport，`404` / `400` 自动 fail
+    soft → 工作单元不渲染 V4.6 区段，兼容 V4.5 工作单元。
+  - `apps/dashboard/components/reports/quality-analytics.tsx`：当
+    `summary.byRole` 存在时渲染 `ByRolePanel`（6 个 metric tile：
+    coderSuccess / reviewerApprove / reviewerCannotReview / reviewerUnavailable
+    / testEvidenceComplete / testEvidencePartial，未提供字段以 `—` 占位）。
+    `quality-analytics.test.tsx` 新增 byRole 渲染断言。
+  - `apps/dashboard/components/work-items/task-list.tsx` /
+    `task-graph.tsx`：扩展 `STATUS_KEY_MAP` / `STATUS_TONE`，覆盖 V4.6
+    新增 `TaskNodeStatus`（`running_coding` / `running_reviewer` /
+    `running_test_evidence` / `awaiting_human_review`）。
+  - `apps/dashboard/i18n/messages/{zh,en}.json`：新增
+    `workItem.pipeline` / `agentReportTab` / `mr` / `revoke` /
+    `recipeSelector` 等多组 V4.6 key；`reports.quality.byRoleTitle` /
+    `reports.quality.byRole.*` 中英对称（脚本验证 EN/ZH 全键集合相等）。
+  - 验证：`tsc -b apps/dashboard` 通过；`vitest run` 全套 276 项
+    （含 6 个 agent-report-tabs / 9 个 revoke / 12 个 recipe-selector / 多个
+    pipeline-progress 用例，全部新增）通过；`eslint --max-warnings 0`
+    覆盖新增/修改文件通过。
+
+- 2026-05-19 — **V4.6 Phase 10（V4.4 quality + V4.5 improvements 接入）**：
+  - `packages/shared-contracts/src/quality.ts`：`FAILURE_PATTERN_ID_VALUES`
+    新增 13 个 V4.6 增量值（`reviewer_unavailable` /
+    `reviewer_requested_changes` / `reviewer_cannot_review` /
+    `evidence_unavailable` / `evidence_partial` / `pipeline_cancelled` /
+    `pipeline_init_failed` / `role_profile_invalid` /
+    `runner_unavailable` / `coding_failed` / `sandbox_violation` /
+    `redaction_failed` / `storage_full`，与
+    `apps/orchestrator/src/pipelines/failure-mapping.ts` 保持一致）；
+    新增 `QualityByRoleSlice` 类型与可选 `QualitySummaryResponse.byRole`
+    字段（spec §17.4）。
+  - `apps/orchestrator/src/quality/patterns.ts`：新增
+    `classifyAgentFailure(report: AgentReport)`，按 spec §16.2 + reviewer
+    decision 输出 `{ patternId, bucket, reason }`；reviewer
+    `approve_with_comments` 视为非失败，`request_changes` / `cannot_review`
+    单独映射；test_evidence `incomplete` 无 lastError 兜底为
+    `evidence_partial`；其他 lastError 走 `toFailurePatternId`。
+  - `apps/orchestrator/src/quality/aggregate.ts`：新增
+    `buildByRoleSlice(agentReports)`，统计 coder / reviewer /
+    test_evidence 各 role 的成功率 / approve / cannot_review /
+    evidence_complete 等切片（spec §17.4 计算公式）；
+    `buildQualitySummary` 透传 `byRole`；新增 `PATTERN_LABELS` 13 项
+    V4.6 增量 label。
+  - `packages/shared-contracts/src/improvement.ts`：
+    `IMPROVEMENT_TARGET_KIND_VALUES` 加 `role_configuration`，对应 type
+    guard 接受新值（plan Task 10.3）。
+  - `apps/orchestrator/src/improvements/templates.ts`：补齐 13 条 V4.6
+    pattern 的 deterministic improvement template；reviewer / evidence
+    /sandbox / coder / role_profile_invalid 等 7 条把 `targetKind` 设为
+    `role_configuration`，其余兜底 `workflow_front_matter`。
+  - 测试：
+    - `packages/shared-contracts/src/__tests__/quality.test.ts` 扩展
+      `FAILURE_PATTERN_ID_VALUES` 全集断言 + `byRole` round-trip。
+    - `packages/shared-contracts/src/__tests__/improvement.test.ts`
+      增 `role_configuration` 断言。
+    - `apps/orchestrator/src/quality/__tests__/patterns.test.ts` 新增
+      7 例 `classifyAgentFailure` 覆盖（reviewer approve / cannot_review
+      / request_changes / scope_insufficient lastError /
+      test_evidence incomplete / sandbox_violation / coding_failed）。
+    - `apps/orchestrator/src/quality/__tests__/aggregate.test.ts` 新增
+      3 例 byRole 切片（5 reviewer 报告 / coder+test_evidence 混合 /
+      buildQualitySummary 透传）。
+    - `apps/orchestrator/src/improvements/__tests__/templates.test.ts`
+      新增 4 例覆盖 reviewer_cannot_review / role_profile_invalid /
+      sandbox_violation / pipeline_cancelled。
+  - 验证：`tsc -b` 干净；orchestrator 全套 857/857 ✓ + shared-contracts
+    144/144 ✓。Dashboard UI（Phase 11）紧接进行。
+
+- 2026-05-19 — **V4.6 Phase 9 Task 9.3（daemon 注入 pipeline service）**：
+  - `apps/orchestrator/src/daemon.ts`：在 single 模式 daemon 中按需构造
+    `PipelineStore` + `Coordinator`（agent runners 暂为 deterministic
+    `agent_not_configured` stub，Phase 5-7 真实 runner 落地前先用占位）
+    + `PipelineService`，并把它通过新的 `pipelines` ServerDeps 字段注入
+    Fastify。`taskWriter` / `workItems` adapter 复用 `workItemStore`
+    上的现有 `getCurrentPlan` / `saveTaskPlan` / `getWorkItem`，避免
+    引入新的持久化代码路径。
+  - `apps/orchestrator/src/team/daemon.ts`：在 team 模式 daemon 的
+    per-project for 循环里同样按项目构造独立 `PipelineStore` /
+    `Coordinator` / `PipelineService`，写入新的 `pipelinesByProject`
+    map 并交给 server。
+  - 防御性降级：当 workflow YAML 缺少 V4.6 的 `default_recipe` 或
+    `roles` 段时（V4.5 / Phase 1 测试 fixture 都是这种情况），daemon
+    打印一条 `console.warn`「V4.6 pipeline service skipped …」，不构造
+    pipeline service，也不抛错 —— 对应 plan Task 9.3 "missing config →
+    friendly log, does not crash" 验收条款（spec §10）。
+  - `apps/orchestrator/src/pipelines/service.ts` 顺手把
+    `PipelineWorkItemAccess.updateTask` 的 patch 类型从
+    `Partial<TaskNode>` 改为 `PipelineTaskPatch`（显式允许 `undefined`），
+    让 daemon adapter 把 `currentPipelineRunId` / `roleFailureReason`
+    清空时与 `exactOptionalPropertyTypes` 严格模式兼容。
+  - 测试：
+    - `apps/orchestrator/src/__tests__/daemon.test.ts` 新增 2 例
+      `startDaemon V4.6 pipeline wiring`：第 1 例把 V4.6 字段补齐后
+      验证 `ServerDeps.pipelines` 已绑定 + `validateWorkflowRoles`
+      返回 `valid: true`；第 2 例针对 legacy 工作流断言
+      `ServerDeps.pipelines` 为 undefined + 触发友好 warn。
+    - `apps/orchestrator/src/team/__tests__/daemon.test.ts` 新增 1 例
+      `wires V4.6 pipelinesByProject ...`：混合 project（有 / 无
+      `default_recipe` + `roles`），断言只有合规项目进入
+      `pipelinesByProject`，并捕获跳过项目的 warn。
+  - 验证：orchestrator 整套 72 文件 / 843 用例全绿（含 3 新例）；
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。Phase 9 checkpoint
+    （Task 9.4）紧接进行。
+
+- 2026-05-19 — **V4.6 Phase 9 Task 9.2（Fastify routes + server wiring）**：
+  - `apps/orchestrator/src/pipelines/routes.ts` 新增
+    `registerPipelineRoutes(app, resolveContext)`：按 spec §18 注册 10 条
+    V4.6 路由（GET pipeline / pipelines / agent-reports（task + pipeline-run）
+    / agent-reports/:id、POST pipeline/recipe-override / agent-reports/:id/
+    revoke-ai-review / retry / skip、GET workflows/:workflowId/roles/validate）。
+    错误码 → 状态码映射（`PipelineRouteErrorCode` 全枚举穷尽）：
+    - `task_not_found` / `pipeline_run_not_found` / `agent_report_not_found`
+      / `workflow_not_found` → 404；
+    - `recipe_override_locked` / `not_revocable` → 409；
+    - `unknown_recipe` / `role_mismatch` / `role_skip_not_allowed` /
+      `invalid_payload` / `project_required` / `project_query_not_allowed`
+      → 400。
+    路由内只做 query / params / body 校验和 operator header 解析
+    （`x-issuepilot-operator` fallback），所有业务规则交给 service。
+  - `apps/orchestrator/src/server/index.ts` 扩展：`ServerDeps` 新增
+    `pipelines?` / `pipelinesByProject?`；`resolvePipelineService` 同时承担
+    单 / team 模式分支 —— team 模式必填 `x-issuepilot-project` header，
+    显式 `?project=` query 直接 400 `project_query_not_allowed`（spec
+    §18.3）；未注入 service 时 503，不让 5xx 漏到 dashboard。最后调用
+    `registerPipelineRoutes(app, resolvePipelineService)` 把全部路由挂上。
+  - 测试：
+    - `apps/orchestrator/src/pipelines/__tests__/routes.test.ts` 新增 21 例：
+      把 `PipelineService` mock 成可控 stub，覆盖每条路由的 200 happy 路径
+      + 400 / 404 / 409 error mapping，外加 team-mode resolver 的 400 /
+      404 / `project_query_not_allowed` 三类拒绝路径。
+    - `apps/orchestrator/src/server/__tests__/server.test.ts` 新增 2 例
+      `V4.6 pipeline routes`：single-mode 全链路 happy + 4 类错误码端到端
+      返回，team-mode header / 未知 project / 不当 query 三种拒绝。
+  - 验证：21/21 routes ✓；server 84/84 ✓（含 2 新例）；`tsc --noEmit` +
+    `eslint --max-warnings 0` 干净。daemon 注入（Task 9.3）紧接进行。
+
+- 2026-05-19 — **V4.6 Phase 9 Task 9.1（pipelines service 高层方法）**：
+  - `apps/orchestrator/src/pipelines/store.ts` 新增
+    `PipelineStore.findAgentReportById(agentReportId)`：按 V4.6 spec §9 三层
+    目录布局扫描 `<root>/agent-reports/<taskId>/<role>/<agentReportId>.json`，
+    返回 `{ report, taskId, role }` 或 null；用于 `/api/agent-reports/:id/...`
+    的反查，避免 HTTP 层需要额外传 task/role。
+  - `apps/orchestrator/src/pipelines/service.ts` 新增 `createPipelineService`：
+    - `getPipelineForTask` / `listPipelinesForTask`：返回最新 PipelineRun
+      （含 `pendingRecipe` / `pendingRecipeSource`）与按 `agentReportIds`
+      投射的 `AgentReportSummary[]`。
+    - `getAgentReport({ id })`：经 `findAgentReportById` 反查；找不到 →
+      `agent_report_not_found`。
+    - `listTaskAgentReports({ wid, tid, role?, includeSuperseded? })`：
+      支持按 role 过滤与 supersede 链开关。
+    - `listPipelineRunAgentReports({ pid })`：按 `agentReportIds` 直读
+      AgentReport 全量实体（spec §18.2 用复数 `pipeline-runs`）。
+    - `setRecipeOverride`：状态机分支按 spec §8.3 / §18.1 落地——
+      `planned` / `blocked_by_dependency` / `ready (无 PipelineRun)`
+      → 写 `TaskNode.pendingRecipe` + `pendingRecipeSource=operator_override`；
+      `ready` 且 draft PipelineRun 存在 → 写
+      `PipelineRun.recipe` + `recipeSource=operator_override`；
+      `running_*` / `awaiting_human_review` → 409 `recipe_override_locked`；
+      未知 recipe → 400 `unknown_recipe`。
+    - `revokeAiReview`：仅 reviewer + `mrPublication.status="published"`
+      可调用；其他 role → 400 `role_mismatch`，其他 mrPublication 状态
+      → 409 `not_revocable`；成功时调用注入的
+      `revokeReviewerMrComments` 入口（缺省时仍能写
+      `mrPublication.status="revoked"` 到本地存储，方便单机/dev 部署降级）。
+    - `retryAgentReport`：reviewer / test_evidence → 复用 PipelineRun，
+      调 `coordinator.retryRole()` 在 supersede 链追加新 AgentReport；
+      coder → 清空 V4.6 task 字段（`currentPipelineRunId` /
+      `last_cancelled_at` / `roleFailureReason` / `statusReason`），把
+      task 拨回 `ready`，把新 PipelineRun 的创建交给下一次 dispatch tick
+      （响应 `RetryAgentReportResponse.newPipelineRunId` 暂为 undefined，
+      dashboard 轮询 `GET /pipeline` 自然取到）。
+    - `skipAgentReport`：coder → 400 `role_skip_not_allowed`；reviewer /
+      test_evidence → AgentReport `status=cancelled` + `lastError.code=
+      pipeline_cancelled` + `message="skipped_by_operator"`；PipelineRun
+      推进到下一 role 或 `awaiting_human_review`，并把 task 同步到
+      `awaiting_human_review`（当 skip 推到末端时）。
+    - `validateWorkflowRoles`：现阶段为纯结构校验 —— 三个 role 都存在
+      且每个 role 都有 `promptTemplateHash`；返回 `{ valid, errors[] }`，
+      错误码 `missing_role` / `missing_prompt_template_hash`。
+  - 测试：`pipelines/__tests__/service.test.ts` 新增 19 例覆盖以上每条
+    分支（happy + 不可逆 + 未知 id + 角色错配）。
+  - 验证：`apps/orchestrator/src/pipelines` 全套 7 文件 138/138 ✓；
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。daemon 注入与
+    Fastify route 暴露由 Task 9.2 / 9.3 接着做。
+
+- 2026-05-19 — **V4.6 Phase 8 Task 8.2（test_evidence 单步重跑 + supersede 链）**：
+  - `packages/shared-contracts/src/agent-report.ts`：`AgentReportBase` 新增
+    `supersedes?` / `supersededBy?` 两字段，spec §8.2 行 1057-1058 要求
+    retry 时不能覆盖旧 attempt，必须以线性链保留。
+  - `apps/orchestrator/src/pipelines/store.ts` 新增
+    `PipelineStore.supersedeAgentReport({taskId, role, prevId, nextId})`：
+    - 双向写 `prev.supersededBy=nextId` 与 `next.supersedes=prevId`；
+    - 同步把 `{from, to}` 追加到 role 级 `index.json` 的
+      `supersedeChain[]`，并更新 `latestAgentReportId=nextId`；
+    - 任一 report 不存在 → 抛 `PipelineStoreReadError`。
+  - `apps/orchestrator/src/pipelines/coordinator.ts` 新增
+    `Coordinator.retryRole({workItem, task, pipelineRunId, role})`：
+    - 复用 pipelineRunId，不创建新的 PipelineRun；先把 PipelineRun
+      状态翻回 `running_<role>`，TaskNode 翻回 `running_<role>`、
+      清理 `roleFailureReason` / `statusReason`；
+    - 按 role 调对应 agent runner，cancel mid-retry 走
+      `last_cancelled_at` + `needs_rework`，抛 `CoordinatorError
+      ("retry_cancelled")` 让 HTTP 层映射 409；
+    - 新 AgentReport 写完后立即调 `supersedeAgentReport`，
+      把 supersede 链接两边写完；并把新 id 写入
+      `PipelineRun.agentReportIds[role]`；
+    - 重新派生 PipelineRun final status：复用 `startPipeline` 同一
+      套规则——`request_changes` → `awaiting_rework`、test_evidence
+      `incomplete` → `partial`、其他 → `awaiting_human_review`；
+      失败时 storage_full / reviewer_unavailable /
+      reviewer_cannot_review / redaction_failed → TaskNode `blocked`，
+      其他 → `failed`；
+    - 发 `pipeline_finished` 事件时带 `retry: true` 与 `role`，
+      dashboard 可以与初次 run 区分；
+    - PipelineRun 不存在 → `CoordinatorError("pipeline_run_missing")`；
+      无该 role 的 baseline AgentReport →
+      `CoordinatorError("agent_report_baseline_missing")`。
+  - 测试：
+    - `store.test.ts` 加 2 例（happy supersede + 缺失报告抛错）。
+    - `coordinator.test.ts` 加 4 例（test_evidence incomplete → complete
+      retry 链 + PipelineRun 翻 `awaiting_human_review`；retry 仍 failed
+      但 supersedes 仍写；未知 pipelineRunId 抛错；无 baseline 抛错）。
+  - 验证：shared-contracts 143/143 ✓；orchestrator 798/798 ✓（70 文件）；
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。daemon 注入
+    `retryRole` 端点的工作延后到 Phase 9 一起做。
+
+- 2026-05-19 — **V4.6 Phase 7 Task 7.3+7.4+7.5（Reviewer MR publish 闭环）**：
+  - `packages/tracker-gitlab/src/notes.ts`：扩展 MR notes API。
+    - `MergeRequestNotes.create` / `remove`：在 `api-shape.ts` 中显式定义
+      接口（含 `MergeRequestNotePosition` 类型），覆盖 inline 与 plain
+      note。
+    - `createMrNote(client, mrIid, body, requiredScope?)` 与
+      `createMrInlineNote(..., position)`：分别发布主 note 与带 diff
+      position 的 inline note，统一捕获 401/403 转 `GitLabScopeMissingError`。
+    - `deleteMrNotes(client, mrIid, noteIds, requiredScope?)`：批量 DELETE；
+      per-note 404 视为已删除 (`missingNoteIds[]`)；500 / 网络错误抛
+      `GitLabError`；空 `noteIds` 短路。
+    - `GitLabScopeMissingError`：继承自 `GitLabError`，携带 `missingScope`
+      字段；401 → category=auth，403 → category=permission，`retriable=false`。
+    - 测试：`notes.test.ts` 新增 12 例覆盖 main/inline create、scope 缺失、
+      404 idempotent、501 / 5xx 透传、空 noteIds 短路、`GitLabScopeMissingError`
+      自身行为。tracker-gitlab 整套 90/90 用例全绿，`tsc --noEmit` 与
+      `eslint --max-warnings 0` 干净。
+  - `apps/orchestrator/src/gitlab/mr-comments.ts`：V4.6 spec §12 的六条
+    护栏 publish/revoke 入口。
+    - `publishReviewerToMr({client, reviewerReport, mrRef, publishToMr,
+      requiredScope?})`：
+      - 1 主 note + N inline note，body 统一以 `[ai-reviewer] ` 前缀；
+      - 主 note 体含 summary / decision / confidence（两位小数）/
+        risks / evidence requested；
+      - inline 体含 `(severity/category)` 标记，可选 `Suggested fix`
+        code block；
+      - `summary` / `inlineComments[i].message` / `suggestedFix` 走
+        `@issuepilot/observability/redact`；改写的字段路径返回到
+        `redactedFieldsAdded[]`（如 `reviewer.summary`、
+        `reviewer.inlineComments[0].message`）；
+      - `publishToMr=false` → `mrPublication.status="skipped_by_config"`，
+        不发起 HTTP；
+      - 401/403 → `scopeInsufficient = { missingScope }` 信号，外加
+        `mrPublication.status="publish_failed"` + `lastError.code=
+        "scope_insufficient"`；coordinator 据此把 AgentReport 升级
+        到 `status="failed"`；
+      - 非 auth GitLab 错（5xx 等）→ fail soft：
+        `mrPublication.status="publish_failed"` +
+        `lastError.code="gitlab_rate_limited"`；AgentReport 不变 failed；
+      - 部分 publish 已落地的 noteIds 仍写入 `mrPublication.noteIds[]`，
+        便于后续 revoke 清理。
+    - `revokeReviewerMrComments({client, mrIid, mrPublication, requiredScope?})`：
+      调用 `deleteMrNotes` 删除全部 noteIds，per-note 404 idempotent；
+      成功后 `mrPublication.status="revoked"`，noteIds 清空，
+      `publishedAt` 保留；scope 错抛 `GitLabScopeMissingError`，其他
+      错抛 `GitLabError`，便于 dashboard 路由分级处理。
+    - 测试：`mr-comments.test.ts` 14 例覆盖 prefix / 聚合主 note /
+      redaction 路径 (`reviewer.summary`、`reviewer.inlineComments[i].message`、
+      `reviewer.inlineComments[i].suggestedFix`) / `publishToMr=false` /
+      非 auth fail soft / 部分 publish 保留 noteIds / scopeInsufficient
+      surface / revoke 删除 / revoke 404 idempotent / revoke scope 错
+      传播 / revoke 短路。
+  - `apps/orchestrator/src/pipelines/coordinator.ts`：把 reviewer publish
+    接入 V4.6 pipeline 调度。
+    - 新增 `ReviewerMrPublisher` 接口与可选 DI `CoordinatorAgents.reviewerPublisher`，
+      production 在 Phase 9 由 daemon 注入 `publishReviewerToMr` 实现，
+      单测用 fake；缺省时保持向后兼容（reviewer report 原样落盘）。
+    - reviewer agent `status="complete"` 且 `decision != "cannot_review"`
+      时才会调用 publisher；LLM 自己输出的 `cannot_review` 仍走原来
+      `roleFailureReason="reviewer_cannot_review"` + TaskNode `blocked` 通路。
+    - publish 成功 / `publish_failed` → AgentReport 仍 `complete`，
+      pipeline 继续 advance test_evidence（spec §12 rail #4 fail soft）。
+    - publish 报 `scopeInsufficient` → AgentReport 升级为 `status=
+      "failed"` + `lastError.code="scope_insufficient"`；走失败分支，
+      mrPublication.publish_failed 仍持久化便于 dashboard 显示。
+    - `redactedFieldsAdded[]` 去重后 append 到 `AgentReport.redactedFields[]`。
+    - 失败分支扩容：`reviewer_cannot_review` / `reviewer_unavailable` /
+      `redaction_failed` / `storage_full` → TaskNode `blocked`；其余
+      继续走 `failed`（与 spec §7.3 行 269 + §16.2 对齐）。原有
+      `reviewer_unavailable` 测试断言从 `failed` 更新为 `blocked`。
+    - 测试：`coordinator.test.ts` 新增 6 例（publish published /
+      publish_failed 不阻断 advance / scopeInsufficient 升级 failed +
+      blocked + event / cannot_review 跳过 publisher / request_changes
+      仍触发 publish / 无 publisher 时兼容兜底）。
+  - 验证：orchestrator 整套 792/792 全绿；tracker-gitlab 90/90 全绿；
+    `tsc --noEmit` 与 `eslint --max-warnings 0` 均干净。
+
+- 2026-05-19 — **V4.6 Phase 8 Task 8.1（Test/Evidence Agent）**：
+  - `apps/orchestrator/src/agents/test-evidence.ts`：实现
+    `createTestEvidenceAgent()` 把一组 `EvidenceCollector` 注入式合并：
+    - collector 返回 `kind="item"` → 入 `evidenceItems[]`；
+    - collector 返回 `kind="baseline"` → 写入 `baselineEvidence`；
+    - collector 返回 `kind="cancel"` → 立即返回 `AgentRunResult.kind="cancelled"`。
+    状态决策：
+    - 全部 `collected` → `status="complete"`；
+    - 有 `failed/skipped` 但仍有 `collected` → `status="incomplete"` +
+      `lastError.code="evidence_partial"`；
+    - 全部 `failed/skipped` → `status="failed"` +
+      `lastError.code="evidence_unavailable"`；
+    - collector 抛 `SandboxViolationError` → `status="failed"` +
+      `sandbox_violation`，保留已 `collected` 的 evidenceItems；
+    - 其他抛错 → `status="failed"` + `evidence_unavailable`。
+    `evidenceLinks[]` 自动收集 `artifactPath`。
+  - 测试：`test-evidence.test.ts` 6 例覆盖 happy + partial + sandbox
+    violation + 普通错误 + cancel + 全部失败。orchestrator 整套
+    772 用例全绿；`tsc --noEmit` + `eslint src/agents --max-warnings 0` 干净。
+
+- 2026-05-19 — **V4.6 Phase 7 Task 7.1+7.2（Reviewer Agent + findings 过滤）**：
+  - `apps/orchestrator/src/agents/reviewer.ts`：
+    - `parseReviewerMessage(raw)`：从 reviewer LLM 输出中抽
+      `\`\`\`json` fence 并 schema 校验 `summary` / `decision` /
+      `confidence` / `findings` / `risks` / `evidenceRequest` /
+      `inlineComments`。`decision` 限定在
+      `approve_with_comments | request_changes | cannot_review`；
+      `confidence` 必须 ∈ [0,1]；summary > 4000 抛
+      `ReviewerParseError(code="reviewer_summary_too_long")`，schema
+      不符抛 `ReviewerParseError(code="prompt_output_schema_mismatch")`。
+    - `filterFindingsForInline({findings, severityThreshold,
+      maxInlineComments, llmInlineComments?})`：按 spec §11/§12 把
+      findings 转 inline comments（`low` 永不入 inline），过滤后按
+      `maxInlineComments` 截断，返回 `{ inlineComments, hiddenCount }`；
+      若 LLM 直接给了 `inlineComments[]` 则优先用，仍然过滤 + cap。
+    - `formatReviewerConfidence(v)`：spec §11.1 序列化两位小数
+      （`0` → `"0.00"`、`0.911` → `"0.91"`、`1` → `"1.00"`，越界值
+      clamp 到 `[0,1]`）。
+    - `createReviewerAgent({lifecycle})`：把 `ReviewerLifecycleRunner`
+      的 raw message 解析 + 过滤后包装成 `ReviewerAgentReport`。
+      lifecycle 抛错 → status=failed, lastError.code=
+      `reviewer_unavailable`；parse 失败 → status=failed,
+      `parse_failed`（lastError.message 用 `prompt_output_schema_mismatch`
+      / `reviewer_summary_too_long`）。`request_changes` /
+      `cannot_review` 仍写 `status="complete"`，由 coordinator 处理终态。
+      `publishToMr=false` → `mrPublication.status="skipped_by_config"`；
+      其他默认 `pending`，由后续 publish 步骤（Phase 7.4）改写。
+  - 测试：`reviewer.test.ts` 22 例覆盖 parser（fence/schema/decision/
+    confidence/summary 长度）、`formatReviewerConfidence` 边界、
+    findings 过滤多场景（threshold=medium/high/critical, cap=3/25,
+    LLM-supplied inlineComments 优先级）、agent run（happy approve /
+    publishToMr=false / parse_failed / request_changes / 抛错）。
+
+- 2026-05-19 — **V4.6 Phase 6 Task 6.1（Coder Agent 包装）**：
+  - `apps/orchestrator/src/agents/coder.ts`：实现 `createCoderAgent({lifecycle})`
+    把 `CoderLifecycleRunner`（DI）的执行结果折叠成
+    `CoderAgentReport`。状态映射：
+    - lifecycle completed → AgentReport `status="complete"`，写入
+      `runId` / `promptTemplateHash` / `coder.{diffSummary,branch,
+      buildStatus,testStatus,lintStatus,mergeRequest,runReportArtifactId}`，
+      并把 RunReportArtifact 链接挂在 `evidenceLinks[]`。
+    - lifecycle failed（带 `lastErrorCode + partial`）→ AgentReport
+      `status="failed"` 透传部分字段。
+    - lifecycle 抛 `RunnerUnavailableError` / `SandboxViolationError` /
+      其他 Error → AgentReport `status="failed"`，`lastError.code`
+      分别映射为 `runner_unavailable` / `sandbox_violation` /
+      `coding_failed`（spec §16.2）。
+    - lifecycle cancelled → `AgentRunResult.kind="cancelled"`，由
+      coordinator 把 PipelineRun 标 cancelled。
+  - 测试：`apps/orchestrator/src/agents/__tests__/coder.test.ts` 6 例
+    覆盖 happy / runner_unavailable / sandbox_violation / 普通错误
+    / outcome.failed 含 partial / cancellation。orchestrator 整套
+    744 用例全绿；`tsc --noEmit` + `eslint src/agents --max-warnings 0`
+    干净。
+  - Task 6.2（V4.2 dispatch 切换到 coordinator）涉及 daemon.ts / dispatch
+    / orchestration 大幅重构，与 Phase 9 daemon wiring 合并实施；本
+    commit 暂未替换 V4.2 dispatch 入口。
+
+- 2026-05-19 — **V4.6 Phase 5（Pipeline Coordinator + Auto Advance + TaskNode 迁移）**：
+  - `apps/orchestrator/src/work-items/store.ts`：读路径加 V4.6 TaskNode
+    migration（`legacyRunningStateToV46`），把旧版 `status="running"` 升级到
+    `running_coding`；V4.6 新字段（`pendingRecipe` / `pendingRecipeSource` /
+    `currentPipelineRunId` / `last_cancelled_at` / `roleFailureReason`）经
+    JSON 序列化往返保留，新增 2 条 store 测试覆盖。
+  - `apps/orchestrator/src/pipelines/coordinator.ts`：实现 V4.6 pipeline
+    coordinator，按 effective recipe 顺序调用 coder / reviewer / test_evidence
+    agent（依赖注入 + role profile resolver），把每一步结果持久化到
+    `PipelineStore` 并同步 patch TaskNode。落地分支：
+    - coding_only / coding_plus_reviewer / full_pipeline 全部 happy
+      path → `PipelineRun.status = awaiting_human_review`、TaskNode →
+      `awaiting_human_review`。
+    - test_evidence `incomplete` → PipelineRun `partial`、TaskNode 标
+      `roleFailureReason = evidence_partial`。
+    - 任一 agent `failed` → PipelineRun `failed`，TaskNode 用
+      `failure-mapping.toTaskNodeReason` 计算 reason；`storage_full`
+      映射成 TaskNode `blocked`，其他映射成 `failed`。
+    - reviewer.decision = `request_changes` → PipelineRun
+      `awaiting_rework`、TaskNode `needs_rework` reason=
+      `reviewer_requested_changes`。
+    - reviewer.decision = `cannot_review` → PipelineRun `failed`、TaskNode
+      `blocked` reason=`reviewer_cannot_review`。
+    - agent 返回 `cancelled` → PipelineRun `cancelled`、TaskNode
+      `needs_rework` + `last_cancelled_at` 写入。
+    - 所有分支同步 emit 事件（`pipeline_started` / `pipeline_finished` /
+      `coding_failed` / `reviewer_cannot_review` /
+      `reviewer_requested_changes` / `coder_cancelled` 等）。
+    - PipelineRun.recipeSource 按 `EffectiveRecipeSource` 折叠：
+      `workflow_default` 直传，`task_pending` → `operator_override`。
+    - `TaskPatch` 类型显式允许 `undefined` 用于清空 V4.6 optional 字段，
+      兼容 `exactOptionalPropertyTypes` 严格模式。
+  - `apps/orchestrator/src/pipelines/auto-advance.ts`：纯函数
+    `shouldAutoAdvance({pipelineRun, finishedReport, task})` 给出
+    `{advance, nextRole?}`；`nextPipelineStatusFor(role)` 给出对应的
+    PipelineRun 中间态；`createAutoAdvance()` 包装成 EventBus 友好的
+    `AutoAdvanceTrigger`。识别 task.last_cancelled_at / 失败 / cancelled /
+    reviewer.request_changes|cannot_review 等抑制条件，末端 role
+    一律不推进。
+  - 测试：`coordinator.test.ts`（11 用例覆盖 coding_only / coding_plus_reviewer
+    / full_pipeline 各 happy + fail + cancel + reviewer decision +
+    test_evidence partial / sandbox_violation），`auto-advance.test.ts`
+    （12 用例覆盖 advance 决策 / 抑制条件 / nextPipelineStatusFor /
+    AutoAdvanceTrigger）；orchestrator 整套 738 用例全绿，
+    `tsc --noEmit` + `eslint --max-warnings 0` 干净。
+
+- 2026-05-19 — **V4.6 Phase 4（Recipe + Role Profile + Failure Mapping）**：
+  - `apps/orchestrator/src/pipelines/recipe.ts`：
+    `resolveEffectiveRecipe({workflowDefault, pendingRecipe, pipelineRecipe})`
+    返回 in-memory 三态 `{recipe, source}`：`workflow_default` /
+    `task_pending` / `pipeline_locked`；`toPipelineRunRecipeSource` 把
+    `task_pending` 折成落盘的 `operator_override`，`pipeline_locked`
+    显式抛错避免重复落盘；`recipeRoles` / `recipeFinalRole` 给出三个
+    recipe 的有序角色列表。未知 recipe 抛 `UnknownRecipeError`。
+  - `apps/orchestrator/src/pipelines/role-profile.ts`：
+    `renderPromptTemplate` 支持最小 Mustache 风格 `{{path.to.var}}`，
+    snake_case key 自动映射 camelCase（`work_item.iid` → `workItem.iid`），
+    缺失变量保留 `[missing: …]` 占位；`buildRoleProfile({role, workItem,
+    task, extra})` 读 prompt 文件 + 渲染 + 组装 sandbox / toolAllow /
+    timeoutSeconds / tokenScopeRequirements / promptTemplateHash /
+    roleProfileId（格式 `<role>@<hash7>`）；reviewer 角色透传 publishToMr
+    / severityThreshold / maxInlineComments 并补默认值（`true` /
+    `medium` / `25`）；缺 prompt 文件、文件不可读、resolve 未跑导致
+    hash 缺失 → `RoleProfileInvalidError`（带 role / reason 字段）。
+  - `apps/orchestrator/src/pipelines/failure-mapping.ts`：spec §16.2 /
+    §21.1 单一 truth source。`toTaskNodeReason(code, role, ctx)` /
+    `toEventKey(code, role, ctx)` / `toFailurePatternId(code)` 把 15 项
+    `LastErrorCode` 映射到 TaskNode reason / event key / pattern id；
+    `prompt_template_missing` 按 phase 拆分（role_profile_init →
+    `role_profile_invalid`，agent_start → `reviewer_cannot_review`），
+    `runner_unavailable` 按 role 拆分，`pipeline_cancelled` 按
+    PipelineRun.status 拆分 event key 与 TaskNode reason（draft 阶段
+    cancel 不写 reason），`gitlab_rate_limited` 全部返回 null（fail-soft），
+    `sandbox_violation` 全 role 都映射 `sandbox_violation`；未知 code
+    → `UnsupportedFailureMappingError`；exhaustive switch + `never`
+    哨兵保证新增 code 必须先扩 mapping 才能编译过。
+  - 测试：`recipe.test.ts`（10 例）、`role-profile.test.ts`（8 例）、
+    `failure-mapping.test.ts`（49 例）。orchestrator 整套 713 用例全
+    绿，`tsc --noEmit`、`eslint src/pipelines --max-warnings 0` 干净。
+
+- 2026-05-19 — **V4.6 Phase 3（Pipeline Store + AgentReport Store）**：
+  - `apps/orchestrator/src/pipelines/store.ts` 新增 `PipelineStore`、
+    `createPipelineStore`、`createPipelineStoresByProject`、
+    `ensurePipelineDirs`、`PipelineStorePathError` / `PipelineStoreReadError`。
+    按 spec §9 三层目录布局落盘：
+    `pipelines/<workItemId>/<taskId>/<pipelineRunId>.json` 与
+    `agent-reports/<taskId>/<role>/<agentReportId>.json` + 同目录
+    `index.json`（维护 supersede 链 / latestAgentReportId）。
+  - 所有写入前过 `@issuepilot/observability/redact`，glpat / Bearer
+    等 token 被替换成 `[REDACTED]`；secret 字段名兜底替换。
+  - `supersede(prev, next)` 双向写回 `supersedes` / `supersededBy`；
+    `latestForTask` / `latestAgentReportForRole` 只返回未被 supersede 的
+    末端记录。
+  - 路径校验：workItemId / taskId / pipelineRunId / agentReportId 必须
+    匹配 `^[A-Za-z0-9._-]+$`，含 `..` / `/` / 绝对路径越权 → 抛
+    `PipelineStorePathError`；非法 role 同样抛该错误。
+  - 损坏 JSON 或 schema 不符 → `PipelineStoreReadError`；目录不存在
+    或 ENOENT 透传为 `null` / 空数组，符合 spec §9 容错语义。
+  - team 模式预留：`createPipelineStoresByProject([{projectId, root}])`
+    按项目隔离根目录，store root 互不重叠。
+  - 测试：`apps/orchestrator/src/pipelines/__tests__/store.test.ts`
+    新增 17 用例覆盖 savePipelineRun / getPipelineRunById / listForTask /
+    latestForTask / supersede / saveAgentReport（redact 验证 / index.json
+    维护）/ list/latestAgentReportForRole / createPipelineStoresByProject /
+    ensurePipelineDirs / 路径越权 / 损坏 JSON。`tsc --noEmit` 与
+    `eslint src/pipelines --max-warnings 0` 干净，`vitest run` 全 646
+    用例绿。
+
+- 2026-05-19 — **V4.6 Phase 2（workflow YAML 扩展）**：
+  - `packages/workflow/src/types.ts`：`WorkflowConfig` 新增
+    `defaultRecipe` / `roles` / `warnings`；`TrackerConfig` 新增
+    `tokenScopeRequirements`；新增 `WorkflowConfigWarning`。
+  - `packages/workflow/src/parse.ts`：`WorkflowFrontMatterSchema` 加
+    `default_recipe` / `roles` / `tracker.token_scope_requirements`；
+    构造期通过 shared-contracts 的 `parseRoleConfig` 把 YAML
+    snake_case 映射成 TS camelCase；缺 `roles.*` 时 fallback 到内置
+    `DEFAULT_ROLES_CONFIG` 并 emit `role_default_used` warning；
+    `default_recipe` 缺省时 fallback 到 `full_pipeline` 并 emit
+    `default_recipe_missing` warning；非法 sandbox / tool / allow
+    通配等 shared-contracts 抛出的 `WorkflowConfigError` 被包成
+    `WorkflowConfigError(path = roles.<role>)`。
+  - `packages/workflow/src/resolve.ts`：新增 `RoleProfileInvalidError`、
+    `resolveRolePromptHashes(cfg, configRoot)` 把 role profile 中的
+    `promptTemplate` 路径解析为绝对路径并写 `promptTemplateHash`
+    （sha256，稳定）；新增 `resolveWorkflow(cfg, configRoot)` 一次
+    完成路径展开 + role prompt hash。
+  - `packages/shared-contracts/src/workflow-role.ts`：`WorkflowRoleConfigBase`
+    新增 `promptTemplateHash?: string`（resolve 阶段填充）。
+  - 测试：`packages/workflow/src/__tests__/parse.test.ts` 新增 9 条
+    V4.6 用例覆盖 default_recipe / roles / tools.allow / sandbox /
+    tracker.token_scope_requirements；`resolve.test.ts` 新增 3 条
+    覆盖 prompt template hashing + RoleProfileInvalidError。`tsc -b`
+    干净，`vitest run` 全 71 用例绿。
+- 2026-05-19 — **V4.6 Phase 1（shared contracts 基础）**：
+  - `packages/shared-contracts/src/agent-report.ts`：新增 `AgentRole` /
+    `AgentReportStatus` / `LastErrorCode`（15 项 truth source）/
+    `AgentLastError`、coder / reviewer / test_evidence 三 payload 子类型、
+    顶层 `AgentReport` discriminated union、`isAgentReport` /
+    `isCoderAgentReport` / `isReviewerAgentReport` /
+    `isTestEvidenceAgentReport` type guards、`formatConfidence` 与
+    `ReviewerSummaryTooLongError`。
+  - `packages/shared-contracts/src/pipeline.ts`：新增
+    `PIPELINE_RUN_STATUS_VALUES`（8 项）/ `WORKFLOW_RECIPE_VALUES`
+    / `RECIPE_SOURCE_VALUES` / `PipelineRun` 结构（含 `agentReportIds`
+    by-role 索引、supersede 链）、`recipeRoles` / `recipeFinalRole`
+    helper。
+  - `packages/shared-contracts/src/workflow-role.ts`：`WORKFLOW_SANDBOX_VALUES`
+    / `WORKFLOW_TOOL_NAME_VALUES`（7 项）/ `REVIEWER_SEVERITY_THRESHOLD_VALUES`、
+    `WorkflowToolGrant`（含 `allow[]` 规则与拒绝全通配项）、
+    `parseRoleConfig` YAML snake_case → TS camelCase 映射器与
+    `WorkflowConfigError`。
+  - `packages/shared-contracts/src/work-item.ts`：扩展 `TaskNodeStatus`
+    至 13 项（V4.6 新增 `running_coding` / `running_reviewer` /
+    `running_test_evidence` / `awaiting_human_review`，保留 `running`
+    作兼容值）、新增 `TASK_ROLE_FAILURE_REASON_VALUES` /
+    `EVIDENCE_STATUS_VALUES`、`legacyRunningStateToV46` 兼容映射、
+    `TaskNode` 新字段（`currentPipelineRunId` / `pendingRecipe*` /
+    `last_cancelled_at` / `roleFailureReason`）、`WorkItemTaskSummary`
+    新字段（`pipelineRunId` / `coderReportId` / `reviewerReportId` /
+    `testEvidenceReportId` / `reviewerDecision` / `reviewerConfidence`
+    / `evidenceStatus` / `reviewerSummary` / `mrPublicationStatus`）、
+    `effectiveEvidenceStatus` + `computeOverallStatus` 否决谓词。
+  - `packages/shared-contracts/src/review.ts`：把 reviewer decision /
+    findings / inlineComments / MR publication 类型从 agent-report.ts
+    re-export，保持历史 import path 不变。
+  - `packages/shared-contracts/src/api.ts`：新增 `PipelineRouteErrorCode`
+    （12 项）/ `AgentReportSummary` / `PipelineRunWithReports` /
+    `GetPipelineResponse` / `ListPipelinesResponse` /
+    `SetRecipeOverrideRequest` / `SetRecipeOverrideResponse` /
+    `GetAgentReportResponse` / `ListTaskAgentReportsResponse` /
+    `ListPipelineRunAgentReportsResponse` / `RevokeAiReviewResponse` /
+    `RetryAgentReportRequest|Response` / `SkipAgentReportRequest|Response`
+    / `ValidateWorkflowRolesResponse` 类型，全部按 spec §18 URL 路径对齐。
+  - 测试：`agent-report.test.ts` / `pipeline.test.ts` /
+    `workflow-role.test.ts` 新增；`work-item.test.ts` / `review.test.ts`
+    / `api.test.ts` / `index.test.ts` 扩展。`tsc -b` 干净通过，
+    `vitest run` 16 文件 / 146 用例全绿。
 - 2026-05-19 — **V4.6 实施计划**：
   `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`。
   按 12 个 Phase（shared contracts → workflow YAML → PipelineRun /

@@ -30,6 +30,11 @@ export interface MergeRequestSummary {
   iid: number;
   webUrl: string;
   state: string;
+  diffRefs?: {
+    baseSha: string;
+    startSha: string;
+    headSha: string;
+  };
 }
 
 export interface SourceBranchMergeRequestDetail extends SourceBranchMergeRequestSummary {
@@ -129,8 +134,37 @@ export async function getMergeRequest(
 ): Promise<MergeRequestSummary> {
   return client.request("mergeRequests.show", async (api) => {
     const mr = await api.MergeRequests.show(client.projectId, mrIid);
-    return { iid: mr.iid, webUrl: mr.web_url, state: mr.state };
+    const summary: MergeRequestSummary = {
+      iid: mr.iid,
+      webUrl: mr.web_url,
+      state: mr.state,
+    };
+    const diffRefs = mapDiffRefs(mr);
+    return diffRefs ? { ...summary, diffRefs } : summary;
   });
+}
+
+function mapDiffRefs(mr: {
+  diff_refs?: {
+    base_sha?: string | null;
+    start_sha?: string | null;
+    head_sha?: string | null;
+  } | null;
+}): MergeRequestSummary["diffRefs"] | undefined {
+  const refs = mr.diff_refs;
+  if (!refs) return undefined;
+  if (
+    typeof refs.base_sha !== "string" ||
+    typeof refs.start_sha !== "string" ||
+    typeof refs.head_sha !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    baseSha: refs.base_sha,
+    startSha: refs.start_sha,
+    headSha: refs.head_sha,
+  };
 }
 
 export async function findMergeRequestBySourceBranch(

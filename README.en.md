@@ -719,6 +719,15 @@ productionizes the capabilities that prove valuable here.
     `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`;
     acceptance:
     `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`.
+  - **2026-05-20 review follow-up**: shipped fixes for 4 Critical + 5
+    Important review findings (C1 daemon now wires real coder / reviewer
+    / test_evidence agent runners; C2 CoderPanel reads `diffSummary`;
+    C3 daemon injects `revokeReviewerMrComments`; C4 `byRole` quality
+    summary now backed by real `agentReports`; Important: PipelineStore
+    crash-safe supersede, `retryAgentReport` reverse-lookup, 503
+    `service_unavailable` mapping, SSR concurrency cap 8,
+    discriminated-union narrowing in AgentReportTabs). Full record:
+    `docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

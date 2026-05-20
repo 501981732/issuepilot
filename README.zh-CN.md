@@ -669,6 +669,13 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
     `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`；
     验收清单：
     `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
+  - **2026-05-20 review follow-up**：合并 4 项 Critical + 5 项 Important
+    修复（C1 daemon agent runner 真接通；C2 CoderPanel `diffSummary`
+    修正；C3 revokeReviewerMrComments wiring；C4 byRole quality 切片真
+    生效；Important: PipelineStore crash-safe / retry reverse-lookup /
+    503 service_unavailable / SSR 并发 8 / discriminated-union narrowing）。
+    完整记录：
+    `docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`。
 - **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
   并把 review 反馈转成下一轮 agent 的结构化输入。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、

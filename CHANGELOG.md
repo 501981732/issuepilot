@@ -57,6 +57,39 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up review fixes (critical C1-C4 + important
+  1-5) — consolidated summary**：详细 per-task 条目见本段下方。本次 follow-up
+  把 V4.6 multi-agent pipeline 从 "review-incomplete" 推进到 "production-wired"：
+  - **C1** daemon 装配真实 coder / reviewer / test_evidence agent runner —
+    `apps/orchestrator/src/agents/codex-lifecycle.ts` 共用 lifecycle adapter
+    （Task 4a `7c75a54`）；`daemon.ts` + `team/daemon.ts` 接入 coder + reviewer
+    （Task 4b `b068d9d`）；test_evidence + 默认 scanner-snapshot collector
+    （Task 4c `d1af0e1`）。reviewer publisher 已 deferred 到 tracker-gitlab
+    扩 `diff_refs` 之后，daemon 内有注释 + spec §12 tracking；目前 coordinator
+    在 publisher 缺失时维持 `mrPublication = "pending" | "skipped_by_config"`。
+  - **C2** CoderPanel 字段从 `summary` 修正为 `diffSummary`，对应回归测试
+    （commit `33c7b13`）。
+  - **C3** daemon 注入 `revokeReviewerMrComments`，service 撤销时清空
+    `mrPublication.noteIds`，与 spec §12 一致（commits `dca4684` / `fccb4da`）。
+  - **C4** daemon `buildQualitySummary` 注入 `agentReports`，让
+    `QualitySummaryResponse.byRole` 与 dashboard `ByRolePanel` 真生效
+    （commit `5db756f`）。
+  - **Important 1** PipelineStore.supersede staging-file + rename crash-safe
+    （commit `618fe04`）。
+  - **Important 2** `service.retryAgentReport` 走 `store.getPipelineRunByIdOnly`
+    reverse-lookup（commit `bd1de13`）。
+  - **Important 3** `agent_not_configured` → HTTP 503 `service_unavailable`
+    路由映射（commit `423b45e`）。
+  - **Important 4** dashboard SSR fetch 并发上限 8（commit `0fe290e`）。
+  - **Important 5** `AgentReportTabs` 用 discriminated-union narrowing 替代
+    `as` 强转（commit `bdbfcd5`）。
+  - 验证：`SKIP_E2E=1 bash scripts/ci-equivalent-check.sh` 全 5 stage PASS；
+    新增 `daemon-pipeline-wiring.test.ts` + `daemon-task4b-wiring.test.ts`
+    + `codex-lifecycle.test.ts` + `split-command.test.ts` 共 27+ 个 V4.6
+    follow-up 直接相关用例全绿；最终 verification gate 见 Task 10 后的
+    empty checkpoint commit。
+  - 完整补救计划：
+    `docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`。
 - 2026-05-20 — **V4.6 follow-up Critical #1 part 3/3（单 daemon + team
   daemon 接通 V4.6 test_evidence agent，移除最后一个
   `agent_not_configured` stub）**：把 4a/4b 落地的

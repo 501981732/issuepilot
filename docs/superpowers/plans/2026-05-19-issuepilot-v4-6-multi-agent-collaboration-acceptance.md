@@ -126,6 +126,48 @@ git diff --check
   一致），新增 `v4-6-pipeline.png` / `v4-6-reports-by-role.png` 两张
   对照截图。
 
+## Review follow-up（2026-05-20）
+
+V4.6 code review 标记 4 项 Critical + 5 项 Important。补救实施计划：
+`docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`。
+
+- [x] C1 daemon 装配真实 coder / reviewer / test_evidence agent runner +
+  RoleProfileResolver（Task 4a `7c75a54` / 4b `b068d9d` / 4c `d1af0e1`）。
+  Reviewer MR publisher 已 deferred 到 tracker-gitlab 扩 `diff_refs` 之后，
+  目前 coordinator 在 publisher 缺失时维持
+  `mrPublication = "pending" | "skipped_by_config"`，dashboard 仍可显示。
+- [x] C2 CoderPanel 字段从 `summary` 修正为 `diffSummary`，回归测试覆盖
+  （commit `33c7b13`）。
+- [x] C3 daemon 注入 `revokeReviewerMrComments`，service 撤销时清空
+  `mrPublication.noteIds` 并把 reviewer report 升级为 `revoked`
+  （commits `dca4684` / `fccb4da`）。
+- [x] C4 daemon `buildQualitySummary` 注入 `agentReports`，让
+  `QualitySummaryResponse.byRole` 真有数据，dashboard `ByRolePanel` 端到端
+  可用（commit `5db756f`）。
+- [x] Important 1 PipelineStore.supersede staging-file + rename crash-safe
+  （commit `618fe04`）。
+- [x] Important 2 `service.retryAgentReport` reverse-lookup（commit `bd1de13`）。
+- [x] Important 3 `agent_not_configured` → HTTP 503（commit `423b45e`）。
+- [x] Important 4 dashboard SSR fetch 并发上限 8（commit `0fe290e`）。
+- [x] Important 5 `AgentReportTabs` discriminated-union narrowing
+  （commit `bdbfcd5`）。
+
+新增 daemon-level 集成测试：
+- `apps/orchestrator/src/__tests__/daemon-pipeline-wiring.test.ts` 覆盖
+  `/api/quality/summary` byRole 路径（单 + team mode）、`revoke-ai-review`
+  真删 GitLab note、retry 路径走 coder + reviewer + 后续 testEvidence。
+- `apps/orchestrator/src/__tests__/daemon-task4b-wiring.test.ts` 用
+  `mockedCreateCoordinator` 抓 daemon 注入的 `CoordinatorAgents`，断言
+  coder / reviewer / testEvidence 都不再是 stub，并覆盖 `publishEvent`
+  gate accepts `detail.issueIid` 回归（4c review C1）。
+- `apps/orchestrator/src/agents/__tests__/codex-lifecycle.test.ts` 14 个
+  用例覆盖 lifecycle adapter 全部分支 + `onTurnActive` / ctx 透传。
+- `apps/orchestrator/src/codex/__tests__/split-command.test.ts` 5 个用例。
+
+复跑 `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh` 全 5 stage PASS。
+最终 verification gate（不带 `SKIP_E2E`）由 Task 10 后的 empty
+checkpoint commit 收尾。
+
 ## Out-of-Scope 自检
 
 - ✅ 没改 `RunStatus` / `PipelineStatus` 历史 enum；V4.6 `PipelineRunStatus`

@@ -254,6 +254,11 @@ Description:
 9. 如果缺少信息、权限或密钥，标记 ai-blocked 并说明阻塞原因。
 ```
 
+V4.7 之后，V4 role pipeline 的 runner 配置不再以早期 `agent.runner` /
+`codex:` 示例为源头，而是以 `runners:` registry 和 `roles.<role>.runner`
+为准；详见
+`docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
+
 必须支持的模板变量：
 
 ```text
@@ -1064,6 +1069,8 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
 V4 的详细设计以
 `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
 为准；该文件同时记录了“先做 V4，再做 V3”的 roadmap 决策。本节只保留产品路线摘要。
+V4.7 Runner Adapter Contract 的阶段设计见
+`docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
 
 目标：先在现有 V2.x 本地 / 团队 runtime 上，超越“单 Issue 单 run”模型，
 成为能理解、拆解、编排和改进研发流程的智能工作台。V4 不负责部署、权限、
@@ -1085,7 +1092,9 @@ V4 的详细设计以
 - workflow / skills 持续改进：根据失败模式推荐 workflow、skills、prompt 和项目规则
   调整，形成可审计的改进闭环。
 - 多执行器生态：支持 Claude Code、内部 coding agent 或其他 runner adapter，并用
-  统一报告和审计模型管理其输出。
+  统一报告和审计模型管理其输出；V4.7 先做本地静态 runner registry 与
+  `codex_app_server` adapter 迁移，不接入第二 runner，不提前做 V3 worker
+  平台化。
 
 ### V3：生产化执行平台
 

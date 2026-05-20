@@ -33,9 +33,14 @@ export {
 } from "./central.js";
 
 export {
+  assertRunnerCapabilities,
   expandHomePath,
   expandWorkflowPaths,
+  resolveRolePromptHashes,
   resolveTrackerSecret,
+  resolveWorkflow,
+  RoleProfileInvalidError,
+  RunnerConfigInvalidError,
   validateWorkflowEnv,
   type EnvLike,
   type TrackerSecret,

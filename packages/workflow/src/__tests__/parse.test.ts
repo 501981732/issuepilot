@@ -453,6 +453,251 @@ hi
     );
   });
 
+  it("V4.7: 解析 runners registry 并按 snake_case → camelCase 转换 options", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    display_name: "Codex App Server"
+    capabilities:
+      - roles.coder
+      - roles.reviewer
+      - roles.test_evidence
+      - events.streaming
+      - cancel
+      - artifacts
+      - gitlab.tools
+      - filesystem.worktree_write
+    timeout_seconds: 1800
+    options:
+      command: "codex app-server"
+      max_turns: 20
+      turn_timeout_ms: 3600000
+      approval_policy: never
+      thread_sandbox: workspace-write
+roles:
+  coder:
+    runner: codex_app_server
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    runner: codex_app_server
+    prompt_template: "prompts/reviewer.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    runner: codex_app_server
+    prompt_template: "prompts/test-evidence.md"
+    sandbox: read_only_source_write_evidence
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    const descriptor = cfg.runners.codex_app_server;
+    expect(descriptor).toBeDefined();
+    expect(descriptor?.kind).toBe("codex_app_server");
+    expect(descriptor?.displayName).toBe("Codex App Server");
+    expect(descriptor?.defaultTimeoutSeconds).toBe(1800);
+    expect(descriptor?.capabilities).toEqual([
+      "roles.coder",
+      "roles.reviewer",
+      "roles.test_evidence",
+      "events.streaming",
+      "cancel",
+      "artifacts",
+      "gitlab.tools",
+      "filesystem.worktree_write",
+    ]);
+    expect(descriptor?.options?.command).toBe("codex app-server");
+    expect(descriptor?.options?.maxTurns).toBe(20);
+    expect(descriptor?.options?.turnTimeoutMs).toBe(3_600_000);
+    expect(descriptor?.options?.approvalPolicy).toBe("never");
+    expect(descriptor?.options?.threadSandbox).toBe("workspace-write");
+    expect(cfg.roles.coder?.runner).toBe("codex_app_server");
+    expect(cfg.roles.reviewer?.runner).toBe("codex_app_server");
+    expect(cfg.roles.test_evidence?.runner).toBe("codex_app_server");
+  });
+
+  it("V4.7: 缺 runners 时 fallback 到内置 codex_app_server 并 emit warning", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.runners.codex_app_server?.kind).toBe("codex_app_server");
+    expect(cfg.runners.codex_app_server?.options?.threadSandbox).toBe(
+      "workspace-write",
+    );
+    expect(
+      cfg.warnings?.some(
+        (w) =>
+          w.code === "runner_default_used" &&
+          w.path === "runners.codex_app_server",
+      ),
+    ).toBe(true);
+  });
+
+  it.each(["env", "token", "secret", "credential", "cwd", "workspace_root"])(
+    "V4.7: 拒绝 codex_app_server.options 中的敏感字段 %s",
+    (field) => {
+      const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder]
+    options:
+      ${field}: nope
+---
+hi
+`;
+      expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+        /runners\.codex_app_server\.options/,
+      );
+    },
+  );
+
+  it("V4.7: 拒绝 codex_app_server.options 中未知字段", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder]
+    options:
+      unknown_option: 42
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      /unknown option/i,
+    );
+  });
+
+  it("V4.7: 拒绝 codex_app_server 中 sandbox escalation", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder]
+    options:
+      thread_sandbox: danger-full-access
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      /thread_sandbox/,
+    );
+  });
+
+  it("V4.7: 拒绝不支持的 runner kind", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  local:
+    kind: local_command
+    capabilities: [roles.coder]
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      /unsupported runner kind/i,
+    );
+  });
+
+  it("V4.7: 拒绝 legacy per-role runner override 字段，当 runners: 已声明时", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder, filesystem.worktree_write]
+roles:
+  coder:
+    runner: codex_app_server
+    runner_kind: codex-app-server
+    codex:
+      max_turns: 10
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      /legacy role runner override/i,
+    );
+  });
+
+  it("V4.7: 顶层历史 agent/codex 块仍可保留（不当作角色 runner 源）", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+agent:
+  runner: codex-app-server
+  max_turns: 5
+codex:
+  command: codex app-server
+  approval_policy: on-request
+  thread_sandbox: read-only
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder, filesystem.worktree_write]
+roles:
+  coder:
+    runner: codex_app_server
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    expect(cfg.agent.runner).toBe("codex-app-server");
+    expect(cfg.codex.approvalPolicy).toBe("on-request");
+    expect(cfg.roles.coder?.runner).toBe("codex_app_server");
+  });
+
   it("parses workflow content from a generated source path", () => {
     const raw = `---
 tracker:

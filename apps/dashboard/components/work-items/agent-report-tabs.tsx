@@ -109,12 +109,12 @@ export function AgentReportTabs({ reports }: AgentReportTabsProps) {
           >
             {t("empty")}
           </p>
-        ) : activeRole === "coder" ? (
-          <CoderPanel report={activeReport as CoderAgentReport} />
-        ) : activeRole === "reviewer" ? (
-          <ReviewerPanel report={activeReport as ReviewerAgentReport} />
+        ) : activeReport.role === "coder" ? (
+          <CoderPanel report={activeReport} />
+        ) : activeReport.role === "reviewer" ? (
+          <ReviewerPanel report={activeReport} />
         ) : (
-          <TestEvidencePanel report={activeReport as TestEvidenceAgentReport} />
+          <TestEvidencePanel report={activeReport} />
         )}
       </div>
     </section>

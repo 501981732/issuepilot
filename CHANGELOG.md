@@ -57,6 +57,27 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Important #9（`AgentReportTabs` 用
+  discriminated-union narrowing）**：`apps/dashboard/components/work-items/
+  agent-report-tabs.tsx` 之前用 `activeRole === "coder" | "reviewer"` 分支
+  渲染 panel，再把 `activeReport` `as CoderAgentReport` /
+  `as ReviewerAgentReport` / `as TestEvidenceAgentReport` 强转传给 panel。
+  Task 1 已经收紧了 `CoderPanel`，本次收尾 reviewer / test_evidence：
+  - 改为 `activeReport.role === "coder" | "reviewer"`，让 TypeScript 自己
+    在 `AgentReport` 的 discriminated union 上做 narrowing，三个 panel 全部
+    直接接收 narrowed `activeReport`，删除三处 `as` 强转。
+  - `ROLES` 顺序与 `activeRole` 的 `data-testid` 语义（`agent-tab-${role}` /
+    `agent-empty-${activeRole}`）保持不动，仅把 panel-render 分支切到
+    `activeReport.role`。
+  - 防御性收益：若 `reports.reviewer` 因数据漂移塞进了 `CoderAgentReport`，
+    旧代码会渲染 `<ReviewerPanel>` 并在访问 `.reviewer` 时崩溃；新代码按
+    实际 `role` dispatch 到正确 panel，行为更安全。
+  - `CoderAgentReport` / `ReviewerAgentReport` / `TestEvidenceAgentReport`
+    type imports 仍保留给三个 panel 的入参签名。
+  - 验证：`vitest run components/work-items/agent-report-tabs` 7/7 全绿；
+    `tsc -b apps/dashboard` clean；`eslint --max-warnings 0
+    components/work-items/agent-report-tabs.tsx` clean。
+
 - 2026-05-20 — **V4.6 follow-up Important #8（dashboard SSR fetch 并发上
   限）**：`apps/dashboard/app/work-items/[id]/page.tsx` 之前对每个 task 用
   无界 `Promise.all` fetch pipeline，再 task-by-task `Promise.all` fetch 三

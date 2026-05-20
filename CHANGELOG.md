@@ -57,6 +57,59 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Critical #1 part 1/3（Codex lifecycle 适配器）**：
+  `apps/orchestrator/src/daemon.ts:618-643` 和 `apps/orchestrator/src/team/
+  daemon.ts:299-323` 当前对三个 V4.6 角色（coder / reviewer / test_evidence）
+  统一抛 `agent_not_configured`，导致 V4.6 pipeline 无法实际跑通。Critical #1
+  的核心是把 daemon 内既有的 `splitCommand + spawnRpc + driveLifecycle`
+  闭包（daemon.ts:1234-1296）抽成 reusable adapter，再在 4b（单 daemon）/
+  4c（team daemon）把三个角色逐一插上去。
+  - 新增 `apps/orchestrator/src/agents/codex-lifecycle.ts`：导出
+    `createCoderLifecycle(opts)` / `createReviewerLifecycle(opts)` 两个
+    工厂，分别实现 `CoderLifecycleRunner` / `ReviewerLifecycleRunner`。
+    `CodexLifecycleOptions` 接 `workflow.codex` + `workflow.agent.maxTurns`
+    + `threadName({ workItem, task, role })` 回调 + 可选 `tools()` /
+    `now()` / `onEvent()` 测试 seam。
+  - `mapCoderOutcome` 把 `DriveResult.status` 5 个值穷尽映射到
+    `CoderLifecycleOutcome`：`completed` → `kind: "completed"`，`failed` /
+    `timeout` / `blocked` → `kind: "failed"` 且 `reason: "coding_failed"`
+    （timeout 的 message 包含 `lifecycle timed out`），`cancelled` →
+    `kind: "cancelled"` 并用 `opts.now()` 写 `cancelledAt`。
+  - `mapReviewerOutcome` 同形状但 `reason: "reviewer_unavailable"`，
+    `completed` 走 `kind: "message"` 路径。
+  - 同步抛错（`splitCommand` / `spawnRpc` / `driveLifecycle` 任一阶段）
+    不被吞，直接冒泡，让上游 `createCoderAgent` / `createReviewerAgent`
+    自己的 `try { lifecycle.run() }` catch 翻成 `runner_unavailable` /
+    `sandbox_violation` / `reviewer_unavailable`（与 daemon 旧闭包行为
+    一致）。`rpc.close()` 写在 `finally`，无论成功 / reject / cancel 都
+    只关一次，匹配 daemon.ts:1294 的现行习惯。
+  - 已知折中（TODO V4.7，已在源码注释中标注）：lifecycle 本身不暴露
+    worktree diff 或 reviewer agent 的最终 message，所以
+    `CoderLifecycleRunResult.diffSummary` / `branch` 与
+    `ReviewerLifecycleResult.rawMessage` 都先 pass `""`；下游
+    `createCoderAgent` 已经在 `outcome.partial?.* ?? ""` 上做了兜底，
+    reviewer 侧的空 `rawMessage` 会被 `parseReviewerMessage` 翻成
+    `prompt_output_schema_mismatch`，再由 `createReviewerAgent` 转成
+    `parse_failed`——这是诚实的中间态，4b/4c 会把真正的 message 抓取
+    链路再补上来。
+  - `splitCommand` 复用 `daemon.ts:343` 既有导出（不搬走），避免引入
+    跨模块改动；目前 daemon 没有反向 import 本新模块，所以 4a 不构成
+    循环依赖。4b/4c 会让 daemon 反向 import 本模块，届时与 `daemon.ts`
+    的 `splitCommand` 形成函数级 cycle——ESM 下函数 cycle 在运行时安全，
+    但若觉得脆弱，4b 落地时可把 `splitCommand` 单独拆到 `shared/` 子
+    模块。
+  - 单测：新增 `apps/orchestrator/src/agents/__tests__/codex-lifecycle.
+    test.ts` 8 个用例（`vi.mock("@issuepilot/runner-codex-app-server", …)`
+    注入 fake `spawnRpc` / `driveLifecycle`）覆盖 coder
+    completed / failed / cancelled、spawn 同步抛错冒泡、driveLifecycle
+    reject 时 finally 仍 close、reviewer completed / failed、
+    `threadName` 收到正确 `role`。
+  - 验证：`vitest run src/agents/__tests__/codex-lifecycle` 8/8 全绿；
+    `tsc -b apps/orchestrator` clean；`eslint --max-warnings 0` 两文件
+    clean。本次 **不** 修改 `daemon.ts` / `team/daemon.ts` /
+    `coder.ts` / `reviewer.ts`——把 4a 收口在新文件 + 单测，4b/4c 再拿
+    本 adapter 替换 daemon 里的 `agent_not_configured` 兜底。
+
 - 2026-05-20 — **V4.6 follow-up Important #9（`AgentReportTabs` 用
   discriminated-union narrowing）**：`apps/dashboard/components/work-items/
   agent-report-tabs.tsx` 之前用 `activeRole === "coder" | "reviewer"` 分支

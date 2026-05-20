@@ -20,8 +20,13 @@ import {
   spawnRpc,
 } from "@issuepilot/runner-codex-app-server";
 import type {
+  CoderAgentReport,
   IssuePilotInternalEvent,
+  ReviewerAgentReport,
   RunReportArtifact,
+  TaskNode,
+  TestEvidenceAgentReport,
+  WorkItem,
 } from "@issuepilot/shared-contracts";
 import {
   createGitLabAdapter,
@@ -46,6 +51,13 @@ import {
 } from "@issuepilot/workspace";
 import { execa } from "execa";
 
+import { createCoderAgent } from "./agents/coder.js";
+import {
+  createCoderLifecycle,
+  createReviewerLifecycle,
+} from "./agents/codex-lifecycle.js";
+import { createReviewerAgent } from "./agents/reviewer.js";
+import { splitCommand } from "./codex/split-command.js";
 import { revokeReviewerMrComments as revokeReviewerMrCommentsHelper } from "./gitlab/mr-comments.js";
 import { createImprovementService } from "./improvements/service.js";
 import { createImprovementStore } from "./improvements/store.js";
@@ -78,6 +90,11 @@ import {
   type CoordinatorAgents,
   type RoleProfileResolver,
 } from "./pipelines/coordinator.js";
+import {
+  buildRoleProfile,
+  type CoderRoleProfile,
+  type ReviewerRoleProfile,
+} from "./pipelines/role-profile.js";
 import { createPipelineService } from "./pipelines/service.js";
 import { createPipelineStore, type PipelineStore } from "./pipelines/store.js";
 import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary.js";
@@ -326,70 +343,12 @@ export function syncHumanReviewFinalLabels(
 }
 
 /**
- * Tokenize a `codex.command` string into `{ command, args[] }`. Supports
- * single + double quoted segments so paths containing spaces survive the
- * trip from the workflow YAML through to `execa`. Without this, an absolute
- * path like `/Users/User Name/.local/bin/codex` would be split into three
- * tokens by the previous `split(/\s+/)` and `execa` would try to spawn
- * `/Users/User`.
- *
- * Rules (intentionally a subset of POSIX shell):
- *   - Whitespace separates tokens.
- *   - `"…"` and `'…'` create a single token; the surrounding quotes are
- *     stripped. Escapes are NOT honoured inside quotes — keep paths simple.
- *   - Unbalanced quotes throw, matching the bash behaviour of refusing to
- *     execute the line.
+ * V4.6 follow-up Task 4b：`splitCommand` 已经迁出到
+ * `./codex/split-command.ts`，避免 `agents/codex-lifecycle.ts` 通过
+ * `daemon.ts` 产生函数级循环引用。这里 re-export 一份保留向后兼容
+ * （`index.ts` / 测试仍按 `daemon.ts` 入口 import）。
  */
-export function splitCommand(command: string): {
-  command: string;
-  args: string[];
-} {
-  const trimmed = command.trim();
-  if (trimmed.length === 0) {
-    throw new Error("codex.command must not be empty");
-  }
-  const tokens: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let inToken = false;
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i]!;
-    if (quote) {
-      if (ch === quote) {
-        quote = null;
-      } else {
-        current += ch;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      inToken = true;
-      continue;
-    }
-    if (ch === " " || ch === "\t" || ch === "\n") {
-      if (inToken) {
-        tokens.push(current);
-        current = "";
-        inToken = false;
-      }
-      continue;
-    }
-    current += ch;
-    inToken = true;
-  }
-  if (quote) {
-    throw new Error(
-      `codex.command has an unbalanced ${quote} quote: ${command}`,
-    );
-  }
-  if (inToken) tokens.push(current);
-  if (tokens.length === 0) {
-    throw new Error("codex.command must not be empty");
-  }
-  const [cmd, ...args] = tokens;
-  return { command: cmd!, args };
-}
+export { splitCommand } from "./codex/split-command.js";
 
 async function hasNewCommits(
   cwd: string,
@@ -615,25 +574,145 @@ export async function startDaemon(
     pipelineStore = createPipelineStore({
       root: path.join(workflow.workspace.root, ".issuepilot"),
     });
+    /**
+     * V4.6 follow-up Task 4b (review C1 part 2/3)：把 coder + reviewer
+     * 真正接到 `@issuepilot/runner-codex-app-server` 的
+     * `spawnRpc + driveLifecycle`。
+     *
+     * Codex 的 cwd 锚到 V4.5 `ensureWorktree` 的实际 layout
+     * (`<workspace.root>/<projectSlug>/<issueIid>`，见
+     * `packages/workspace/src/worktree.ts:204`)。V4.6 pipeline 自己
+     * 暂时还没接 ensureMirror / ensureWorktree —— 那仍是 V4.5
+     * dispatch path 的职责。所以当 issue 还没在 V4.5 路径上跑过
+     * 时，这里的 cwd 不存在，Codex spawn / driveLifecycle 会让
+     * lifecycle adapter 抛错；上游 `createCoderAgent` 把它翻成
+     * `runner_unavailable` 写入 AgentReport（spec §16.2 row 4），
+     * dashboard 看到失败而非 daemon 崩。把 worktree 主动 ensure
+     * 进 V4.6 pipeline 是 V4.7 范围。
+     */
+    const codexCwdFor = (workItem: WorkItem): string =>
+      path.join(
+        workflow.workspace.root,
+        slugify(workflow.tracker.projectId),
+        String(workItem.sourceIssue.iid),
+      );
+
+    const threadNameFor = ({
+      workItem,
+      task,
+      role,
+    }: {
+      workItem: WorkItem;
+      task: TaskNode;
+      role: "coder" | "reviewer" | "test_evidence";
+    }): string =>
+      `${workflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
+
+    const coderLifecycle = createCoderLifecycle({
+      codex: workflow.codex,
+      maxTurns: workflow.agent.maxTurns,
+      threadName: threadNameFor,
+      // V4.6 follow-up Task 4b：coder 暂时不挂 GitLab tools。V4.5
+      // dispatch path 已经在 `runAgent` 闭包里直接调 GitLab，V4.6
+      // pipeline 还没接 worktree / MR 创建链路，下一个 follow-up
+      // 再把 createGitLabTools 接上来。
+      onEvent: (type, data) =>
+        publishEvent({
+          type: `codex_v46_coder_${type}`,
+          // V4.6 pipeline 在这一层 scope 里没有 runId（PipelineRun.id
+          // 在 coordinator 内部生成），先用占位 runId 把事件落到固定
+          // bucket。AgentReport 自身仍然携带 canonical pipelineRunId
+          // / agentReportId / taskId，所以审计链路完整。
+          runId: "pipeline-coder",
+          ts: new Date().toISOString(),
+          detail: { data },
+        }),
+    });
+
+    const reviewerLifecycle = createReviewerLifecycle({
+      codex: workflow.codex,
+      maxTurns: workflow.agent.maxTurns,
+      threadName: threadNameFor,
+      onEvent: (type, data) =>
+        publishEvent({
+          type: `codex_v46_reviewer_${type}`,
+          runId: "pipeline-reviewer",
+          ts: new Date().toISOString(),
+          detail: { data },
+        }),
+    });
+
+    const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
+    const reviewerAgent = createReviewerAgent({ lifecycle: reviewerLifecycle });
+
+    /**
+     * Coordinator 的 `AgentRunInput` 不含 `cwd`（worktree path 是 daemon
+     * 装配层的事），所以这里建薄 adapter：补 `cwd`，narrow
+     * `RoleProfile` 到具体 role profile，再把 `CoderAgentResult` /
+     * `ReviewerAgentResult` 直接当作 `AgentRunResult` 返回（结构兼容）。
+     *
+     * V4.6 follow-up Task 4b — reviewer publisher 故意不注入到
+     * CoordinatorAgents：`publishReviewerToMr` 需要 `MrRef` 携带
+     * `{iid, baseSha, startSha, headSha}`，但当前 GitLab adapter 的
+     * `getMergeRequest` 只暴露 `{iid, webUrl, state}`，缺 diff_refs。
+     * 扩展 tracker-gitlab `MergeRequestSummary` 是跨 package 改动，
+     * 不在本次 critical-fix 范围内。在 publisher 接通之前 coordinator
+     * 仍能跑：reviewer 报告正常落盘，`mrPublication` 保持 agent 初始
+     * 值（`pending` / `skipped_by_config`），dashboard 也能显示。
+     * Tracking：docs/superpowers/specs/2026-05-11-issuepilot-design.md §12
+     */
     const pipelineAgents: CoordinatorAgents = {
       coder: {
-        async run() {
-          throw new CoordinatorError(
-            "V4.6 coder agent runner is not wired on this daemon yet",
-            "agent_not_configured",
-          );
+        async run(input): Promise<
+          | { kind: "report"; report: CoderAgentReport }
+          | { kind: "cancelled"; cancelledAt: string }
+        > {
+          if (input.profile.role !== "coder") {
+            throw new CoordinatorError(
+              `coder agent received non-coder profile: ${input.profile.role}`,
+              "role_profile_invalid",
+            );
+          }
+          const coderProfile: CoderRoleProfile = input.profile;
+          return coderAgent.run({
+            workItem: input.workItem,
+            task: input.task,
+            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+            profile: coderProfile,
+            cwd: codexCwdFor(input.workItem),
+          });
         },
       },
       reviewer: {
-        async run() {
-          throw new CoordinatorError(
-            "V4.6 reviewer agent runner is not wired on this daemon yet",
-            "agent_not_configured",
-          );
+        async run(input): Promise<
+          | { kind: "report"; report: ReviewerAgentReport }
+          | { kind: "cancelled"; cancelledAt: string }
+        > {
+          // coordinator 在调入 reviewer 之前已经把 profile.role 校验
+          // 成 "reviewer"（pipelines/coordinator.ts:324）。这里再校验
+          // 一次保留 narrow 路径，避免依赖上游不变量。
+          if (input.profile.role !== "reviewer") {
+            throw new CoordinatorError(
+              `reviewer agent received non-reviewer profile: ${input.profile.role}`,
+              "role_profile_invalid",
+            );
+          }
+          const reviewerProfile: ReviewerRoleProfile = input.profile;
+          return reviewerAgent.run({
+            workItem: input.workItem,
+            task: input.task,
+            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+            profile: reviewerProfile,
+            cwd: codexCwdFor(input.workItem),
+          });
         },
       },
       testEvidence: {
-        async run() {
+        // Task 4c 会接 test_evidence agent；本次仍保留 typed stub。
+        async run(): Promise<
+          | { kind: "report"; report: TestEvidenceAgentReport }
+          | { kind: "cancelled"; cancelledAt: string }
+        > {
           throw new CoordinatorError(
             "V4.6 test_evidence agent runner is not wired on this daemon yet",
             "agent_not_configured",
@@ -641,9 +720,25 @@ export async function startDaemon(
         },
       },
     };
+    const workflowRoles = workflow.roles;
     const pipelineRoleProfileResolver: RoleProfileResolver = {
-      async resolveRoleProfile() {
-        return null;
+      async resolveRoleProfile(role, { workItem, task }) {
+        const cfg = workflowRoles[role];
+        if (!cfg) return null;
+        return buildRoleProfile({
+          role: cfg,
+          workItem: {
+            id: workItem.workItemId,
+            iid: workItem.sourceIssue.iid,
+            title: workItem.title,
+            ...(workItem.goal ? { description: workItem.goal } : {}),
+          },
+          task: {
+            id: task.taskId,
+            title: task.title,
+            ...(task.goal ? { description: task.goal } : {}),
+          },
+        });
       },
     };
     const pipelineCoordinator: Coordinator = createCoordinator({

@@ -57,6 +57,64 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Critical #1 part 2/3（单 daemon + team
+  daemon 接通 V4.6 coder + reviewer agents）**：把 4a 落地的
+  `createCoderLifecycle` / `createReviewerLifecycle` 真正接到
+  `apps/orchestrator/src/daemon.ts` 和 `apps/orchestrator/src/team/
+  daemon.ts` 的 V4.6 pipeline 装配块。这之前两条 daemon 在 V4.6 pipeline
+  组装时统一把 `CoordinatorAgents.coder` / `reviewer` / `testEvidence`
+  打成 `CoordinatorError(..., "agent_not_configured")` 抛错 stub，导致
+  V4.6 pipeline 在 dashboard 一发起就 503；`RoleProfileResolver`
+  也只是返回 `null`，让 coordinator 直接抛 `role_profile_invalid`。
+  - daemon 内联以 `splitCommand + spawnRpc + driveLifecycle` 封装 coder /
+    reviewer 真实 lifecycle：先把工作目录 (`codexCwdFor`) 锚定到
+    `workflow.workspace.root/<projectSlug>/<issueIid>`（对齐
+    `packages/workspace/src/worktree.ts` 的 `ensureWorktree` 真实落盘形状；
+    V4.6 暂未由 daemon 主动调用 `ensureWorktree`，缺失 worktree 时 Codex
+    会因 cwd 不存在被 `mapCoderOutcome` / `mapReviewerOutcome` 翻成
+    `runner_unavailable` / `coding_failed` 落到 AgentReport，而不是 crash
+    daemon；正式 worktree 触发随 V4.7 上来）。
+  - `CoordinatorAgents` 注入薄 adapter：把 `AgentRunInput` narrow 成
+    `CoderRoleProfile` / `ReviewerRoleProfile`（runtime guard +
+    `CoordinatorError("role_profile_invalid")`），把 `cwd` 注入，再把
+    `coderAgent.run(...)` / `reviewerAgent.run(...)` 的 `kind: "report"`
+    / `kind: "cancelled"` 结构直接当成 `AgentRunResult` 返回。
+    `testEvidence.run()` 仍抛 `agent_not_configured`（Task 4c 接）。
+  - `pipelineRoleProfileResolver` 改为读 `workflow.roles` 并调
+    `buildRoleProfile({ role, workItem: {id, iid, title, description?},
+    task: {id, title, description?} })`；workflow 缺角色配置时仍返回
+    `null` 保留旧 503 路径，作为 dashboard 友好降级。
+  - reviewer publisher **故意不注入** CoordinatorAgents：spec §12 的
+    `publishReviewerToMr` 要求 `MrRef { iid, baseSha, startSha, headSha }`，
+    但 `packages/tracker-gitlab/src/merge-requests.ts:126-134` 的
+    `getMergeRequest` 当前只暴露 `{iid, webUrl, state}`，缺 diff_refs。
+    扩 `MergeRequestSummary` 是跨 package 改动，明确不在 critical-fix
+    范围内。coordinator 在 publisher 缺失时仍能跑：reviewer 报告正常落
+    盘，`mrPublication` 保持 agent 初始化值（`pending` /
+    `skipped_by_config`），dashboard 能完整显示。源码注释和 CHANGELOG
+    都明确把这一点 deferred 到 Tracking 项
+    `docs/superpowers/specs/2026-05-11-issuepilot-design.md §12`。
+  - 代码移动：`splitCommand` 从 `daemon.ts:343-392` 抽到新模块
+    `apps/orchestrator/src/codex/split-command.ts`，避免
+    `agents/codex-lifecycle.ts` 通过 `daemon.ts` 形成函数级循环引用；
+    `daemon.ts` 用 `export { splitCommand } from "./codex/split-command.js"`
+    保留向后兼容（既有 `index.ts` / 测试沿用 `daemon.ts` 入口 import）。
+  - 测试：新增 `apps/orchestrator/src/codex/__tests__/split-command.
+    test.ts`（5 条 smoke：简单命令 / 双引号路径 / 混合引号 / 空字符串
+    throws / 不平衡引号 throws）；新增 `apps/orchestrator/src/__tests__/
+    daemon-task4b-wiring.test.ts`（2 条：单 daemon + team daemon，
+    `vi.mock("@issuepilot/runner-codex-app-server", …)` 注入 fake
+    `spawnRpc` / `driveLifecycle`，再用 `vi.mock("../pipelines/
+    coordinator.js", …)` 透传 spy 抓取 daemon 真正注入的 agents +
+    resolver，断言 (a) `agents.coder.run(...)` 真的走过
+    `driveLifecycle`、(b) reviewer 同理、(c) `testEvidence` 仍抛
+    `agent_not_configured`、(d) `agents.reviewerPublisher` 未注入、
+    (e) `roleProfileResolver.resolveRoleProfile("coder", …)` 返回
+    `roleProfileId: "coder@…"` 且 prompt 渲染了 `{{task.title}}`）。
+  - 验证：`vitest run`（orchestrator 78 文件 / 911 用例）全绿；
+    `tsc -b apps/orchestrator` clean；`eslint --max-warnings 0` 五个
+    本次改动文件 clean。
+
 - 2026-05-20 — **V4.6 follow-up Critical #1 part 1/3（Codex lifecycle 适配器）**：
   `apps/orchestrator/src/daemon.ts:618-643` 和 `apps/orchestrator/src/team/
   daemon.ts:299-323` 当前对三个 V4.6 角色（coder / reviewer / test_evidence）

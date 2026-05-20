@@ -31,6 +31,8 @@ import type {
   CoderAgentReport,
   IssuePilotInternalEvent,
   ReviewerAgentReport,
+  TaskNode,
+  WorkItem,
 } from "@issuepilot/shared-contracts";
 import type { GitLabAdapter } from "@issuepilot/tracker-gitlab";
 import {
@@ -41,6 +43,19 @@ import {
 import type { WorkflowConfig } from "@issuepilot/workflow";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// V4.6 follow-up Task 4b — stub the Codex runner module at hoist time so the
+// new wiring drives a fake `spawnRpc + driveLifecycle` pair. The mock applies
+// to every test in this file but the existing quality / revoke suites never
+// call into `runAgent` (only daemon assembly + HTTP routes), so the stubs are
+// transparent to them.
+vi.mock("@issuepilot/runner-codex-app-server", () => ({
+  spawnRpc: vi.fn(),
+  driveLifecycle: vi.fn(),
+  createGitLabTools: vi.fn(() => []),
+}));
+
+import { driveLifecycle, spawnRpc } from "@issuepilot/runner-codex-app-server";
 
 import { startDaemon } from "../daemon.js";
 import { createRuntimeState } from "../runtime/state.js";
@@ -709,6 +724,284 @@ describe("V4.6 daemon revoke wiring (review C3)", () => {
           // Fastify 默认把未捕获 Error 翻成 500；关键是不能 200。
           expect(resp.statusCode).toBeGreaterThanOrEqual(500);
           expect(remove).not.toHaveBeenCalled();
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Task 4b — V4.6 daemon wiring (C1 part 2/3).
+ *
+ * Sanity-check that the daemon no longer stubs coder / reviewer as
+ * `agent_not_configured`：reviewer retry must drive `driveLifecycle`
+ * via the lifecycle adapter and persist a new AgentReport (even if the
+ * adapter's known V4.7 TODO leaves `rawMessage = ""`, so the report
+ * lands as `status = "failed"` with `lastError.code = "parse_failed"`).
+ *
+ * Bug-catching：把 daemon.ts 里 reviewer 的 `coordinator.run` 改回
+ * `throw new CoordinatorError(..., "agent_not_configured")` 后，retry
+ * 响应会变成 503 service_unavailable，本测试断言会红。
+ */
+describe("Task 4b — V4.6 daemon wiring (C1 part 2/3)", () => {
+  const driveMock = vi.mocked(driveLifecycle);
+  const spawnMock = vi.mocked(spawnRpc);
+
+  beforeEach(() => {
+    driveMock.mockReset();
+    spawnMock.mockReset();
+    spawnMock.mockReturnValue({
+      close: vi.fn(async () => undefined),
+      onRequest: vi.fn(),
+      onNotification: vi.fn(),
+    } as never);
+  });
+
+  afterEach(() => {
+    driveMock.mockReset();
+    spawnMock.mockReset();
+  });
+
+  it("retryAgentReport(reviewer) drives the lifecycle adapter and persists a new AgentReport (no more 503)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ip-daemon-4b-"));
+    try {
+      const workflow = buildV46Workflow(root);
+      // The default `buildV46Workflow` hard-codes `/tmp/c.md` etc. Override
+      // role.promptTemplate to point at real files under the test root so
+      // `buildRoleProfile` reads something deterministic instead of failing
+      // on ENOENT.
+      const templatesDir = path.join(root, "templates");
+      await fs.mkdir(templatesDir, { recursive: true });
+      const coderTpl = path.join(templatesDir, "c.md");
+      const reviewerTpl = path.join(templatesDir, "r.md");
+      const teTpl = path.join(templatesDir, "t.md");
+      await fs.writeFile(coderTpl, "Coder: {{task.title}}", "utf8");
+      await fs.writeFile(reviewerTpl, "Reviewer: {{task.title}}", "utf8");
+      await fs.writeFile(teTpl, "TE: {{task.title}}", "utf8");
+      const wiredWorkflow: WorkflowConfig = {
+        ...workflow,
+        roles: {
+          coder: { ...workflow.roles!.coder!, promptTemplate: coderTpl },
+          reviewer: {
+            ...workflow.roles!.reviewer!,
+            promptTemplate: reviewerTpl,
+          },
+          test_evidence: {
+            ...workflow.roles!.test_evidence!,
+            promptTemplate: teTpl,
+          },
+        },
+      };
+
+      const { adapter: fakeGitLab } = buildFakeGitLabWithDeleteSpy();
+      let captured: ServerDeps | undefined;
+      const daemon = await startDaemon(
+        { workflowPath: wiredWorkflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => wiredWorkflow),
+            start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => fakeGitLab),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            captured = deps;
+            return createFakeServer();
+          }),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+
+      try {
+        if (!captured) throw new Error("server deps not captured");
+        expect(captured.pipelines).toBeDefined();
+        expect(captured.pipelineStore).toBeDefined();
+
+        // Seed: a finished PipelineRun + coder report + reviewer report so
+        // service.retryAgentReport(reviewer) can drive coordinator.retryRole
+        // (which requires a previous reviewer report for the supersede chain).
+        const taskId = "t_4b";
+        const workItemId = "wi_4b";
+        const pipelineRunId = "pr_4b";
+        const coderReport: CoderAgentReport = {
+          agentReportId: "ar_coder_4b",
+          pipelineRunId,
+          taskId,
+          role: "coder",
+          roleProfileId: "coder@deadbeef",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          coder: {
+            diffSummary: "ok",
+            branch: "issuepilot/t_4b",
+          },
+        };
+        const reviewerOrig: ReviewerAgentReport = {
+          agentReportId: "ar_rev_4b",
+          pipelineRunId,
+          taskId,
+          role: "reviewer",
+          roleProfileId: "reviewer@deadbeef",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          reviewer: {
+            summary: "ok",
+            decision: "request_changes",
+            confidence: 0.5,
+            risks: [],
+            evidenceRequest: [],
+            findings: [],
+            inlineComments: [],
+            mrPublication: { status: "pending", noteIds: [] },
+          },
+        };
+        await captured.pipelineStore!.saveAgentReport(coderReport);
+        await captured.pipelineStore!.saveAgentReport(reviewerOrig);
+        await captured.pipelineStore!.savePipelineRun({
+          pipelineRunId,
+          workItemId,
+          taskId,
+          recipe: "full_pipeline",
+          recipeSource: "workflow_default",
+          agentReportIds: {
+            coder: coderReport.agentReportId,
+            reviewer: reviewerOrig.agentReportId,
+            test_evidence: null,
+          },
+          status: "awaiting_rework",
+          currentRole: null,
+          createdAt: isoNow,
+          updatedAt: isoNow,
+          completedAt: isoNow,
+        });
+
+        // Coordinator needs a WorkItem + TaskPlan in the workItemStore so the
+        // RoleProfileResolver can hand the renderer real workItem / task ids.
+        const workItem: WorkItem = {
+          workItemId,
+          sourceIssue: {
+            projectId: "group/project",
+            iid: 4242,
+            url: "https://gitlab.example.com/group/project/-/issues/4242",
+            title: "task title",
+          },
+          title: "task title",
+          goal: "ship",
+          acceptanceCriteria: ["AC"],
+          status: "running",
+          taskIds: [taskId],
+          createdAt: isoNow,
+          updatedAt: isoNow,
+        };
+        const task: TaskNode = {
+          taskId,
+          title: "task title",
+          goal: "do reviewer retry",
+          scope: "scope",
+          dependsOn: [],
+          suggestedValidation: [],
+          status: "awaiting_human_review",
+          runIds: [],
+          riskLevel: "low",
+          currentPipelineRunId: pipelineRunId,
+        };
+        const workItemRoot = path.join(root, ".issuepilot");
+        await fs.mkdir(path.join(workItemRoot, "work-items"), {
+          recursive: true,
+        });
+        await fs.writeFile(
+          path.join(workItemRoot, "work-items", `${workItemId}.json`),
+          JSON.stringify(workItem),
+          "utf8",
+        );
+        // Mirror createWorkItemStore's `task-plans/<planId>.json` layout
+        // (apps/orchestrator/src/work-items/store.ts:100). The store scans
+        // the directory + indexes by `workItemId` lazily.
+        await fs.mkdir(path.join(workItemRoot, "task-plans"), {
+          recursive: true,
+        });
+        const planId = "tp_4b";
+        await fs.writeFile(
+          path.join(workItemRoot, "task-plans", `${planId}.json`),
+          JSON.stringify({
+            planId,
+            workItemId,
+            version: 1,
+            tasks: [task],
+            status: "accepted",
+            createdAt: isoNow,
+            updatedAt: isoNow,
+          }),
+          "utf8",
+        );
+
+        // Fake lifecycle: completed turn, lifecycle adapter's known V4.7 TODO
+        // means the reviewer report will be parse_failed (rawMessage = "").
+        driveMock.mockResolvedValue({
+          status: "completed",
+          turnsUsed: 1,
+          lastTurnId: "turn_reviewer_4b",
+          threadId: "th_4b",
+        });
+
+        const app = await createServer(captured, { port: 0 });
+        try {
+          const resp = await app.inject({
+            method: "POST",
+            url: "/api/agent-reports/ar_rev_4b/retry",
+            headers: {
+              "x-issuepilot-operator": "alice",
+              "content-type": "application/json",
+            },
+            payload: JSON.stringify({ reason: "rerun reviewer" }),
+          });
+          // Key assertion: the wiring is real — NO 503 / agent_not_configured.
+          // Revert the daemon.ts wiring to its old `throw CoordinatorError(...
+          // "agent_not_configured")` stub and this expectation goes red.
+          expect(resp.statusCode).toBe(200);
+          const body = JSON.parse(resp.body) as {
+            pipelineRunId?: string;
+            agentReportId?: string;
+          };
+          expect(body.pipelineRunId).toBe(pipelineRunId);
+          expect(typeof body.agentReportId).toBe("string");
+          expect(body.agentReportId).not.toBe(reviewerOrig.agentReportId);
+
+          // The lifecycle adapter actually spawned + drove the fake runner.
+          expect(spawnMock).toHaveBeenCalledTimes(1);
+          expect(driveMock).toHaveBeenCalledTimes(1);
+          const driveArgs = driveMock.mock.calls[0]?.[0];
+          // Reviewer thread name uses the role suffix from the daemon's
+          // threadNameFor helper. This protects the daemon → adapter →
+          // lifecycle round-trip.
+          expect(driveArgs?.threadName).toBe(
+            `group/project#${workItem.sourceIssue.iid}/${taskId}/reviewer`,
+          );
+
+          // The new reviewer report landed with parse_failed (because the
+          // adapter still passes rawMessage = "" — V4.7 TODO). The exact
+          // status code less important than the proof that wiring happened.
+          const fresh = await captured.pipelineStore!.findAgentReportById(
+            body.agentReportId!,
+          );
+          expect(fresh).toBeTruthy();
+          expect(fresh?.report.role).toBe("reviewer");
+          expect(fresh?.report.status).toBe("failed");
+          expect(fresh?.report.lastError?.code).toBe("parse_failed");
         } finally {
           await app.close();
         }

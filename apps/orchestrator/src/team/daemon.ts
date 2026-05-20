@@ -1,9 +1,24 @@
+import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { createEventBus, type EventBus } from "@issuepilot/observability";
-import type { IssuePilotInternalEvent } from "@issuepilot/shared-contracts";
+import type {
+  CoderAgentReport,
+  IssuePilotInternalEvent,
+  ReviewerAgentReport,
+  TaskNode,
+  TestEvidenceAgentReport,
+  WorkItem,
+} from "@issuepilot/shared-contracts";
+import { slugify } from "@issuepilot/workspace";
 
+import { createCoderAgent } from "../agents/coder.js";
+import {
+  createCoderLifecycle,
+  createReviewerLifecycle,
+} from "../agents/codex-lifecycle.js";
+import { createReviewerAgent } from "../agents/reviewer.js";
 import { createImprovementService } from "../improvements/service.js";
 import { createImprovementStore } from "../improvements/store.js";
 import {
@@ -12,6 +27,11 @@ import {
   type CoordinatorAgents,
   type RoleProfileResolver,
 } from "../pipelines/coordinator.js";
+import {
+  buildRoleProfile,
+  type CoderRoleProfile,
+  type ReviewerRoleProfile,
+} from "../pipelines/role-profile.js";
 import {
   createPipelineService,
   type PipelineService,
@@ -314,25 +334,140 @@ export async function startTeamDaemon(
         root: path.join(project.workflow.workspace.root, ".issuepilot"),
       });
       pipelineStoreByProject.set(project.id, pipelineStore);
+      /**
+       * V4.6 follow-up Task 4b (review C1 part 2/3) — 镜像单 daemon 的
+       * coder + reviewer wiring。Codex 进程通过
+       * `@issuepilot/runner-codex-app-server` 的 `spawnRpc + driveLifecycle`
+       * 真正起来；`cwd` 锚到 V4.5 `ensureWorktree` 的实际 layout
+       * (`<workspace.root>/<projectSlug>/<issueIid>`，见
+       * `packages/workspace/src/worktree.ts:204`)。V4.6 pipeline 自己暂时
+       * 还没接 ensureMirror / ensureWorktree —— 那仍是 V4.5 dispatch path
+       * 的职责。所以当 issue 还没在 V4.5 路径上跑过时，这里的 cwd 不存
+       * 在，Codex spawn / driveLifecycle 会让 lifecycle adapter 抛错；
+       * 上游 agent factory 把它翻成 `runner_unavailable`/`coding_failed`
+       * 写入 AgentReport（spec §16.2 row 4），dashboard 看到失败而非
+       * daemon 崩。把 worktree 主动 ensure 进 V4.6 pipeline 是 V4.7 范围。
+       */
+      const projectWorkflow = project.workflow;
+      const codexCwdFor = (workItem: WorkItem): string =>
+        path.join(
+          projectWorkflow.workspace.root,
+          slugify(projectWorkflow.tracker.projectId),
+          String(workItem.sourceIssue.iid),
+        );
+      const threadNameFor = ({
+        workItem,
+        task,
+        role,
+      }: {
+        workItem: WorkItem;
+        task: TaskNode;
+        role: "coder" | "reviewer" | "test_evidence";
+      }): string =>
+        `${projectWorkflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
+      const publishLifecycleEvent = (input: {
+        type: string;
+        runId: string;
+        data: unknown;
+      }): void => {
+        const ts = new Date().toISOString();
+        eventBus.publish({
+          id: randomUUID(),
+          runId: input.runId,
+          type: input.type,
+          message: input.type,
+          createdAt: ts,
+          ts,
+          data: input.data,
+          detail: { project: project.id, data: input.data },
+        } as unknown as TeamEvent);
+      };
+      const coderLifecycle = createCoderLifecycle({
+        codex: projectWorkflow.codex,
+        maxTurns: projectWorkflow.agent.maxTurns,
+        threadName: threadNameFor,
+        onEvent: (type, data) =>
+          publishLifecycleEvent({
+            type: `codex_v46_coder_${type}`,
+            runId: "pipeline-coder",
+            data,
+          }),
+      });
+      const reviewerLifecycle = createReviewerLifecycle({
+        codex: projectWorkflow.codex,
+        maxTurns: projectWorkflow.agent.maxTurns,
+        threadName: threadNameFor,
+        onEvent: (type, data) =>
+          publishLifecycleEvent({
+            type: `codex_v46_reviewer_${type}`,
+            runId: "pipeline-reviewer",
+            data,
+          }),
+      });
+      const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
+      const reviewerAgent = createReviewerAgent({
+        lifecycle: reviewerLifecycle,
+      });
+      /**
+       * V4.6 follow-up Task 4b — reviewer publisher 故意不注入到
+       * CoordinatorAgents：`publishReviewerToMr` 需要 `MrRef` 携带
+       * `{iid, baseSha, startSha, headSha}`，但当前 GitLab adapter 的
+       * `getMergeRequest` 只暴露 `{iid, webUrl, state}`，缺 diff_refs。
+       * 扩展 tracker-gitlab `MergeRequestSummary` 是跨 package 改动，
+       * 不在本次 critical-fix 范围内。在 publisher 接通之前 coordinator
+       * 仍能跑：reviewer 报告正常落盘，`mrPublication` 保持 agent 初始
+       * 值（`pending` / `skipped_by_config`），dashboard 也能显示。
+       * Tracking：docs/superpowers/specs/2026-05-11-issuepilot-design.md §12
+       */
       const pipelineAgents: CoordinatorAgents = {
         coder: {
-          async run() {
-            throw new CoordinatorError(
-              "V4.6 coder agent runner is not wired on team-mode yet",
-              "agent_not_configured",
-            );
+          async run(input): Promise<
+            | { kind: "report"; report: CoderAgentReport }
+            | { kind: "cancelled"; cancelledAt: string }
+          > {
+            if (input.profile.role !== "coder") {
+              throw new CoordinatorError(
+                `coder agent received non-coder profile: ${input.profile.role}`,
+                "role_profile_invalid",
+              );
+            }
+            const coderProfile: CoderRoleProfile = input.profile;
+            return coderAgent.run({
+              workItem: input.workItem,
+              task: input.task,
+              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+              profile: coderProfile,
+              cwd: codexCwdFor(input.workItem),
+            });
           },
         },
         reviewer: {
-          async run() {
-            throw new CoordinatorError(
-              "V4.6 reviewer agent runner is not wired on team-mode yet",
-              "agent_not_configured",
-            );
+          async run(input): Promise<
+            | { kind: "report"; report: ReviewerAgentReport }
+            | { kind: "cancelled"; cancelledAt: string }
+          > {
+            if (input.profile.role !== "reviewer") {
+              throw new CoordinatorError(
+                `reviewer agent received non-reviewer profile: ${input.profile.role}`,
+                "role_profile_invalid",
+              );
+            }
+            const reviewerProfile: ReviewerRoleProfile = input.profile;
+            return reviewerAgent.run({
+              workItem: input.workItem,
+              task: input.task,
+              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+              profile: reviewerProfile,
+              cwd: codexCwdFor(input.workItem),
+            });
           },
         },
         testEvidence: {
-          async run() {
+          // Task 4c 会接 test_evidence agent；本次仍保留 typed stub。
+          async run(): Promise<
+            | { kind: "report"; report: TestEvidenceAgentReport }
+            | { kind: "cancelled"; cancelledAt: string }
+          > {
             throw new CoordinatorError(
               "V4.6 test_evidence agent runner is not wired on team-mode yet",
               "agent_not_configured",
@@ -341,8 +476,23 @@ export async function startTeamDaemon(
         },
       };
       const pipelineRoleProfileResolver: RoleProfileResolver = {
-        async resolveRoleProfile() {
-          return null;
+        async resolveRoleProfile(role, { workItem, task }) {
+          const cfg = projectRoles[role];
+          if (!cfg) return null;
+          return buildRoleProfile({
+            role: cfg,
+            workItem: {
+              id: workItem.workItemId,
+              iid: workItem.sourceIssue.iid,
+              title: workItem.title,
+              ...(workItem.goal ? { description: workItem.goal } : {}),
+            },
+            task: {
+              id: task.taskId,
+              title: task.title,
+              ...(task.goal ? { description: task.goal } : {}),
+            },
+          });
         },
       };
       const pipelineCoordinator = createCoordinator({

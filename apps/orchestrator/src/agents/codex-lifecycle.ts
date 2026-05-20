@@ -43,7 +43,7 @@ import type {
 } from "@issuepilot/shared-contracts";
 import type { WorkflowConfig } from "@issuepilot/workflow";
 
-import { splitCommand } from "../daemon.js";
+import { splitCommand } from "../codex/split-command.js";
 
 import type {
   CoderLifecycleOutcome,

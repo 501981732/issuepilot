@@ -384,6 +384,35 @@ describe("createPipelineService", () => {
     ).toBe("revoked");
   });
 
+  it("V4.6 fix C3: revokeAiReview clears mrPublication.noteIds (spec §12)", async () => {
+    // Spec §12 要求 revoked publication 必须 `noteIds = []`，否则下游
+    // 误读为「这些 note 仍在线」，违反审计契约。Phase 12 review C3 发现
+    // service.ts 写回时是 `{...publication, status: "revoked"}`，保留了旧
+    // note 引用 —— 必须强制清空 noteIds。
+    const h = await buildHarness();
+    cleanup.push(() => rm(h.tempRoot, { recursive: true, force: true }));
+    await h.store.saveAgentReport(buildReviewerReport());
+
+    const result = await h.service.revokeAiReview({
+      agentReportId: "ar_reviewer",
+      operator: "alice",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const fresh = await h.store.getAgentReport({
+      taskId: "t_1",
+      role: "reviewer",
+      agentReportId: "ar_reviewer",
+    });
+    const mr = (fresh as ReviewerAgentReport).reviewer.mrPublication;
+    expect(mr.status).toBe("revoked");
+    expect(mr.noteIds).toEqual([]);
+    // publishedAt 如果存在，应保留作为审计痕迹。
+    if ("publishedAt" in mr) {
+      expect(typeof mr.publishedAt).toBe("string");
+    }
+  });
+
   it("revokeAiReview rejects non-reviewer report with role_mismatch", async () => {
     const h = await buildHarness();
     cleanup.push(() => rm(h.tempRoot, { recursive: true, force: true }));

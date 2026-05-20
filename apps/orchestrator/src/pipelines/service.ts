@@ -460,13 +460,24 @@ export const createPipelineService = (
         });
         revokedAt = outcome.revokedAt;
       }
+      // V4.6 fix C3 (spec §12)：revoked publication 必须把 noteIds 清空。
+      // 旧实现 `{ ...publication, status: "revoked" }` 会把原 note 引用
+      // 保留下来，下游误读为「这些 note 仍在线」，违反审计契约。`publishedAt`
+      // 保留作为审计痕迹；用条件 spread 处理以兼容 `exactOptionalPropertyTypes`。
+      // V4.6 fix C3 (spec §12)：revoked publication 必须把 noteIds 清空。
+      // 旧实现 `{ ...publication, status: "revoked" }` 会把原 note 引用
+      // 保留下来，下游误读为「这些 note 仍在线」，违反审计契约。`publishedAt`
+      // 保留作为审计痕迹；用条件 spread 处理以兼容 `exactOptionalPropertyTypes`。
       const updated: AgentReport = {
         ...reviewer,
         reviewer: {
           ...reviewer.reviewer,
           mrPublication: {
-            ...publication,
             status: "revoked",
+            noteIds: [],
+            ...(publication.publishedAt
+              ? { publishedAt: publication.publishedAt }
+              : {}),
           },
         },
       };

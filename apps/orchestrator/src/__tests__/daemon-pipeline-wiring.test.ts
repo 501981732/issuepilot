@@ -19,8 +19,11 @@
  * improvement service 但没接到路由" 的情况）后，这里的 byRole 断言必
  * red — 充分验证测试能捕获 V4.6 review follow-up Issue 1 这个 bug。
  */
+import * as fs from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { join } from "node:path";
 
 import { createEventBus } from "@issuepilot/observability";
@@ -29,8 +32,17 @@ import type {
   IssuePilotInternalEvent,
   ReviewerAgentReport,
 } from "@issuepilot/shared-contracts";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { GitLabAdapter } from "@issuepilot/tracker-gitlab";
+import {
+  createGitLabClient,
+  type GitLabApi,
+  type GitLabClient,
+} from "@issuepilot/tracker-gitlab";
+import type { WorkflowConfig } from "@issuepilot/workflow";
+import type { FastifyInstance } from "fastify";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { startDaemon } from "../daemon.js";
 import { createRuntimeState } from "../runtime/state.js";
 import { createServer, type ServerDeps } from "../server/index.js";
 import {
@@ -301,6 +313,410 @@ describe("daemon /api/quality/summary byRole HTTP wiring (V4.6 review follow-up 
       expect(body.byRole).toBeUndefined();
     } finally {
       await app.close();
+    }
+  });
+});
+
+/**
+ * V4.6 review C3：daemon 端把 `revokeReviewerMrComments` 接到 GitLab API。
+ *
+ * 这个 describe 走的是真实的 wiring chain：
+ *   `startDaemon`（捕获 `ServerDeps`）→ 复用捕获到的 `pipelineService`
+ *   起一个真实 Fastify → `app.inject` POST 撤销路由 → 校验
+ *   fake `MergeRequestNotes.remove` 真的被调用过 + AgentReport 持久化
+ *   到 noteIds=[] / status=revoked。
+ *
+ * Bug-catching 验证（plan §3.4）：把 daemon.ts 里
+ * `revokeReviewerMrComments: pipelineRevokeCallback` 这一行 revert 掉，
+ * 这里的 `remove` mock 必然 zero call，断言会红 —— 充分证明测试能捕获
+ * 「callback 没注入到 service」这一回归。
+ */
+function buildV46Workflow(root: string): WorkflowConfig {
+  // 把 daemon.test.ts 的 createWorkflow 复刻最小一份，避免跨文件导出 helper
+  // 带来的耦合；workflow 必须带上 V4.6 default_recipe + roles 才能触发
+  // daemon.ts 的 V4.6 pipeline 装配路径（含 revoke callback）。
+  return {
+    tracker: {
+      kind: "gitlab",
+      baseUrl: "https://gitlab.example.com",
+      projectId: "group/project",
+      activeLabels: ["ai-ready"],
+      runningLabel: "ai-running",
+      handoffLabel: "human-review",
+      failedLabel: "ai-failed",
+      blockedLabel: "ai-blocked",
+      reworkLabel: "ai-rework",
+      mergingLabel: "ai-merging",
+    },
+    workspace: {
+      root,
+      strategy: "worktree",
+      repoCacheRoot: path.join(root, "repo-cache"),
+    },
+    git: {
+      repoUrl: "git@gitlab.example.com:group/project.git",
+      baseBranch: "main",
+      branchPrefix: "issuepilot/",
+    },
+    agent: {
+      runner: "codex-app-server",
+      maxConcurrentAgents: 1,
+      maxTurns: 1,
+      maxAttempts: 1,
+      retryBackoffMs: 1000,
+    },
+    codex: {
+      command: "codex app-server",
+      approvalPolicy: "never",
+      threadSandbox: "workspace-write",
+      turnTimeoutMs: 1000,
+      turnSandboxPolicy: { type: "workspaceWrite" },
+    },
+    hooks: {},
+    ci: {
+      enabled: false,
+      onFailure: "ai-rework",
+      waitForPipeline: true,
+    },
+    retention: {
+      successfulRunDays: 7,
+      failedRunDays: 30,
+      maxWorkspaceGb: 50,
+      cleanupIntervalMs: 3_600_000,
+    },
+    pollIntervalMs: 10_000,
+    promptTemplate: "noop",
+    source: {
+      path: path.join(root, "workflow.md"),
+      sha256: "test",
+      loadedAt: "2026-05-19T00:00:00.000Z",
+    },
+    defaultRecipe: "full_pipeline",
+    roles: {
+      coder: {
+        role: "coder",
+        promptTemplate: "/tmp/c.md",
+        promptTemplateHash: "deadbeef",
+        sandbox: "read_write_worktree",
+      },
+      reviewer: {
+        role: "reviewer",
+        promptTemplate: "/tmp/r.md",
+        promptTemplateHash: "deadbeef",
+        sandbox: "read_only_worktree",
+      },
+      test_evidence: {
+        role: "test_evidence",
+        promptTemplate: "/tmp/t.md",
+        promptTemplateHash: "deadbeef",
+        sandbox: "read_only_source_write_evidence",
+      },
+    },
+  } satisfies WorkflowConfig;
+}
+
+function createFakeServer(): FastifyInstance {
+  return {
+    close: vi.fn(async () => {}),
+  } as unknown as FastifyInstance;
+}
+
+/**
+ * Build a GitLabAdapter handle whose `.client` is a real `GitLabClient`
+ * backed by a stubbed `Gitlab` ctor — `MergeRequestNotes.remove` is a
+ * `vi.fn` so the integration test can assert which (mrIid, noteId)
+ * combinations the daemon's revoke callback hit. Adapter methods are
+ * stubbed minimally to satisfy the `GitLabAdapter` interface; the
+ * revoke path only goes through `.client`, never these methods.
+ */
+function buildFakeGitLabWithDeleteSpy(): {
+  adapter: GitLabAdapter & { client: GitLabClient<GitLabApi> };
+  remove: ReturnType<typeof vi.fn>;
+} {
+  const remove = vi.fn(async () => undefined);
+  const client = createGitLabClient<GitLabApi>({
+    baseUrl: "https://gitlab.example.com",
+    tokenEnv: "GL_TOKEN",
+    projectId: "group/project",
+    env: { get: () => "tok" },
+    GitlabCtor: function GitlabStub(this: object) {
+      Object.assign(this, {
+        MergeRequestNotes: { all: vi.fn(), create: vi.fn(), remove },
+      });
+    } as never,
+  });
+  const adapter = {
+    client,
+    listCandidateIssues: vi.fn(async () => []),
+    getIssue: vi.fn(async () => {
+      throw new Error("not used");
+    }),
+    closeIssue: vi.fn(async () => ({ labels: [], state: undefined })),
+    transitionLabels: vi.fn(async () => ({ labels: [] })),
+    createIssueNote: vi.fn(async () => ({ id: 1 })),
+    updateIssueNote: vi.fn(async () => {}),
+    findWorkpadNote: vi.fn(async () => null),
+    findLatestIssuePilotWorkpadNote: vi.fn(async () => null),
+    findMergeRequestBySourceBranch: vi.fn(async () => null),
+    createMergeRequest: vi.fn(async () => ({
+      id: 1,
+      iid: 1,
+      webUrl: "https://gitlab.example.com/x",
+    })),
+    updateMergeRequest: vi.fn(async () => {}),
+    getMergeRequest: vi.fn(async () => ({
+      iid: 1,
+      webUrl: "https://gitlab.example.com/x",
+      state: "opened",
+    })),
+    listMergeRequestsBySourceBranch: vi.fn(async () => []),
+    listMergeRequestNotes: vi.fn(async () => []),
+    getPipelineStatus: vi.fn(async () => "unknown"),
+  } satisfies GitLabAdapter & { client: GitLabClient<GitLabApi> };
+  return { adapter, remove };
+}
+
+describe("V4.6 daemon revoke wiring (review C3)", () => {
+  it("POST /api/agent-reports/:id/revoke-ai-review deletes GitLab notes and persists noteIds=[]", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "ip-daemon-revoke-c3-"),
+    );
+    try {
+      const workflow = buildV46Workflow(root);
+      const { adapter: fakeGitLab, remove } = buildFakeGitLabWithDeleteSpy();
+
+      let captured: ServerDeps | undefined;
+      const daemon = await startDaemon(
+        { workflowPath: workflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => workflow),
+            start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => fakeGitLab),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            captured = deps;
+            return createFakeServer();
+          }),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+
+      try {
+        if (!captured) throw new Error("server deps not captured");
+        expect(captured.pipelines).toBeDefined();
+        expect(captured.pipelineStore).toBeDefined();
+
+        // 把 coder + reviewer report 直接写进 daemon 自己拼的 PipelineStore。
+        // coder.coder.mergeRequest.iid = 42 是 daemon revoke callback 反查
+        // mrIid 的唯一来源（spec §10.3 / agent-report.ts:121）；reviewer 的
+        // mrPublication.noteIds = ["10","20"] 在撤销时会被翻译成 numeric
+        // 然后送给 fake remove() spy。
+        await captured.pipelineStore!.saveAgentReport({
+          agentReportId: "ar_coder_http",
+          pipelineRunId: "pr_http",
+          taskId: "t_http",
+          role: "coder",
+          roleProfileId: "coder@v1",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          coder: {
+            diffSummary: "diff",
+            branch: "issuepilot/t_http",
+            mergeRequest: {
+              iid: 42,
+              url: "https://gitlab.example.com/x/-/merge_requests/42",
+              state: "opened",
+            },
+          },
+        });
+        await captured.pipelineStore!.saveAgentReport({
+          agentReportId: "ar_rev_http",
+          pipelineRunId: "pr_http",
+          taskId: "t_http",
+          role: "reviewer",
+          roleProfileId: "reviewer@v1",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          reviewer: {
+            summary: "ok",
+            decision: "approve_with_comments",
+            confidence: 0.9,
+            risks: [],
+            evidenceRequest: [],
+            findings: [],
+            inlineComments: [],
+            mrPublication: {
+              status: "published",
+              noteIds: ["10", "20"],
+              publishedAt: "2026-05-20T00:30:00.000Z",
+            },
+          },
+        });
+
+        // 复用 daemon 拼出来的 ServerDeps 起一个真实 Fastify。这样 HTTP
+        // 路由解析、resolveContext、operatorFrom 等都走真链，避免任何
+        // 「测试自建 pipelineService」造成的假阳性。
+        const app = await createServer(captured, { port: 0 });
+        try {
+          const resp = await app.inject({
+            method: "POST",
+            url: "/api/agent-reports/ar_rev_http/revoke-ai-review",
+            headers: {
+              "x-issuepilot-operator": "alice",
+              "content-type": "application/json",
+            },
+            payload: JSON.stringify({}),
+          });
+          expect(resp.statusCode).toBe(200);
+          const body = JSON.parse(resp.body) as {
+            agentReportId: string;
+            status: string;
+            revokedAt?: string;
+          };
+          expect(body.status).toBe("revoked");
+          expect(body.agentReportId).toBe("ar_rev_http");
+
+          // 1) 关键断言：daemon 装的 callback 真的把 MergeRequestNotes.remove
+          //    调用了，参数 (projectId, mrIid, noteId) 与 coder report
+          //    + reviewer noteIds 一致。把 daemon.ts 的
+          //    `revokeReviewerMrComments: pipelineRevokeCallback` revert
+          //    后这里必然 zero call → 用例红。
+          expect(remove.mock.calls).toEqual([
+            ["group/project", 42, 10],
+            ["group/project", 42, 20],
+          ]);
+
+          // 2) 持久化校验：service.ts fix 后 noteIds 必须清空、status 翻
+          //    revoked、publishedAt 作为审计痕迹保留。
+          const getResp = await app.inject({
+            method: "GET",
+            url: "/api/agent-reports/ar_rev_http",
+          });
+          expect(getResp.statusCode).toBe(200);
+          const getBody = JSON.parse(getResp.body) as {
+            agentReport: ReviewerAgentReport;
+          };
+          const mr = getBody.agentReport.reviewer.mrPublication;
+          expect(mr.status).toBe("revoked");
+          expect(mr.noteIds).toEqual([]);
+          expect(mr.publishedAt).toBe("2026-05-20T00:30:00.000Z");
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/agent-reports/:id/revoke-ai-review surfaces 500 when coder report has no mergeRequest.iid", async () => {
+    // 防回归：当 coder report 缺 mergeRequest.iid 时 daemon callback 必须
+    // throw（让 service 把错误传出去），不能静默走 service 现有的「callback
+    // 缺失等价于撤销已成功」降级路径 —— 那条路径是给 dev/无凭据场景留的，
+    // 不应该被 daemon 触发。
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "ip-daemon-revoke-c3-no-mr-"),
+    );
+    try {
+      const workflow = buildV46Workflow(root);
+      const { adapter: fakeGitLab, remove } = buildFakeGitLabWithDeleteSpy();
+
+      let captured: ServerDeps | undefined;
+      const daemon = await startDaemon(
+        { workflowPath: workflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => workflow),
+            start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => fakeGitLab),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            captured = deps;
+            return createFakeServer();
+          }),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+
+      try {
+        if (!captured) throw new Error("server deps not captured");
+        // coder report 故意不带 mergeRequest.iid。
+        await captured.pipelineStore!.saveAgentReport({
+          agentReportId: "ar_coder_no_mr",
+          pipelineRunId: "pr_no_mr",
+          taskId: "t_no_mr",
+          role: "coder",
+          roleProfileId: "coder@v1",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          coder: {
+            diffSummary: "diff",
+            branch: "issuepilot/t_no_mr",
+          },
+        });
+        await captured.pipelineStore!.saveAgentReport({
+          agentReportId: "ar_rev_no_mr",
+          pipelineRunId: "pr_no_mr",
+          taskId: "t_no_mr",
+          role: "reviewer",
+          roleProfileId: "reviewer@v1",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          reviewer: {
+            summary: "ok",
+            decision: "approve_with_comments",
+            confidence: 0.9,
+            risks: [],
+            evidenceRequest: [],
+            findings: [],
+            inlineComments: [],
+            mrPublication: {
+              status: "published",
+              noteIds: ["99"],
+            },
+          },
+        });
+
+        const app = await createServer(captured, { port: 0 });
+        try {
+          const resp = await app.inject({
+            method: "POST",
+            url: "/api/agent-reports/ar_rev_no_mr/revoke-ai-review",
+            headers: { "content-type": "application/json" },
+            payload: JSON.stringify({}),
+          });
+          // Fastify 默认把未捕获 Error 翻成 500；关键是不能 200。
+          expect(resp.statusCode).toBeGreaterThanOrEqual(500);
+          expect(remove).not.toHaveBeenCalled();
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });

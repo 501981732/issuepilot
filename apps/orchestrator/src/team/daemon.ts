@@ -360,6 +360,24 @@ export async function startTeamDaemon(
           },
         },
       });
+      // V4.6 fix C3：mirror 单 daemon 的撤销 callback wiring。team-mode
+      // 当前还没有 per-project GitLab adapter（参考 `buildProjectWorkItemService`
+      // 里的 fetchIssue stub），所以 callback 抛 typed error，把缺口显式
+      // 暴露给 dashboard / 测试，而不是让 service 静默把本地 mrPublication.
+      // status 翻成 "revoked" 却没删 GitLab note —— spec §12 的契约失败必须
+      // 是 5xx 而非 200。Phase X 真正把 team-mode 接通 GitLab 后再换成
+      // 单 daemon 同款 adapter callback。
+      const projectIdForCallback = project.id;
+      const teamPipelineRevokeCallback = async (input: {
+        agentReportId: string;
+        noteIds: string[];
+        operator?: string;
+      }): Promise<{ revokedAt: string }> => {
+        void input;
+        throw new Error(
+          `team-mode revokeReviewerMrComments not wired for project ${projectIdForCallback}: per-project GitLab adapter is not configured yet (see team/daemon.ts).`,
+        );
+      };
       pipelinesByProject.set(
         project.id,
         createPipelineService({
@@ -384,6 +402,7 @@ export async function startTeamDaemon(
             getDefaultRecipe: () => projectDefaultRecipe,
             getRoles: () => projectRoles,
           },
+          revokeReviewerMrComments: teamPipelineRevokeCallback,
         }),
       );
     } else {

@@ -27,6 +27,9 @@ import {
   createGitLabAdapter,
   createGitLabAdapterFromCredential,
   type GitLabAdapter,
+  type GitLabAdapterHandle,
+  type GitLabApi,
+  type GitLabClient,
 } from "@issuepilot/tracker-gitlab";
 import {
   createWorkflowLoader,
@@ -43,6 +46,7 @@ import {
 } from "@issuepilot/workspace";
 import { execa } from "execa";
 
+import { revokeReviewerMrComments as revokeReviewerMrCommentsHelper } from "./gitlab/mr-comments.js";
 import { createImprovementService } from "./improvements/service.js";
 import { createImprovementStore } from "./improvements/store.js";
 import { runWorkspaceCleanupOnce } from "./maintenance/workspace-cleanup.js";
@@ -524,6 +528,67 @@ export async function startDaemon(
     path.resolve(workflow.workspace.root),
   ];
   /**
+   * Resolve GitLab credentials before the V4.6 pipeline service / loop start
+   * taking traffic. The order is:
+   *
+   *   1. Test seam (`deps.createGitLab`) — kept for the existing in-memory
+   *      e2e tests that drive the daemon entirely with fakes.
+   *   2. Credential resolver (env var or `~/.issuepilot/credentials`) →
+   *      adapter that knows how to refresh on 401.
+   *
+   * Failing fast here is intentional: spec §17 says the daemon should
+   * refuse to start when neither credential source is available, with a
+   * pointer at `issuepilot auth login`.
+   *
+   * V4.6 fix C3: this block is hoisted above the V4.6 pipeline assembly so
+   * the reviewer-revoke callback (`revokeReviewerMrComments`) can close
+   * over `gitlab` synchronously. Real production factories return a
+   * `GitLabAdapterHandle` (with `.client`); the legacy `deps.createGitLab`
+   * test seam may return a bare `GitLabAdapter` without `.client`, in
+   * which case the callback throws on invocation — never silently.
+   */
+  let gitlab: GitLabAdapter;
+  if (deps.createGitLab) {
+    gitlab = await deps.createGitLab(workflow);
+  } else {
+    const hostname = hostnameFromBaseUrl(workflow.tracker.baseUrl);
+    const resolver =
+      deps.credentialResolver ??
+      createCredentialResolver({
+        store: deps.credentialsStore ?? createCredentialsStore(),
+      });
+    let credential;
+    try {
+      const resolveInput: { hostname: string; trackerTokenEnv?: string } = {
+        hostname,
+      };
+      if (workflow.tracker.tokenEnv) {
+        resolveInput.trackerTokenEnv = workflow.tracker.tokenEnv;
+      }
+      credential = await resolver.resolve(resolveInput);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to resolve GitLab credentials for ${hostname}: ${message}`,
+      );
+    }
+    if (credential.source === "env" && workflow.tracker.tokenEnv) {
+      // Preserve the existing fast path so the synchronous sandbox-friendly
+      // adapter is used when callers still rely on `tracker.token_env`.
+      gitlab = createGitLabAdapter({
+        baseUrl: workflow.tracker.baseUrl,
+        projectId: workflow.tracker.projectId,
+        tokenEnv: workflow.tracker.tokenEnv,
+      });
+    } else {
+      gitlab = createGitLabAdapterFromCredential({
+        baseUrl: workflow.tracker.baseUrl,
+        projectId: workflow.tracker.projectId,
+        credential,
+      });
+    }
+  }
+  /**
    * V4.6 Multi-Agent Pipeline: pipeline + agent-report artifacts live under
    * `<workspace.root>/.issuepilot/{pipelines,agent-reports}/...`. The store
    * is lazy on disk so a daemon that never runs a V4.6 pipeline still
@@ -596,6 +661,59 @@ export async function startDaemon(
         },
       },
     });
+    // V4.6 fix C3：把 PipelineService 的撤销契约接到真实的 GitLab API。
+    // 之前 `createPipelineService` 没传 `revokeReviewerMrComments`，导致
+    // dashboard 的 revoke 操作只翻本地 mrPublication.status = "revoked"，
+    // 但 GitLab 上的 note 一条都没删（spec §12 contract 失败）。下面的
+    // adapter 把 service 签名（agentReportId / noteIds / operator）翻译到
+    // gitlab/mr-comments.ts 的 helper 签名（client / mrIid / mrPublication），
+    // mrIid 通过同 task 下的 coder report.coder.mergeRequest.iid 反查。
+    const pipelineStoreForCallback = pipelineStore;
+    const pipelineRevokeCallback = async (input: {
+      agentReportId: string;
+      noteIds: string[];
+      operator?: string;
+    }): Promise<{ revokedAt: string }> => {
+      void input.operator;
+      const found =
+        await pipelineStoreForCallback.findAgentReportById(input.agentReportId);
+      if (!found || found.role !== "reviewer") {
+        throw new Error(
+          `daemon revoke callback: reviewer agent report ${input.agentReportId} not found`,
+        );
+      }
+      const coder = await pipelineStoreForCallback.latestAgentReportForRole({
+        taskId: found.taskId,
+        role: "coder",
+      });
+      const mrIid =
+        coder?.role === "coder" ? coder.coder.mergeRequest?.iid : undefined;
+      if (!mrIid) {
+        throw new Error(
+          `daemon revoke callback: cannot resolve mrIid for reviewer report ${input.agentReportId} (no coder report or no mergeRequest.iid)`,
+        );
+      }
+      const client = (gitlab as GitLabAdapterHandle).client as
+        | GitLabClient<GitLabApi>
+        | undefined;
+      if (!client) {
+        throw new Error(
+          "daemon revoke callback: GitLab adapter does not expose .client (test seam returned a bare GitLabAdapter); cannot delete MR notes",
+        );
+      }
+      const reviewerReport = found.report;
+      const mrPublication =
+        reviewerReport.role === "reviewer"
+          ? reviewerReport.reviewer.mrPublication
+          : { status: "revoked" as const, noteIds: [] };
+      await revokeReviewerMrCommentsHelper({
+        client,
+        mrIid,
+        mrPublication,
+        requiredScope: "api",
+      });
+      return { revokedAt: new Date().toISOString() };
+    };
     pipelineService = createPipelineService({
       pipelineStore,
       coordinator: pipelineCoordinator,
@@ -618,6 +736,7 @@ export async function startDaemon(
         getDefaultRecipe: () => workflow.defaultRecipe,
         getRoles: () => workflow.roles,
       },
+      revokeReviewerMrComments: pipelineRevokeCallback,
     });
   } else {
     console.warn(
@@ -665,61 +784,6 @@ export async function startDaemon(
   >();
   const runIndex = new Map<string, { projectSlug: string; issueIid: number }>();
   const runCancelRegistry = createRunCancelRegistry();
-
-  /**
-   * Resolve GitLab credentials before the server starts taking traffic. The
-   * order is:
-   *
-   *   1. Test seam (`deps.createGitLab`) — kept for the existing in-memory
-   *      e2e tests that drive the daemon entirely with fakes.
-   *   2. Credential resolver (env var or `~/.issuepilot/credentials`) →
-   *      adapter that knows how to refresh on 401.
-   *
-   * Failing fast here is intentional: spec §17 says the daemon should
-   * refuse to start when neither credential source is available, with a
-   * pointer at `issuepilot auth login`.
-   */
-  let gitlab: GitLabAdapter;
-  if (deps.createGitLab) {
-    gitlab = await deps.createGitLab(workflow);
-  } else {
-    const hostname = hostnameFromBaseUrl(workflow.tracker.baseUrl);
-    const resolver =
-      deps.credentialResolver ??
-      createCredentialResolver({
-        store: deps.credentialsStore ?? createCredentialsStore(),
-      });
-    let credential;
-    try {
-      const resolveInput: { hostname: string; trackerTokenEnv?: string } = {
-        hostname,
-      };
-      if (workflow.tracker.tokenEnv) {
-        resolveInput.trackerTokenEnv = workflow.tracker.tokenEnv;
-      }
-      credential = await resolver.resolve(resolveInput);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Failed to resolve GitLab credentials for ${hostname}: ${message}`,
-      );
-    }
-    if (credential.source === "env" && workflow.tracker.tokenEnv) {
-      // Preserve the existing fast path so the synchronous sandbox-friendly
-      // adapter is used when callers still rely on `tracker.token_env`.
-      gitlab = createGitLabAdapter({
-        baseUrl: workflow.tracker.baseUrl,
-        projectId: workflow.tracker.projectId,
-        tokenEnv: workflow.tracker.tokenEnv,
-      });
-    } else {
-      gitlab = createGitLabAdapterFromCredential({
-        baseUrl: workflow.tracker.baseUrl,
-        projectId: workflow.tracker.projectId,
-        credential,
-      });
-    }
-  }
 
   const publishEvent = (event: {
     type: string;

@@ -682,6 +682,25 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
     branch；GitLab MR `diff_refs` publisher、team revoke、AgentReport
     failure drilldown 与 dashboard 500 / 503 可见性已补齐。验收计划：
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
+- **Runner Adapter Contract**（V4.7 实施中）：把 V4.6 三角色 pipeline 从
+  Codex-specific lifecycle 抽离到稳定的本地 Runner Adapter Contract。
+  - `packages/shared-contracts/src/runner.ts` 定义 `RunnerDescriptor` /
+    `RunnerRunInput` / `RunnerResult` / `RunnerEvent`；`AgentReport` 新增
+    `runnerId` / `runnerKind` / `runnerRunId` 追溯字段。
+  - workflow 顶层新增 `runners:` registry 与 `roles.<role>.runner` 引用；
+    resolver fail-closed 校验 runner id / kind / capability / sandbox。
+  - orchestrator 新增 `RunnerRegistry` + `createCodexAppServerAdapter`，
+    daemon 和 team daemon 通过 registry 装配三角色 pipeline，删除直接
+    `createCoderLifecycle` / `createReviewerLifecycle` 旧路径。
+  - dashboard `AgentReportTabs` 增加紧凑的 runner trace 元数据。
+  - V4.7 仍只支持 `codex_app_server`，不接入第二 runner、不引入动态
+    discovery / worker pool / 远程 runner service / SDK。
+  - 设计 spec：
+    `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`；
+    实施计划：
+    `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`；
+    验收清单：
+    `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
 - **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
   并把 review 反馈转成下一轮 agent 的结构化输入。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、

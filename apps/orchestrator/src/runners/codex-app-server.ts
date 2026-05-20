@@ -104,30 +104,6 @@ function redactStringField(value: string): [string, boolean] {
   return [next, redacted];
 }
 
-function redactObject<T extends Record<string, unknown>>(
-  obj: T,
-  pathPrefix: string,
-  scope: RedactionScope,
-): T {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const fullPath = pathPrefix ? `${pathPrefix}.${key}` : key;
-    if (SECRET_KEYS.has(key)) {
-      out[key] = "[REDACTED]";
-      scope.redacted.add(fullPath);
-      continue;
-    }
-    if (typeof value === "string") {
-      const [next, wasRedacted] = redactStringField(value);
-      if (wasRedacted) scope.redacted.add(fullPath);
-      out[key] = next;
-      continue;
-    }
-    out[key] = value;
-  }
-  return out as T;
-}
-
 /**
  * Convert arbitrary Codex notification data into the V4.7
  * `RunnerEvent.data` shape (primitives or null only) while redacting

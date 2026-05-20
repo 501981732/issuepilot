@@ -14,6 +14,8 @@
 
 - V4.7 Runner Adapter Contract：实施计划见
   `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`。
+- V4.7 验收清单见
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
 
 ## 1. 背景
 

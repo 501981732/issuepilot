@@ -2,6 +2,78 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.7 Runner Adapter Contract（实施阶段）
+
+### Plan & Acceptance
+
+- 设计 spec：
+  `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
+- 实施计划：
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`。
+- 验收清单：
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
+
+### Added
+
+- `packages/shared-contracts/src/runner.ts`：V4.7 Runner Adapter Contract
+  （`RunnerDescriptor` / `RunnerRunInput` / `RunnerResult` / `RunnerEvent` /
+  `RunnerErrorCode`），仅支持 `codex_app_server` kind，capability allowlist
+  覆盖 roles / events.streaming / cancel / artifacts / gitlab.tools /
+  filesystem。
+- `packages/workflow`：解析顶层 `runners:` registry 并在 `resolveWorkflow()`
+  里 fail-closed 校验 runner id / kind / capability / role sandbox。`runners:`
+  缺失时回退到内置 `codex_app_server` descriptor，options allowlist 拒绝
+  secret-like / cwd 等字段。
+- `apps/orchestrator/src/runners/`：本地 `RunnerRegistry`、`RunnerEventSink`、
+  `runnerErrorToLastErrorCode` 失败映射，以及 `createCodexAppServerAdapter`
+  把现有 Codex lifecycle 收束成标准 `RunnerResult`，对外 emit sanitized
+  `RunnerEvent` 并在 `RunnerResult.redactedFields[]` 中追溯被改写的字段。
+- `AgentReportBase` 新增 `runnerId` / `runnerKind` / `runnerRunId` 追溯字段；
+  `isAgentReport()` 强制 V4.7 字段存在，旧 fixture 直接升级（不做 lazy
+  migration）。
+- Dashboard `AgentReportTabs` 每个 role panel 紧凑显示 `Runner / Kind / Run`，
+  `runnerRunId` 缺失时不渲染空槽位，复用现有 muted text 风格。
+
+### Changed
+
+- `apps/orchestrator/src/agents/{coder,reviewer,test-evidence}.ts` 不再直接
+  消费 Codex lifecycle outcome；统一从 `RunnerRegistry.getForRole()` 取
+  adapter，把 `RunnerResult` 翻译为 role-specific `AgentReport`，并把 runner
+  redaction 追溯到 `AgentReport.redactedFields[]`（`runner.finalMessage` /
+  `runner.artifacts[*].summary` / `runner.error.message`）。
+- `apps/orchestrator/src/daemon.ts` 与 `apps/orchestrator/src/team/daemon.ts`
+  通过 resolved workflow 的 `runners:` 构造 `RunnerRegistry`，注入
+  `codex_app_server` adapter；不再依赖 `createCoderLifecycle` /
+  `createReviewerLifecycle`。新增 `currentWorkItemByCallKey` 侧 channel，
+  以 `(pipelineRunId, taskId, role)` 维度把 `WorkItem` 上下文限定到具体 run，
+  保证 `codexAdapterTools` 和 `runnerEventSink` 在并发场景不串扰。
+- `apps/orchestrator/src/pipelines/role-profile.ts` 把
+  `workflow.roles.<role>.runner` 透传到 `BaseRoleProfile.runnerId`，供
+  runner registry lookup 使用。
+
+### Removed
+
+- 删除 `apps/orchestrator/src/agents/codex-lifecycle.ts` 与对应测试文件。
+  daemon、agent factory 均不再依赖该旧 Codex-specific 表面。
+
+### Tests
+
+- `packages/shared-contracts`、`packages/workflow`、`packages/runner-codex-app-server`：runner contract / runners registry / Codex adapter 测试全绿。
+- `apps/orchestrator`：80 个测试文件 / 942 个用例全部通过，含 9 个 V4.6
+  multi-agent e2e 场景（其中 1 个新增 V4.7 runner trace 断言）、`runners/`
+  registry & failure-mapping & Codex adapter 套件、daemon 单机/team wiring
+  套件、agent factory runner outcome 映射套件。
+- `apps/dashboard`：44 个测试文件 / 283 个用例全部通过，含
+  `agent-report-tabs.test.tsx` 新增 V4.7 runner trace 可见性 / 缺失 runId 不
+  显示空槽位两条用例。
+
+### Non-Goals（V4.7 内不做）
+
+- 不接入第二种 runner kind（Claude Code、internal coder agent 等）。
+- 不引入 dynamic runner discovery、worker pool、remote runner service 或外部
+  SDK。
+- 不修改 `PipelineCoordinator` 状态机或 V4.6 业务语义。
+
 ## [Unreleased] V4.6 Multi-Agent Collaboration（实施阶段）
 
 ### Plan & Acceptance

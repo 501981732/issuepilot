@@ -35,9 +35,6 @@ import { createCoderAgent } from "../agents/coder.js";
 import { collectorsForTask } from "../agents/evidence-collectors.js";
 import { createReviewerAgent } from "../agents/reviewer.js";
 import { createTestEvidenceAgent } from "../agents/test-evidence.js";
-import { createCodexAppServerAdapter } from "../runners/codex-app-server.js";
-import { createRunnerRegistry } from "../runners/registry.js";
-import type { RunnerEventSink } from "../runners/types.js";
 import {
   publishReviewerToMr,
   revokeReviewerMrComments as revokeReviewerMrCommentsHelper,
@@ -68,6 +65,9 @@ import { createPipelineStore, type PipelineStore } from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { createPipelineQualitySummaryCallback } from "../quality/pipeline-summary.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
+import { createCodexAppServerAdapter } from "../runners/codex-app-server.js";
+import { createRunnerRegistry } from "../runners/registry.js";
+import type { RunnerEventSink } from "../runners/types.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,

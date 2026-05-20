@@ -59,9 +59,6 @@ import { collectorsForTask } from "./agents/evidence-collectors.js";
 import { createReviewerAgent } from "./agents/reviewer.js";
 import { createTestEvidenceAgent } from "./agents/test-evidence.js";
 import { splitCommand } from "./codex/split-command.js";
-import { createCodexAppServerAdapter } from "./runners/codex-app-server.js";
-import { createRunnerRegistry } from "./runners/registry.js";
-import type { RunnerEventSink } from "./runners/types.js";
 import {
   publishReviewerToMr,
   revokeReviewerMrComments as revokeReviewerMrCommentsHelper,
@@ -113,6 +110,9 @@ import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
+import { createCodexAppServerAdapter } from "./runners/codex-app-server.js";
+import { createRunnerRegistry } from "./runners/registry.js";
+import type { RunnerEventSink } from "./runners/types.js";
 import { createRunCancelRegistry } from "./runtime/run-cancel-registry.js";
 import { createConcurrencySlots } from "./runtime/slots.js";
 import { createRuntimeState, type RuntimeState } from "./runtime/state.js";

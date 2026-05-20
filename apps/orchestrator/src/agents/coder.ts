@@ -31,9 +31,9 @@ import type {
 } from "@issuepilot/shared-contracts";
 
 import type { CoderRoleProfile } from "../pipelines/role-profile.js";
+import { runnerErrorToLastErrorCode } from "../runners/failure-mapping.js";
 import { RunnerRegistryError } from "../runners/registry.js";
 import type { RunnerRegistry } from "../runners/types.js";
-import { runnerErrorToLastErrorCode } from "../runners/failure-mapping.js";
 import type { RunnerEventSink } from "../runners/types.js";
 
 /**

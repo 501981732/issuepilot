@@ -32,6 +32,26 @@ codex:
   turn_timeout_ms: __TURN_TIMEOUT_MS__
   turn_sandbox_policy:
     type: workspaceWrite
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    display_name: Codex App Server
+    capabilities:
+      - roles.coder
+      - roles.reviewer
+      - roles.test_evidence
+      - events.streaming
+      - cancel
+      - artifacts
+      - gitlab.tools
+      - filesystem.worktree_write
+    timeout_seconds: 1800
+    options:
+      command: __CODEX_CMD__
+      max_turns: 20
+      turn_timeout_ms: __TURN_TIMEOUT_MS__
+      approval_policy: never
+      thread_sandbox: workspace-write
 hooks:
   before_run: |
     set -euo pipefail

@@ -43,7 +43,7 @@ const WORKITEM: WorkItem = {
 const CODER_DESCRIPTOR: RunnerDescriptor = {
   runnerId: "codex_app_server",
   kind: "codex_app_server",
-  capabilities: ["roles.coder", "filesystem.read_write_worktree"],
+  capabilities: ["roles.coder", "filesystem.worktree_write"],
 };
 const PROFILE: CoderRoleProfile = {
   role: "coder",
@@ -100,7 +100,10 @@ describe("CoderAgent.run completed", () => {
         runId: "turn-1",
         finalMessage: "implemented",
         artifacts: [
-          { kind: "diff", summary: "src/a.ts | 2 +-" },
+          {
+            kind: "diff",
+            summary: "branch:feature/issue-42\nsrc/a.ts | 2 +-",
+          },
           {
             kind: "tool_result",
             summary: "merge_request:7:https://gitlab/mr/7",
@@ -123,12 +126,48 @@ describe("CoderAgent.run completed", () => {
     expect(res.report.runnerRunId).toBe("turn-1");
     expect(res.report.runId).toBe("turn-1");
     expect(res.report.promptTemplateHash).toBe("abc1234567");
+    // V4.7 review H1:adapter 在 diff artifact 头部嵌入 `branch:<name>\n`,
+    // agent 把它拆出来回填 `CoderAgentReport.coder.branch`,不再硬编码空串。
+    expect(res.report.coder.branch).toBe("feature/issue-42");
+    // V4.7 review H2:diff artifact 的剩余部分就是 git diff --stat 输出,
+    // 不再被 Codex `final_message` 散文污染。
     expect(res.report.coder.diffSummary).toBe("src/a.ts | 2 +-");
     expect(res.report.coder.mergeRequest).toEqual({
       iid: 7,
       url: "https://gitlab/mr/7",
       state: "opened",
     });
+  });
+
+  it("V4.7 review H2 regression: text artifact (final_message) does not pollute diffSummary", async () => {
+    // 当 adapter 拿不到 git 状态(空 worktree / detached HEAD)时,只
+    // emit `text` artifact 的 `final_message:` 前缀串。V4.7 之前 agent
+    // 会把这串当 diffSummary 兜底,污染 dashboard / RunReport.diff;
+    // 修复后 diffSummary 留空,fallback 由 report-artifact 负责。
+    const { agent } = makeAgent({
+      outcome: {
+        status: "completed",
+        runId: "turn-no-git",
+        finalMessage: "implemented",
+        artifacts: [
+          {
+            kind: "text",
+            summary: "final_message:\nimplemented",
+          },
+        ],
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.status).toBe("complete");
+    expect(res.report.coder.branch).toBe("");
+    expect(res.report.coder.diffSummary).toBe("");
   });
 });
 

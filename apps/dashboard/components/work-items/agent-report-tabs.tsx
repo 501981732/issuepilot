@@ -64,30 +64,42 @@ function severityTone(sev: string): BadgeTone {
 /**
  * V4.7 runner trace metadata row：在每个 role panel 内紧贴 status badge 下方
  * 展示 `runnerId`、`runnerKind`、`runnerRunId`，供调试和审计跨任务的 runner
- * 行为。设计约束（详见 plan Task 7.2）：
+ * 行为。设计约束（详见 plan Task 7.2 / review N2）：
  * - 复用现有 `text-xs text-fg-muted` 风格，不引入新卡片或缩进。
  * - `runnerRunId` 缺失（`null` / `undefined`）时不渲染空槽位，避免给用户留下
  *   「这里应该有值」的误导。
  * - 长 id 使用 `break-all` 自动换行，避免触发横向滚动条。
+ * - 所有可读 label 与 runner kind display name 走 i18n
+ *   (`workItem.agentReportTab.runnerTrace.*`)，保持与同面板其他文案一致。
  */
+// 已知 runner kind 的可读 display name 映射，i18n key 是
+// `workItem.agentReportTab.runnerTrace.kinds.<kind>`。未列入此白名单的
+// runner kind 直接回退到原 enum 值，避免 next-intl 4.x 在 missing key 时
+// 抛 `MISSING_MESSAGE`（4.x 没有 `t.has()` API，回退必须显式处理）。
+const KNOWN_RUNNER_KINDS = new Set<string>(["codex_app_server"]);
+
 function RunnerTrace({ report }: { report: AgentReport }) {
+  const t = useTranslations("workItem.agentReportTab.runnerTrace");
   const runId = report.runnerRunId ?? null;
+  const kindLabel = KNOWN_RUNNER_KINDS.has(report.runnerKind)
+    ? t(`kinds.${report.runnerKind}` as "kinds.codex_app_server")
+    : report.runnerKind;
   return (
     <dl
       data-testid={`agent-runner-trace-${report.role}`}
       className="grid gap-x-3 gap-y-1 text-xs text-fg-muted sm:grid-cols-3"
     >
       <div>
-        <dt className="font-medium text-fg">Runner</dt>
+        <dt className="font-medium text-fg">{t("runner")}</dt>
         <dd className="break-all">{report.runnerId}</dd>
       </div>
       <div>
-        <dt className="font-medium text-fg">Kind</dt>
-        <dd className="break-all">{report.runnerKind}</dd>
+        <dt className="font-medium text-fg">{t("kind")}</dt>
+        <dd className="break-all">{kindLabel}</dd>
       </div>
       {runId ? (
         <div data-testid={`agent-runner-trace-${report.role}-runId`}>
-          <dt className="font-medium text-fg">Run</dt>
+          <dt className="font-medium text-fg">{t("run")}</dt>
           <dd className="break-all">{runId}</dd>
         </div>
       ) : null}

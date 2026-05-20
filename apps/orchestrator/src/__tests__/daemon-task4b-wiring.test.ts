@@ -242,9 +242,8 @@ async function buildWorkflowWithTemplates(
           "roles.coder",
           "roles.reviewer",
           "roles.test_evidence",
-          "filesystem.read_write_worktree",
-          "filesystem.read_only_worktree",
-          "filesystem.read_only_source_write_evidence",
+          "filesystem.worktree_write",
+          "filesystem.readonly",
           "artifacts",
           "gitlab.tools",
         ],
@@ -788,10 +787,16 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
       // 会把 ctx 透到 daemon，daemon publishLifecycleEvent 调
       // publishEvent，期望 eventStore 真的 append。
       mockedDriveLifecycle.mockImplementation(async (input) => {
-        // V4.7: only events that map to RunnerEvent types survive through the
-        // adapter → daemon eventSink path. `turn/start` is the canonical
-        // mapping for "the turn began" used by the codex notification stream.
-        input.onEvent("turn/start", { hint: "regression" });
+        // V4.7 review B1 修复后:adapter NOTIFICATION_EVENT_TYPE 真实对齐
+        // 到 lifecycle 的 `_`-separated 内部事件名。`turn_started` 是
+        // packages/runner-codex-app-server/src/lifecycle.ts:362 实际
+        // emit 的名字,映射到 RunnerEvent.type = "turn_started",再被
+        // daemon 的 runnerEventSink 升级成 `codex_v46_coder_turn_started`
+        // lifecycle event。
+        input.onEvent("turn_started", {
+          turnId: "turn_regression",
+          hint: "regression",
+        });
         return {
           status: "completed",
           turnsUsed: 1,

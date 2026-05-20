@@ -52,10 +52,7 @@ const PROFILE: TestEvidenceRoleProfile = {
 const EVIDENCE_DESCRIPTOR: RunnerDescriptor = {
   runnerId: "codex_app_server",
   kind: "codex_app_server",
-  capabilities: [
-    "roles.test_evidence",
-    "filesystem.read_only_source_write_evidence",
-  ],
+  capabilities: ["roles.test_evidence", "filesystem.readonly"],
 };
 const COMPLETED_RUN: RunnerResult = {
   status: "completed",

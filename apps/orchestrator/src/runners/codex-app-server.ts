@@ -40,10 +40,60 @@ import type {
   RunnerRunInput,
 } from "@issuepilot/shared-contracts";
 import type { WorkflowConfig } from "@issuepilot/workflow";
+import { execa } from "execa";
 
 import { splitCommand } from "../codex/split-command.js";
 
 import type { RunnerAdapter, RunnerRunContext } from "./types.js";
+
+/**
+ * V4.7 review H1 + H2 修复：completed 路径下 adapter 必须真的从 issue
+ * worktree 读出当前 branch 和 diff stat,以 `kind: "diff"` artifact 形式
+ * 输出,而不是把 LLM 的 `final_message` 当 diffSummary 兜底。读取失败时
+ * 返回 undefined,让下游决定 fallback,从而避免空字符串 / `final_message:`
+ * 前缀污染 `CoderAgentReport.coder.{branch, diffSummary}`。
+ *
+ * `execa` 在 cwd 外不会有任何 side effect;失败原因(无 git / detached
+ * HEAD / 临时 fs 错误)都被吞掉,因为对 runner 抽象层而言这只是 best-effort
+ * 元数据采集,不能让 git 状态读不到反向阻塞 runner 完成。
+ */
+async function readWorkspaceGitSummary(cwd: string): Promise<{
+  branch?: string;
+  diffStat?: string;
+}> {
+  const summary: { branch?: string; diffStat?: string } = {};
+  try {
+    const { stdout } = await execa(
+      "git",
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      {
+        cwd,
+        reject: false,
+        timeout: 5_000,
+      },
+    );
+    const trimmed = stdout.trim();
+    if (trimmed.length > 0 && trimmed !== "HEAD") {
+      summary.branch = trimmed;
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const { stdout } = await execa(
+      "git",
+      ["diff", "--stat", "HEAD"],
+      { cwd, reject: false, timeout: 5_000 },
+    );
+    const trimmed = stdout.trim();
+    if (trimmed.length > 0) {
+      summary.diffStat = trimmed;
+    }
+  } catch {
+    // ignore
+  }
+  return summary;
+}
 
 type DriveResult = Awaited<ReturnType<typeof driveLifecycle>>;
 
@@ -56,12 +106,35 @@ export interface CreateCodexAppServerAdapterOptions {
   onTurnActive?: (cancel: () => Promise<void>) => void;
 }
 
-/** Codex notification → V4.7 RunnerEvent type mapping (sanitized later). */
+/**
+ * Codex lifecycle event name → V4.7 `RunnerEventType` mapping.
+ *
+ * The string keys are the **internal synthetic event names** that
+ * `packages/runner-codex-app-server/src/lifecycle.ts` actually calls
+ * `onEvent(...)` with (see e.g. `lifecycle.ts:152, 161, 298, 310, 314,
+ * 321, 334, 362`). They are NOT raw Codex RPC method names (the RPC
+ * stream uses `turn/notification`, `turn/start`, etc.), and the V4.6
+ * adapter intentionally collapses those into a small `_`-separated
+ * event vocabulary so V4.7 can stay runner-agnostic.
+ *
+ * Any name not in this table is intentionally dropped: V4.7 only wants
+ * sanitized, contract-shaped events to reach the orchestrator
+ * `RunnerEventSink`; raw control-plane chatter such as
+ * `approval_required` / `turn_input_required` / `unsupported_tool_call`
+ * is logged inside the Codex lifecycle but does not turn into a
+ * `RunnerEvent` because it has no stable cross-runner meaning.
+ */
 const NOTIFICATION_EVENT_TYPE: Record<string, RunnerEventType> = {
-  "turn/notification": "runner_message",
-  "turn/start": "turn_started",
-  "tool_call/start": "tool_call_started",
-  "tool_call/end": "tool_call_completed",
+  session_started: "runner_started",
+  turn_started: "turn_started",
+  turn_completed: "runner_message",
+  tool_call_started: "tool_call_started",
+  tool_call_completed: "tool_call_completed",
+  tool_call_failed: "tool_call_completed",
+  notification: "runner_message",
+  turn_failed: "runner_failed",
+  turn_cancelled: "runner_cancelled",
+  turn_timeout: "runner_failed",
 };
 
 const DEFAULT_MAX_TURNS = 20;
@@ -188,8 +261,26 @@ function classifyFailure(text: string): RunnerErrorCode {
 function buildArtifacts(
   result: DriveResult,
   scope: RedactionScope,
+  git: { branch?: string; diffStat?: string } | undefined,
 ): RunnerArtifact[] {
   const artifacts: RunnerArtifact[] = [];
+  // V4.7 review H2:`kind: "diff"` artifact 真实承载 git diff stat,
+  // agent factory 在没有 diff artifact 时不再用 text artifact 兜底,所以
+  // 这里必须独立 emit。读不到 git 状态(无 git / detached HEAD / fs 错)时
+  // 跳过 — agent 让 diffSummary 留空,由 report-artifact 决定下游 fallback。
+  if (git?.diffStat || git?.branch) {
+    const header = git?.branch ? `branch:${git.branch}\n` : "";
+    const body = git?.diffStat ?? "";
+    const raw = `${header}${body}`;
+    if (raw.trim().length > 0) {
+      const [summary, wasRedacted] = redactStringField(raw);
+      if (wasRedacted)
+        scope.redacted.add(`artifacts[${artifacts.length}].summary`);
+      artifacts.push({ kind: "diff", summary });
+    }
+  }
+  // `kind: "text"` 仍然承载 Codex 的 final message,但 agent 不再回退当
+  // diffSummary 用,避免「LLM 散文 = diff」的污染。
   if (result.finalMessage) {
     const [summary, wasRedacted] = redactStringField(
       `final_message:\n${result.finalMessage}`,
@@ -219,16 +310,21 @@ function buildRunnerError(
   return { code, message };
 }
 
-function mapDriveResultToRunnerResult(
+async function mapDriveResultToRunnerResult(
   result: DriveResult,
   now: () => string,
   finalMessageOverride: string | undefined,
   scope: RedactionScope,
-): RunnerResult {
+  cwd: string,
+): Promise<RunnerResult> {
   const runId = result.lastTurnId;
   switch (result.status) {
     case "completed": {
-      const artifacts = buildArtifacts(result, scope);
+      // 只在 completed 状态读 git 状态:其他状态下 worktree 可能已经被
+      // cancel/timeout 中断,继续 spawn 子进程没有意义,也无法保证
+      // 数据稳定。
+      const git = await readWorkspaceGitSummary(cwd);
+      const artifacts = buildArtifacts(result, scope, git);
       let finalMessage = finalMessageOverride;
       if (finalMessage === undefined && result.finalMessage !== undefined) {
         const [redactedMsg, wasRedacted] = redactStringField(result.finalMessage);
@@ -350,6 +446,11 @@ export function createCodexAppServerAdapter(
       const turnTimeoutMs =
         opts.descriptor.options?.turnTimeoutMs ?? opts.codex.turnTimeoutMs;
       const scope: RedactionScope = { redacted: new Set() };
+      // Streaming RunnerEvent 必须在每次 turn 开始时就拿到 turnId,
+      // 不能等 driveLifecycle resolve. lifecycle emit `turn_started`
+      // 事件时已经把 `{ turnId }` 放进 data, 我们在 onEvent 里就地缓存
+      // 让后续 `tool_call_*` / `runner_message` 都能带上正确的
+      // `RunnerEvent.runnerRunId` (V4.7 review M1).
       let lastTurnId: string | undefined;
 
       try {
@@ -366,6 +467,17 @@ export function createCodexAppServerAdapter(
           turnTimeoutMs,
           tools: opts.tools ? opts.tools(input) : [],
           onEvent: (type: string, data?: unknown) => {
+            if (
+              type === "turn_started" &&
+              data &&
+              typeof data === "object" &&
+              !Array.isArray(data)
+            ) {
+              const candidate = (data as Record<string, unknown>).turnId;
+              if (typeof candidate === "string" && candidate.length > 0) {
+                lastTurnId = candidate;
+              }
+            }
             const event = toRunnerEvent(
               type,
               data,
@@ -380,8 +492,17 @@ export function createCodexAppServerAdapter(
           },
           ...(opts.onTurnActive ? { onTurnActive: opts.onTurnActive } : {}),
         });
-        lastTurnId = result.lastTurnId;
-        return mapDriveResultToRunnerResult(result, now, undefined, scope);
+        // result.lastTurnId 与 onEvent("turn_started") 的 turnId 在
+        // happy path 下一致;这里再赋一次只是为了 cancelled / failed 路径
+        // 也能在 mapDriveResultToRunnerResult 里看到 runId.
+        if (result.lastTurnId) lastTurnId = result.lastTurnId;
+        return mapDriveResultToRunnerResult(
+          result,
+          now,
+          undefined,
+          scope,
+          input.cwd,
+        );
       } finally {
         await rpc.close();
       }

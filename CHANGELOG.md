@@ -28,11 +28,20 @@
   `runnerErrorToLastErrorCode` 失败映射，以及 `createCodexAppServerAdapter`
   把现有 Codex lifecycle 收束成标准 `RunnerResult`，对外 emit sanitized
   `RunnerEvent` 并在 `RunnerResult.redactedFields[]` 中追溯被改写的字段。
+  Adapter 在 `completed` 路径用 `execa` 跑 `git rev-parse --abbrev-ref HEAD`
+  与 `git diff --stat HEAD` 真实采集 worktree 状态，并以 `kind: "diff"`
+  artifact（头部 `branch:<name>\n` + 后续 git stat 输出）输出，覆盖以下游
+  `CoderAgentReport.coder.{branch, diffSummary}` 与 RunReport handoff /
+  diff summary。
 - `AgentReportBase` 新增 `runnerId` / `runnerKind` / `runnerRunId` 追溯字段；
   `isAgentReport()` 强制 V4.7 字段存在，旧 fixture 直接升级（不做 lazy
   migration）。
 - Dashboard `AgentReportTabs` 每个 role panel 紧凑显示 `Runner / Kind / Run`，
-  `runnerRunId` 缺失时不渲染空槽位，复用现有 muted text 风格。
+  `runnerRunId` 缺失时不渲染空槽位，复用现有 muted text 风格。所有 label
+  以及 runner kind 的 display name 走 i18n
+  (`workItem.agentReportTab.runnerTrace.*`)，zh 与 en bundle 同步补全
+  `runner` / `kind` / `run` / `kinds.codex_app_server`；未列入白名单的
+  runner kind 回退到原 enum 值，避免 next-intl 4.x missing-key 抛错。
 
 ### Changed
 
@@ -55,6 +64,67 @@
 
 - 删除 `apps/orchestrator/src/agents/codex-lifecycle.ts` 与对应测试文件。
   daemon、agent factory 均不再依赖该旧 Codex-specific 表面。
+
+### Fixed（post-merge code review 二轮收口）
+
+- **B1 (blocker)** — `apps/orchestrator/src/runners/codex-app-server.ts` 的
+  `NOTIFICATION_EVENT_TYPE` 之前用 `turn/start` / `turn/notification` /
+  `tool_call/start` / `tool_call/end` 等 Codex RPC 方法名做 key，但
+  `packages/runner-codex-app-server/src/lifecycle.ts` 内部 `onEvent(...)`
+  实际 emit 的是下划线版（`turn_started` / `tool_call_started` / `notification`
+  …），导致生产 streaming 路径每次 lookup 都返回 `undefined`，
+  `RunnerEventSink` 永远不被触发。修复后 mapping 表对齐 lifecycle 真名，
+  覆盖 `session_started` / `turn_started` / `tool_call_started` /
+  `tool_call_completed` / `tool_call_failed` / `notification` /
+  `turn_failed` / `turn_cancelled` / `turn_timeout` / `turn_completed`。
+- **H1 (high)** — `CoderAgentReport.coder.branch` 之前在三条路径（happy /
+  failed / registry-error）均写死 `""`，相对 V4.6 是回归且让
+  `report-artifact.ts` 用 `??` 的 fallback 永不触发。修复后 adapter 直接
+  从 worktree 跑 `git rev-parse --abbrev-ref HEAD` 读取 branch 并嵌入
+  `kind: "diff"` artifact 头部，agent 拆头部回填 `coder.branch`；
+  `report-artifact.ts` 同步把 branch fallback 改用 `||` 让空字符串也走
+  `pipeline:<id>` 兜底。
+- **H2 (high)** — `parseArtifacts` 之前在没有 `kind: "diff"` artifact 时把
+  `kind: "text"` artifact 兜底成 `diffSummary`，结果 dashboard 上
+  「Coder 当次写了什么」实际显示 `final_message:\n<Codex 散文>`。修复后
+  agent 不再 fallback `text` artifact 到 `diffSummary`，找不到 diff
+  artifact 时 `diffSummary` 留空，由 `report-artifact.ts` 用
+  `"not available"` 兜底。
+- **M1 (medium)** — Adapter 在 `await driveLifecycle(...)` 之前不持有
+  `lastTurnId`，streaming 期间 `RunnerEvent.runnerRunId` 永远 undefined。
+  修复后 `onEvent("turn_started", { turnId })` 立刻把 `turnId` 缓存到
+  闭包变量，后续 `tool_call_*` / `runner_message` 都能带正确的 `runnerRunId`。
+- **M2 (medium)** — `apps/orchestrator/src/agents/__tests__/*.test.ts` 与
+  `apps/orchestrator/src/__tests__/daemon-{pipeline,task4b}-wiring.test.ts`
+  之前用 `filesystem.read_write_worktree` /
+  `filesystem.read_only_worktree` / `filesystem.read_only_source_write_evidence`
+  这类「sandbox 名」充当 capability，并使用已经从 schema 移除的
+  `runnerProfileHash` / `config` 字段。修复后改成 V4.7 真值
+  (`filesystem.worktree_write` / `filesystem.readonly`)，消除测试 fixture
+  与生产 schema 的视盲。
+- **N2 (low)** — Dashboard `RunnerTrace` 的 `Runner / Kind / Run` label 之前
+  硬编码英文且 `runnerKind` 直接显示 enum 原值，与同面板其他 zh i18n 文案
+  断裂。改成走 `workItem.agentReportTab.runnerTrace.*` i18n，且通过
+  `KNOWN_RUNNER_KINDS` 白名单避免 next-intl 4.x 在 missing key 时抛
+  `MISSING_MESSAGE`。
+
+### Regression tests added
+
+- `apps/orchestrator/src/runners/__tests__/codex-app-server.test.ts`：
+  - B1+M1：在 mock 的 `driveLifecycle` 里以真名（`session_started` /
+    `turn_started` / `tool_call_started` / `notification` /
+    `tool_call_completed`）触发 `onEvent`，断言全部 `RunnerEvent` 都到达
+    `events: { emit }` sink 且 `runnerRunId` 在 streaming 期间已填。
+  - H1+H2：在 tmpdir 真起 git repo、`feature/v4-7-regression` branch、
+    dirty src 文件，跑完 adapter 后断言 `kind: "diff"` artifact 头部是
+    `branch:feature/v4-7-regression\n` 且后续含 `src/a.ts`，并验证
+    `kind: "text"` artifact 仍然存在用作 Codex `final_message` 通道。
+- `apps/orchestrator/src/agents/__tests__/coder.test.ts`：
+  - H1/H2 happy path：diff artifact 含 branch 头部时 agent 拆出
+    `coder.branch = "feature/issue-42"` 与 `coder.diffSummary` 不含
+    `branch:` 前缀。
+  - H2 regression：只有 `text` artifact 时 `coder.diffSummary` 必须留空，
+    `final_message` 不再污染下游。
 
 ### Tests
 

@@ -43,7 +43,7 @@ const WORKITEM: WorkItem = {
 const REVIEWER_DESCRIPTOR: RunnerDescriptor = {
   runnerId: "codex_app_server",
   kind: "codex_app_server",
-  capabilities: ["roles.reviewer", "filesystem.read_only_worktree"],
+  capabilities: ["roles.reviewer", "filesystem.readonly"],
 };
 const PROFILE: ReviewerRoleProfile = {
   role: "reviewer",

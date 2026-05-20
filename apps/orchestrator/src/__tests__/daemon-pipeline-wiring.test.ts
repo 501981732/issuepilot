@@ -417,8 +417,15 @@ function buildV46Workflow(root: string): WorkflowConfig {
       codex_app_server: {
         runnerId: "codex_app_server",
         kind: "codex_app_server",
-        runnerProfileHash: "deadbeef",
-        config: {},
+        capabilities: [
+          "roles.coder",
+          "roles.reviewer",
+          "roles.test_evidence",
+          "filesystem.worktree_write",
+          "filesystem.readonly",
+          "artifacts",
+          "gitlab.tools",
+        ],
       },
     },
     roles: {

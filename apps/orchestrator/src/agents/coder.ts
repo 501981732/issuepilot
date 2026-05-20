@@ -101,6 +101,7 @@ const buildRunnerInput = (
 
 interface ParsedArtifacts {
   diffSummary: string;
+  branch: string;
   mergeRequest?: { iid: number; url: string; state: "opened" | "merged" | "closed" };
   runReportArtifactId?: string;
 }
@@ -109,21 +110,33 @@ const isMrState = (v: unknown): v is "opened" | "merged" | "closed" =>
   v === "opened" || v === "merged" || v === "closed";
 
 const MR_SUMMARY_RE = /^merge_request:(\d+):(.+)$/;
+// adapter 在 `kind: "diff"` artifact 的 summary 头部插入 `branch:<name>\n`
+// (见 apps/orchestrator/src/runners/codex-app-server.ts:buildArtifacts).
+// 这里只提取 branch,剩余文本继续作为 `diffSummary` 给 dashboard / run
+// report 渲染。读不到时让 branch 留空,由 report-artifact 决定 fallback。
+const DIFF_BRANCH_HEADER_RE = /^branch:([^\n]+)\n?/;
 
 const parseArtifacts = (
   artifacts: RunnerArtifact[] | undefined,
-  finalMessage: string | undefined,
 ): ParsedArtifacts => {
   let diffSummary = "";
+  let branch = "";
   let mergeRequest: ParsedArtifacts["mergeRequest"];
   if (artifacts) {
     for (const a of artifacts) {
       if (a.kind === "diff" && typeof a.summary === "string") {
-        diffSummary = a.summary;
+        let body = a.summary;
+        const m = DIFF_BRANCH_HEADER_RE.exec(body);
+        if (m) {
+          branch = m[1]!.trim();
+          body = body.slice(m[0].length);
+        }
+        diffSummary = body.trim();
       }
-      if (a.kind === "text" && typeof a.summary === "string" && !diffSummary) {
-        diffSummary = a.summary;
-      }
+      // 注意:`kind: "text"` artifact 故意不再 fallback 进 `diffSummary`。
+      // 之前的实现会让 Codex 的 final_message 散文污染 dashboard 的
+      // "diff" 显示 (V4.7 review H2)。Codex 散文应该走 `finalMessage`
+      // 链路(reviewer JSON 等)或者由调用方显式消费 `text` artifact。
       if (a.kind === "tool_result" && typeof a.summary === "string") {
         const match = MR_SUMMARY_RE.exec(a.summary);
         if (match) {
@@ -138,11 +151,10 @@ const parseArtifacts = (
       }
     }
   }
-  if (!diffSummary && finalMessage) {
-    diffSummary = finalMessage;
-  }
   void isMrState;
-  return mergeRequest ? { diffSummary, mergeRequest } : { diffSummary };
+  return mergeRequest
+    ? { diffSummary, branch, mergeRequest }
+    : { diffSummary, branch };
 };
 
 const runnerRedactedFieldsToReport = (
@@ -241,7 +253,7 @@ export const createCoderAgent = (deps: {
       }
 
       // status === "completed"
-      const parsed = parseArtifacts(result.artifacts, result.finalMessage);
+      const parsed = parseArtifacts(result.artifacts);
       const evidenceLinks: string[] = [];
       if (parsed.runReportArtifactId) {
         evidenceLinks.push(
@@ -267,7 +279,7 @@ export const createCoderAgent = (deps: {
         redactedFields,
         coder: {
           diffSummary: parsed.diffSummary,
-          branch: "",
+          branch: parsed.branch,
           ...(parsed.runReportArtifactId
             ? { runReportArtifactId: parsed.runReportArtifactId }
             : {}),

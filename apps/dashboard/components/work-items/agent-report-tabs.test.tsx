@@ -195,11 +195,21 @@ describe("AgentReportTabs (V4.6)", () => {
       />,
     );
     const trace = screen.getByTestId("agent-runner-trace-coder");
-    // Both runnerId and runnerKind happen to be the same string in V4.7
-    // (only one supported kind), so we just assert the values are visible
-    // and the runId is rendered in its own slot.
-    expect(trace.textContent).toMatch(/codex_app_server/);
-    expect(trace.textContent).toMatch(/turn-coder/);
+    // V4.7 review N2: 标签必须走 i18n, 在 en bundle 下展示 "Runner / Kind /
+    // Run"; runnerKind 通过 `kinds.codex_app_server` 映射成 display name
+    // "Codex App Server" 而不是裸 enum 值。注意 `<dt>` 是 inline label,所以
+    // 用 `within(...).getByText` 拿单独节点比对,而不是把整段 textContent
+    // 拼起来正则匹配。
+    const labels = within(trace).getAllByText(/^(Runner|Kind|Run)$/);
+    expect(labels.map((n) => n.textContent)).toEqual([
+      "Runner",
+      "Kind",
+      "Run",
+    ]);
+    expect(within(trace).getByText("Codex App Server")).toBeInTheDocument();
+    // runnerId 仍然按原 enum 渲染,用于跨任务定位 adapter。
+    expect(within(trace).getByText("codex_app_server")).toBeInTheDocument();
+    expect(within(trace).getByText("turn-coder")).toBeInTheDocument();
   });
 
   it("V4.7 does not render an empty runnerRunId slot when missing", () => {

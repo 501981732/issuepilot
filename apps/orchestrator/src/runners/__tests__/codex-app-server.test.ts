@@ -1,3 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { execa } from "execa";
 import {
   driveLifecycle,
   spawnRpc,
@@ -213,7 +218,14 @@ describe("CodexAppServerRunnerAdapter (V4.7)", () => {
     vi.mocked(driveLifecycle).mockImplementation(async (driveInput: unknown) => {
       const onEvent = (driveInput as { onEvent: (type: string, data: unknown) => void })
         .onEvent;
-      onEvent("turn/notification", { message: "hello", token: "SECRET-token=abc" });
+      // V4.7 review B1 修复:
+      //   - `notification` 是 lifecycle 实际 emit 的事件名(见
+      //     packages/runner-codex-app-server/src/lifecycle.ts:176),
+      //     映射到 RunnerEvent.type = "runner_message"。
+      //   - 先 emit `turn_started` 让 adapter 缓存 turnId,后续 RunnerEvent 才能
+      //     带上 runnerRunId(V4.7 review M1)。
+      onEvent("turn_started", { turnId: "turn-1" });
+      onEvent("notification", { message: "hello", token: "SECRET-token=abc" });
       return {
         status: "completed",
         turnsUsed: 1,
@@ -240,6 +252,7 @@ describe("CodexAppServerRunnerAdapter (V4.7)", () => {
     expect(firstMessage?.workItemId).toBe("wi-1");
     expect(firstMessage?.taskId).toBe("task-1");
     expect(firstMessage?.role).toBe("coder");
+    expect(firstMessage?.runnerRunId).toBe("turn-1");
     expect(JSON.stringify(firstMessage)).not.toContain("SECRET-token=abc");
   });
 
@@ -332,6 +345,111 @@ describe("CodexAppServerRunnerAdapter (V4.7)", () => {
     );
     expect(mrArtifact).toBeDefined();
     expect(mrArtifact?.summary).toMatch(/merge_request:7:https:\/\/gitlab\/mr\/7/);
+  });
+
+  it("V4.7 review B1+M1 regression: forwards real lifecycle emit names to RunnerEventSink with runnerRunId", async () => {
+    // 这是 B1 的回归保护:lifecycle.ts 实际 emit 的事件名是
+    // `turn_started` / `tool_call_started` / `tool_call_completed` /
+    // `notification` 等下划线版本(见
+    // packages/runner-codex-app-server/src/lifecycle.ts:152, 298, 310,
+    // 314, 321, 334, 362)。adapter NOTIFICATION_EVENT_TYPE 必须以这些
+    // 真名为 key,否则生产环境流式 RunnerEvent 永远丢。
+    //
+    // 同时验证 M1:`turn_started` 的 data.turnId 必须立刻被缓存,后续
+    // `tool_call_*` 事件的 RunnerEvent.runnerRunId 才能填上。
+    vi.mocked(driveLifecycle).mockImplementation(async (driveInput: unknown) => {
+      const onEvent = (
+        driveInput as { onEvent: (type: string, data?: unknown) => void }
+      ).onEvent;
+      onEvent("session_started");
+      onEvent("turn_started", { turnId: "turn-streaming" });
+      onEvent("tool_call_started", { tool: "x", arguments: { y: 1 } });
+      onEvent("notification", { message: "progress" });
+      onEvent("tool_call_completed", { tool: "x", result: { ok: true } });
+      return {
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn-streaming",
+        finalMessage: "ok",
+      } as never;
+    });
+
+    const events: RunnerEvent[] = [];
+    const adapter = createCodexAppServerAdapter({
+      descriptor: codexDescriptor(),
+      codex: codexConfig(),
+    });
+    await adapter.run(baseInput(), {
+      events: { emit: (event) => events.push(event) },
+    });
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain("runner_started");
+    expect(types).toContain("turn_started");
+    expect(types).toContain("tool_call_started");
+    expect(types).toContain("runner_message");
+    expect(types).toContain("tool_call_completed");
+
+    const toolStart = events.find((e) => e.type === "tool_call_started");
+    expect(toolStart?.runnerRunId).toBe("turn-streaming");
+    const message = events.find((e) => e.type === "runner_message");
+    expect(message?.runnerRunId).toBe("turn-streaming");
+  });
+
+  it("V4.7 review H1+H2 regression: emits kind:'diff' artifact with branch + diff stat from real git worktree", async () => {
+    const repo = mkdtempSync(path.join(tmpdir(), "v47-runner-git-"));
+    try {
+      // 准备一个真实的 git 仓库 + 改动,让 adapter 的 readWorkspaceGitSummary
+      // 跑到真 `git rev-parse` / `git diff --stat` 路径,而不是只走 mock。
+      await execa("git", ["init", "-q"], { cwd: repo });
+      await execa("git", ["config", "user.email", "test@example.com"], {
+        cwd: repo,
+      });
+      await execa("git", ["config", "user.name", "Test"], { cwd: repo });
+      await execa("git", ["checkout", "-b", "feature/v4-7-regression"], {
+        cwd: repo,
+      });
+      mkdirSync(path.join(repo, "src"));
+      writeFileSync(path.join(repo, "src", "a.ts"), "export const A = 1;\n");
+      await execa("git", ["add", "."], { cwd: repo });
+      await execa("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+      writeFileSync(
+        path.join(repo, "src", "a.ts"),
+        "export const A = 2;\nexport const B = 3;\n",
+      );
+
+      vi.mocked(driveLifecycle).mockResolvedValue({
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn-real-git",
+        finalMessage: "applied",
+        completedToolCalls: [],
+      } as never);
+
+      const adapter = createCodexAppServerAdapter({
+        descriptor: codexDescriptor(),
+        codex: codexConfig(),
+      });
+
+      const result = await adapter.run(baseInput({ cwd: repo }));
+      if (result.status !== "completed") throw new Error("expected completed");
+      const diffArtifact = (result.artifacts ?? []).find(
+        (a) => a.kind === "diff",
+      );
+      expect(diffArtifact).toBeDefined();
+      // 头部必须是 `branch:<name>\n` 给 agent factory 拆分。
+      expect(diffArtifact?.summary).toMatch(/^branch:feature\/v4-7-regression\n/);
+      // 剩余内容是 git diff --stat 输出,文件名应被引用。
+      expect(diffArtifact?.summary).toMatch(/src\/a\.ts/);
+      // text artifact 仍然存在(Codex final_message),但不再 fallback 进
+      // CoderAgentReport.coder.diffSummary(覆盖在 coder.test.ts)。
+      const textArtifact = (result.artifacts ?? []).find(
+        (a) => a.kind === "text",
+      );
+      expect(textArtifact?.summary).toBe("final_message:\napplied");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("closes the RPC client even when driveLifecycle throws", async () => {

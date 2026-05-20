@@ -17,9 +17,10 @@ import {
 
 const reviewerRole = (over: Partial<ReviewerRoleConfig> = {}): ReviewerRoleConfig => ({
   role: "reviewer",
+  runner: "codex_app_server",
   promptTemplate: "<filled-in-test>",
   promptTemplateHash: "abc123",
-  sandbox: "danger-full-access",
+  sandbox: "read_only_worktree",
   tools: [{ name: "run.command", allow: ["pnpm test"] }],
   timeoutSeconds: 1800,
   tokenScopeRequirements: ["api", "read_repository"],
@@ -31,9 +32,10 @@ const reviewerRole = (over: Partial<ReviewerRoleConfig> = {}): ReviewerRoleConfi
 
 const coderRole = (over: Partial<CoderRoleConfig> = {}): CoderRoleConfig => ({
   role: "coder",
+  runner: "codex_app_server",
   promptTemplate: "<filled-in-test>",
   promptTemplateHash: "abc123",
-  sandbox: "danger-full-access",
+  sandbox: "read_write_worktree",
   tools: [{ name: "run.command", allow: ["pnpm test", "git push"] }],
   timeoutSeconds: 3600,
   tokenScopeRequirements: ["api"],
@@ -98,7 +100,7 @@ describe("buildRoleProfile", () => {
     });
     expect(profile.role).toBe("reviewer");
     expect(profile.prompt).toBe("Review 42 task Fix bug");
-    expect(profile.sandbox).toBe("danger-full-access");
+    expect(profile.sandbox).toBe("read_only_worktree");
     expect(profile.toolAllow).toEqual([
       { name: "run.command", allow: ["pnpm test"] },
     ]);
@@ -106,6 +108,19 @@ describe("buildRoleProfile", () => {
     expect(profile.tokenScopeRequirements).toEqual(["api", "read_repository"]);
     expect(profile.promptTemplateHash).toBe("abc123");
     expect(profile.roleProfileId).toMatch(/^reviewer@/);
+  });
+
+  it("V4.7 carries role runner id into RoleProfile", async () => {
+    const cfg = reviewerRole({
+      promptTemplate: reviewerPromptPath,
+      runner: "codex_app_server",
+    });
+    const profile = await buildRoleProfile({
+      role: cfg,
+      workItem: { id: "wi_42", iid: 42, title: "demo" },
+      task: { id: "t_99", title: "Fix bug" },
+    });
+    expect(profile.runnerId).toBe("codex_app_server");
   });
 
   it("reviewer 配置传入 publishToMr / severityThreshold / maxInlineComments 时透传", async () => {

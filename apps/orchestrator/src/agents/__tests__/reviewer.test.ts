@@ -1,19 +1,21 @@
 import type {
   ReviewerFinding,
+  RunnerDescriptor,
+  RunnerResult,
   TaskNode,
   WorkItem,
 } from "@issuepilot/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ReviewerRoleProfile } from "../../pipelines/role-profile.js";
+import { createRunnerRegistry } from "../../runners/registry.js";
+import type { RunnerAdapter } from "../../runners/types.js";
 import {
   ReviewerParseError,
   createReviewerAgent,
   filterFindingsForInline,
   formatReviewerConfidence,
   parseReviewerMessage,
-  type ReviewerLifecycleOutcome,
-  type ReviewerLifecycleRunner,
 } from "../reviewer.js";
 
 const TASK: TaskNode = {
@@ -38,9 +40,15 @@ const WORKITEM: WorkItem = {
   createdAt: "t0",
   updatedAt: "t0",
 };
+const REVIEWER_DESCRIPTOR: RunnerDescriptor = {
+  runnerId: "codex_app_server",
+  kind: "codex_app_server",
+  capabilities: ["roles.reviewer", "filesystem.read_only_worktree"],
+};
 const PROFILE: ReviewerRoleProfile = {
   role: "reviewer",
   roleProfileId: "reviewer@abc1234",
+  runnerId: "codex_app_server",
   prompt: "review",
   promptTemplateHash: "abc1234567",
   sandbox: "read_only_worktree",
@@ -261,39 +269,46 @@ describe("filterFindingsForInline", () => {
   });
 });
 
-const mkAgent = (
-  outcome: ReviewerLifecycleOutcome | Error,
-) => {
-  const lifecycle: ReviewerLifecycleRunner = {
+type ReviewerOutcome =
+  | RunnerResult
+  | (() => RunnerResult | Promise<RunnerResult>)
+  | Error;
+
+const mkAgent = (outcome: ReviewerOutcome) => {
+  const adapter: RunnerAdapter = {
+    descriptor: REVIEWER_DESCRIPTOR,
     run: vi.fn(async () => {
       if (outcome instanceof Error) throw outcome;
+      if (typeof outcome === "function") return outcome();
       return outcome;
     }),
   };
+  const registry = createRunnerRegistry({
+    descriptors: { [REVIEWER_DESCRIPTOR.runnerId]: REVIEWER_DESCRIPTOR },
+    adapters: [adapter],
+  });
   let i = 0;
   return createReviewerAgent({
-    lifecycle,
+    runnerRegistry: registry,
     now: () => `2026-05-19T11:00:${String(i++).padStart(2, "0")}.000Z`,
     newId: () => "ar_rev_1",
   });
 };
 
 describe("ReviewerAgent.run", () => {
-  it("happy approve_with_comments → status=complete, mrPublication.pending（publishToMr=true）", async () => {
+  it("V4.7 happy approve_with_comments → status=complete, runnerRunId/runnerKind 落盘", async () => {
     const agent = mkAgent({
-      kind: "message",
-      result: {
-        runId: "run_x",
-        rawMessage: wrap({
-          summary: "looks good",
-          decision: "approve_with_comments",
-          confidence: 0.91,
-          risks: [],
-          evidenceRequest: [],
-          findings: [],
-          inlineComments: [],
-        }),
-      },
+      status: "completed",
+      runId: "turn-review",
+      finalMessage: wrap({
+        summary: "looks good",
+        decision: "approve_with_comments",
+        confidence: 0.91,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+      }),
     });
     const res = await agent.run({
       workItem: WORKITEM,
@@ -304,6 +319,9 @@ describe("ReviewerAgent.run", () => {
     });
     if (res.kind !== "report") throw new Error("not report");
     expect(res.report.status).toBe("complete");
+    expect(res.report.runnerId).toBe("codex_app_server");
+    expect(res.report.runnerKind).toBe("codex_app_server");
+    expect(res.report.runnerRunId).toBe("turn-review");
     expect(res.report.reviewer.decision).toBe("approve_with_comments");
     expect(res.report.reviewer.confidence).toBe(0.91);
     expect(res.report.reviewer.mrPublication.status).toBe("pending");
@@ -311,19 +329,17 @@ describe("ReviewerAgent.run", () => {
 
   it("publishToMr=false → mrPublication.skipped_by_config", async () => {
     const agent = mkAgent({
-      kind: "message",
-      result: {
-        runId: "run_x",
-        rawMessage: wrap({
-          summary: "ok",
-          decision: "approve_with_comments",
-          confidence: 0.8,
-          risks: [],
-          evidenceRequest: [],
-          findings: [],
-          inlineComments: [],
-        }),
-      },
+      status: "completed",
+      runId: "turn-review-2",
+      finalMessage: wrap({
+        summary: "ok",
+        decision: "approve_with_comments",
+        confidence: 0.8,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+      }),
     });
     const res = await agent.run({
       workItem: WORKITEM,
@@ -338,8 +354,9 @@ describe("ReviewerAgent.run", () => {
 
   it("schema mismatch → status=failed lastError.code=parse_failed", async () => {
     const agent = mkAgent({
-      kind: "message",
-      result: { runId: "run_x", rawMessage: "no fence" },
+      status: "completed",
+      runId: "turn-bad",
+      finalMessage: "no fence",
     });
     const res = await agent.run({
       workItem: WORKITEM,
@@ -354,23 +371,22 @@ describe("ReviewerAgent.run", () => {
     expect(res.report.lastError?.message).toBe(
       "prompt_output_schema_mismatch",
     );
+    expect(res.report.runnerRunId).toBe("turn-bad");
   });
 
   it("decision=request_changes → status 仍 complete", async () => {
     const agent = mkAgent({
-      kind: "message",
-      result: {
-        runId: "run_x",
-        rawMessage: wrap({
-          summary: "needs rework",
-          decision: "request_changes",
-          confidence: 0.6,
-          risks: [],
-          evidenceRequest: [],
-          findings: [],
-          inlineComments: [],
-        }),
-      },
+      status: "completed",
+      runId: "turn-rc",
+      finalMessage: wrap({
+        summary: "needs rework",
+        decision: "request_changes",
+        confidence: 0.6,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+      }),
     });
     const res = await agent.run({
       workItem: WORKITEM,
@@ -384,7 +400,7 @@ describe("ReviewerAgent.run", () => {
     expect(res.report.reviewer.decision).toBe("request_changes");
   });
 
-  it("lifecycle 抛错 → status=failed lastError.code=reviewer_unavailable", async () => {
+  it("V4.7 adapter throws → status=failed lastError.code=reviewer_unavailable", async () => {
     const agent = mkAgent(new Error("rpc 500"));
     const res = await agent.run({
       workItem: WORKITEM,
@@ -394,6 +410,27 @@ describe("ReviewerAgent.run", () => {
       cwd: "/tmp/wt",
     });
     if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.status).toBe("failed");
     expect(res.report.lastError?.code).toBe("reviewer_unavailable");
+    expect(res.report.runnerRunId).toBeNull();
+  });
+
+  it("V4.7 RunnerResult failed → status=failed, lastError mapped via runnerErrorToLastErrorCode", async () => {
+    const agent = mkAgent({
+      status: "failed",
+      runId: "turn-tool-denied",
+      error: { code: "tool_denied", message: "tool blocked by policy" },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.lastError?.code).toBe("runner_unavailable");
+    expect(res.report.runnerRunId).toBe("turn-tool-denied");
   });
 });

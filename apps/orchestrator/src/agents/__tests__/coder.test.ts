@@ -1,13 +1,21 @@
-import type { TaskNode, WorkItem } from "@issuepilot/shared-contracts";
+import type {
+  RunnerDescriptor,
+  RunnerResult,
+  TaskNode,
+  WorkItem,
+} from "@issuepilot/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CoderRoleProfile } from "../../pipelines/role-profile.js";
+import { createRunnerRegistry } from "../../runners/registry.js";
+import type {
+  RunnerAdapter,
+  RunnerRegistry,
+} from "../../runners/types.js";
 import {
   RunnerUnavailableError,
   SandboxViolationError,
   createCoderAgent,
-  type CoderLifecycleOutcome,
-  type CoderLifecycleRunner,
 } from "../coder.js";
 
 const TASK: TaskNode = {
@@ -32,9 +40,15 @@ const WORKITEM: WorkItem = {
   createdAt: "t0",
   updatedAt: "t0",
 };
+const CODER_DESCRIPTOR: RunnerDescriptor = {
+  runnerId: "codex_app_server",
+  kind: "codex_app_server",
+  capabilities: ["roles.coder", "filesystem.read_write_worktree"],
+};
 const PROFILE: CoderRoleProfile = {
   role: "coder",
   roleProfileId: "coder@abc1234",
+  runnerId: "codex_app_server",
   prompt: "do",
   promptTemplateHash: "abc1234567",
   sandbox: "read_write_worktree",
@@ -43,39 +57,55 @@ const PROFILE: CoderRoleProfile = {
   tokenScopeRequirements: undefined,
 };
 
-const mkAgent = (outcome: CoderLifecycleOutcome | (() => CoderLifecycleOutcome | Promise<CoderLifecycleOutcome>) | Error) => {
-  const lifecycle: CoderLifecycleRunner = {
-    run: vi.fn(async () => {
-      if (outcome instanceof Error) throw outcome;
-      if (typeof outcome === "function") return outcome();
-      return outcome;
-    }),
-  };
-  let i = 0;
-  return createCoderAgent({
-    lifecycle,
-    now: () => `2026-05-19T11:00:${String(i++).padStart(2, "0")}.000Z`,
-    newId: () => "ar_coder_1",
+interface MakeAgentOptions {
+  outcome?: RunnerResult | (() => RunnerResult | Promise<RunnerResult>) | Error;
+  descriptor?: RunnerDescriptor;
+  registryOverride?: RunnerRegistry;
+}
+
+const makeAgent = (opts: MakeAgentOptions = {}) => {
+  const runFn = vi.fn(async () => {
+    if (opts.outcome instanceof Error) throw opts.outcome;
+    if (typeof opts.outcome === "function") return opts.outcome();
+    if (opts.outcome) return opts.outcome;
+    return {
+      status: "failed",
+      error: { code: "runner_unavailable", message: "no outcome" },
+    } satisfies RunnerResult;
   });
+  const descriptor = opts.descriptor ?? CODER_DESCRIPTOR;
+  const adapter: RunnerAdapter = { descriptor, run: runFn };
+  const registry =
+    opts.registryOverride ??
+    createRunnerRegistry({
+      descriptors: { [descriptor.runnerId]: descriptor },
+      adapters: [adapter],
+    });
+  let i = 0;
+  return {
+    agent: createCoderAgent({
+      runnerRegistry: registry,
+      now: () => `2026-05-19T11:00:${String(i++).padStart(2, "0")}.000Z`,
+      newId: () => "ar_coder_1",
+    }),
+    runFn,
+  };
 };
 
 describe("CoderAgent.run completed", () => {
-  it("写出 CoderAgentReport，含 runId / promptTemplateHash / branch / diffSummary / buildStatus", async () => {
-    const agent = mkAgent({
-      kind: "completed",
-      result: {
-        runId: "run_abc",
-        diffSummary: "+1/-0",
-        branch: "issuepilot/wi_1/t_1",
-        runReportArtifactId: "rra_xx",
-        buildStatus: "passed",
-        testStatus: "passed",
-        lintStatus: "passed",
-        mergeRequest: {
-          iid: 7,
-          url: "https://gl/-/mr/7",
-          state: "opened",
-        },
+  it("V4.7 writes runner trace fields on completed coder report", async () => {
+    const { agent } = makeAgent({
+      outcome: {
+        status: "completed",
+        runId: "turn-1",
+        finalMessage: "implemented",
+        artifacts: [
+          { kind: "diff", summary: "src/a.ts | 2 +-" },
+          {
+            kind: "tool_result",
+            summary: "merge_request:7:https://gitlab/mr/7",
+          },
+        ],
       },
     });
     const res = await agent.run({
@@ -88,23 +118,28 @@ describe("CoderAgent.run completed", () => {
     expect(res.kind).toBe("report");
     if (res.kind !== "report") throw new Error("not a report");
     expect(res.report.status).toBe("complete");
-    expect(res.report.runId).toBe("run_abc");
+    expect(res.report.runnerId).toBe("codex_app_server");
+    expect(res.report.runnerKind).toBe("codex_app_server");
+    expect(res.report.runnerRunId).toBe("turn-1");
+    expect(res.report.runId).toBe("turn-1");
     expect(res.report.promptTemplateHash).toBe("abc1234567");
-    expect(res.report.role).toBe("coder");
-    expect(res.report.coder.diffSummary).toBe("+1/-0");
-    expect(res.report.coder.branch).toBe("issuepilot/wi_1/t_1");
-    expect(res.report.coder.runReportArtifactId).toBe("rra_xx");
-    expect(res.report.coder.buildStatus).toBe("passed");
-    expect(res.report.coder.mergeRequest?.iid).toBe(7);
-    expect(res.report.evidenceLinks).toEqual([
-      "run-report-artifact://rra_xx",
-    ]);
+    expect(res.report.coder.diffSummary).toBe("src/a.ts | 2 +-");
+    expect(res.report.coder.mergeRequest).toEqual({
+      iid: 7,
+      url: "https://gitlab/mr/7",
+      state: "opened",
+    });
   });
 });
 
 describe("CoderAgent.run failure paths", () => {
-  it("lifecycle 抛 RunnerUnavailableError → status=failed, lastError.code=runner_unavailable", async () => {
-    const agent = mkAgent(new RunnerUnavailableError("rpc spawn failed"));
+  it("V4.7 registry failure → status=failed, lastError.code=runner_unavailable", async () => {
+    // build a registry that lacks an adapter for the descriptor:
+    const registry = createRunnerRegistry({
+      descriptors: { [CODER_DESCRIPTOR.runnerId]: CODER_DESCRIPTOR },
+      adapters: [],
+    });
+    const { agent } = makeAgent({ registryOverride: registry });
     const res = await agent.run({
       workItem: WORKITEM,
       task: TASK,
@@ -115,44 +150,13 @@ describe("CoderAgent.run failure paths", () => {
     if (res.kind !== "report") throw new Error("not a report");
     expect(res.report.status).toBe("failed");
     expect(res.report.lastError?.code).toBe("runner_unavailable");
+    expect(res.report.runnerRunId).toBeNull();
     expect(res.report.coder.branch).toBe("");
   });
 
-  it("lifecycle 抛 SandboxViolationError → lastError.code=sandbox_violation", async () => {
-    const agent = mkAgent(
-      new SandboxViolationError("write outside ~/.issuepilot"),
-    );
-    const res = await agent.run({
-      workItem: WORKITEM,
-      task: TASK,
-      pipelineRun: { pipelineRunId: "pr_1" },
-      profile: PROFILE,
-      cwd: "/tmp/wt",
-    });
-    if (res.kind !== "report") throw new Error("not a report");
-    expect(res.report.lastError?.code).toBe("sandbox_violation");
-  });
-
-  it("lifecycle 抛任意 Error → lastError.code=coding_failed（兜底）", async () => {
-    const agent = mkAgent(new Error("boom"));
-    const res = await agent.run({
-      workItem: WORKITEM,
-      task: TASK,
-      pipelineRun: { pipelineRunId: "pr_1" },
-      profile: PROFILE,
-      cwd: "/tmp/wt",
-    });
-    if (res.kind !== "report") throw new Error("not a report");
-    expect(res.report.lastError?.code).toBe("coding_failed");
-  });
-
-  it("outcome.kind = failed → status=failed 并保留 partial 字段", async () => {
-    const agent = mkAgent({
-      kind: "failed",
-      reason: "coding_failed",
-      message: "CI red",
-      runId: "run_x",
-      partial: { diffSummary: "+50/-10", branch: "issuepilot/x/y", buildStatus: "failed" },
+  it("V4.7 adapter throws → falls back to coding_failed", async () => {
+    const { agent } = makeAgent({
+      outcome: new Error("boom"),
     });
     const res = await agent.run({
       workItem: WORKITEM,
@@ -163,17 +167,60 @@ describe("CoderAgent.run failure paths", () => {
     });
     if (res.kind !== "report") throw new Error("not a report");
     expect(res.report.status).toBe("failed");
-    expect(res.report.runId).toBe("run_x");
-    expect(res.report.coder.diffSummary).toBe("+50/-10");
-    expect(res.report.coder.buildStatus).toBe("failed");
+    expect(res.report.lastError?.code).toBe("coding_failed");
+  });
+
+  it("V4.7 RunnerResult failed sandbox_violation → status=failed, sandbox_violation", async () => {
+    const { agent } = makeAgent({
+      outcome: {
+        status: "failed",
+        runId: "turn-fail",
+        error: { code: "sandbox_violation", message: "write outside" },
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.runnerRunId).toBe("turn-fail");
+    expect(res.report.runId).toBe("turn-fail");
+    expect(res.report.lastError?.code).toBe("sandbox_violation");
+  });
+
+  it("V4.7 RunnerResult timeout → status=failed, runner_unavailable", async () => {
+    const { agent } = makeAgent({
+      outcome: {
+        status: "timeout",
+        runId: "turn-timeout",
+        error: { code: "runner_timeout", message: "timed out" },
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.lastError?.code).toBe("runner_unavailable");
+    expect(res.report.runnerRunId).toBe("turn-timeout");
   });
 });
 
 describe("CoderAgent.run cancellation", () => {
-  it("outcome.cancelled → AgentRunResult.kind=cancelled，cancelledAt 透传", async () => {
-    const agent = mkAgent({
-      kind: "cancelled",
-      cancelledAt: "2026-05-19T11:05:00.000Z",
+  it("RunnerResult cancelled → AgentRunResult.kind=cancelled", async () => {
+    const { agent } = makeAgent({
+      outcome: {
+        status: "cancelled",
+        cancelledAt: "2026-05-19T11:05:00.000Z",
+      },
     });
     const res = await agent.run({
       workItem: WORKITEM,
@@ -185,5 +232,61 @@ describe("CoderAgent.run cancellation", () => {
     expect(res.kind).toBe("cancelled");
     if (res.kind !== "cancelled") throw new Error("expected cancelled");
     expect(res.cancelledAt).toBe("2026-05-19T11:05:00.000Z");
+  });
+});
+
+describe("CoderAgent V4.7 redaction audit", () => {
+  it("propagates runner redactedFields into AgentReport with runner. prefix", async () => {
+    const { agent } = makeAgent({
+      outcome: {
+        status: "completed",
+        runId: "turn-redacted",
+        finalMessage: "[REDACTED]",
+        artifacts: [{ kind: "diff", summary: "[REDACTED]" }],
+        redactedFields: ["finalMessage", "artifacts[0].summary"],
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.redactedFields).toEqual(
+      expect.arrayContaining([
+        "runner.finalMessage",
+        "runner.artifacts[0].summary",
+      ]),
+    );
+  });
+
+  it("propagates runner error redaction audit into failed coder AgentReport", async () => {
+    const { agent } = makeAgent({
+      outcome: {
+        status: "failed",
+        runId: "turn-failed",
+        error: { code: "runner_unavailable", message: "[REDACTED]" },
+        redactedFields: ["error.message"],
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.redactedFields).toContain("runner.error.message");
+  });
+});
+
+describe("CoderAgent legacy error classes still re-exported", () => {
+  it("preserves RunnerUnavailableError / SandboxViolationError symbols", () => {
+    expect(new RunnerUnavailableError("x").name).toBe("RunnerUnavailableError");
+    expect(new SandboxViolationError("x").name).toBe("SandboxViolationError");
   });
 });

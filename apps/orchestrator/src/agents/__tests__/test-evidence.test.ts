@@ -1,11 +1,15 @@
 import type {
+  RunnerDescriptor,
+  RunnerResult,
   TaskNode,
   TestEvidenceItem,
   WorkItem,
 } from "@issuepilot/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { TestEvidenceRoleProfile } from "../../pipelines/role-profile.js";
+import { createRunnerRegistry } from "../../runners/registry.js";
+import type { RunnerAdapter } from "../../runners/types.js";
 import { SandboxViolationError } from "../coder.js";
 import {
   createTestEvidenceAgent,
@@ -37,12 +41,26 @@ const WORKITEM: WorkItem = {
 const PROFILE: TestEvidenceRoleProfile = {
   role: "test_evidence",
   roleProfileId: "test_evidence@abc1234",
+  runnerId: "codex_app_server",
   prompt: "evidence",
   promptTemplateHash: "abc1234567",
   sandbox: "read_only_source_write_evidence",
   toolAllow: [],
   timeoutSeconds: 1800,
   tokenScopeRequirements: undefined,
+};
+const EVIDENCE_DESCRIPTOR: RunnerDescriptor = {
+  runnerId: "codex_app_server",
+  kind: "codex_app_server",
+  capabilities: [
+    "roles.test_evidence",
+    "filesystem.read_only_source_write_evidence",
+  ],
+};
+const COMPLETED_RUN: RunnerResult = {
+  status: "completed",
+  runId: "turn-evidence",
+  finalMessage: "collect requested evidence",
 };
 
 const itemCollector = (name: string, item: TestEvidenceItem): EvidenceCollector => ({
@@ -76,22 +94,138 @@ const failingCollector = (
   },
 });
 
-const mkAgent = () => {
-  let i = 0;
-  return createTestEvidenceAgent({
-    now: () => `2026-05-19T11:00:${String(i++).padStart(2, "0")}.000Z`,
-    newId: () => "ar_te_1",
+interface MkAgentOpts {
+  runnerOutcome?: RunnerResult | Error;
+}
+
+const mkAgent = (opts: MkAgentOpts = {}) => {
+  const outcome = opts.runnerOutcome ?? COMPLETED_RUN;
+  const runFn = vi.fn(async () => {
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
   });
+  const adapter: RunnerAdapter = {
+    descriptor: EVIDENCE_DESCRIPTOR,
+    run: runFn,
+  };
+  const registry = createRunnerRegistry({
+    descriptors: { [EVIDENCE_DESCRIPTOR.runnerId]: EVIDENCE_DESCRIPTOR },
+    adapters: [adapter],
+  });
+  let i = 0;
+  return {
+    agent: createTestEvidenceAgent({
+      runnerRegistry: registry,
+      now: () => `2026-05-19T11:00:${String(i++).padStart(2, "0")}.000Z`,
+      newId: () => "ar_te_1",
+    }),
+    runFn,
+  };
 };
 
 describe("TestEvidenceAgent.run", () => {
-  it("全部 collector collected → status=complete + baseline 保留", async () => {
-    const agent = mkAgent();
+  it("V4.7 starts test_evidence through runner before collectors", async () => {
+    const { agent, runFn } = mkAgent();
     const res = await agent.run({
       workItem: WORKITEM,
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
+      evidenceDir: "/tmp/evidence",
+      collectors: [
+        itemCollector("ci", {
+          kind: "ci_log",
+          target: "pnpm test",
+          source: "pnpm",
+          status: "collected",
+          artifactPath: "/tmp/evidence/ci.txt",
+        }),
+      ],
+    });
+    expect(runFn).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "test_evidence" }),
+      undefined,
+    );
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.status).toBe("complete");
+    expect(res.report.runnerRunId).toBe("turn-evidence");
+    expect(res.report.runnerKind).toBe("codex_app_server");
+  });
+
+  it("V4.7 runner timeout → failed AgentReport, evidence_unavailable mapped, no collectors run", async () => {
+    const failingCollectorCalled = vi.fn();
+    const collector: EvidenceCollector = {
+      name: "ci",
+      async collect() {
+        failingCollectorCalled();
+        return {
+          kind: "item",
+          item: {
+            kind: "ci_log",
+            target: "x",
+            source: "pnpm",
+            status: "collected",
+          },
+        };
+      },
+    };
+    const { agent } = mkAgent({
+      runnerOutcome: {
+        status: "timeout",
+        runId: "turn-timeout",
+        error: { code: "runner_timeout", message: "stuck" },
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+      evidenceDir: "/tmp/evidence",
+      collectors: [collector],
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.lastError?.code).toBe("runner_unavailable");
+    expect(res.report.runnerRunId).toBe("turn-timeout");
+    expect(failingCollectorCalled).not.toHaveBeenCalled();
+  });
+
+  it("V4.7 artifact_collection_failed → evidence_unavailable", async () => {
+    const { agent } = mkAgent({
+      runnerOutcome: {
+        status: "failed",
+        runId: "turn-acf",
+        error: {
+          code: "artifact_collection_failed",
+          message: "artifact write failed",
+        },
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+      evidenceDir: "/tmp/evidence",
+      collectors: [],
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.lastError?.code).toBe("evidence_unavailable");
+  });
+
+  it("全部 collector collected → status=complete + baseline 保留", async () => {
+    const { agent } = mkAgent();
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [
         baselineCollector,
@@ -122,12 +256,13 @@ describe("TestEvidenceAgent.run", () => {
   });
 
   it("walkthrough failed + CI passed → status=incomplete, lastError.code=evidence_partial", async () => {
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const res = await agent.run({
       workItem: WORKITEM,
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [
         itemCollector("ci", {
@@ -152,12 +287,13 @@ describe("TestEvidenceAgent.run", () => {
   });
 
   it("collector 抛 SandboxViolationError → status=failed sandbox_violation 并保留已 collected items", async () => {
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const res = await agent.run({
       workItem: WORKITEM,
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [
         itemCollector("ci", {
@@ -177,12 +313,13 @@ describe("TestEvidenceAgent.run", () => {
   });
 
   it("collector 抛任意 Error → status=failed evidence_unavailable", async () => {
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const res = await agent.run({
       workItem: WORKITEM,
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [failingCollector("ci", new Error("disk full"))],
     });
@@ -192,7 +329,7 @@ describe("TestEvidenceAgent.run", () => {
   });
 
   it("collector 返回 cancel → AgentRunResult.kind=cancelled", async () => {
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const cancelCollector: EvidenceCollector = {
       name: "cancel",
       async collect() {
@@ -204,6 +341,7 @@ describe("TestEvidenceAgent.run", () => {
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [cancelCollector],
     });
@@ -218,7 +356,7 @@ describe("TestEvidenceAgent.run", () => {
     // evidenceItems。把 agent.ts 里 `if (out.kind === "noop") continue;`
     // 删掉后这里的 length 会变 1（noop 落进 else 分支当 baseline）或
     // type 校验直接挂掉，断言必红。
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const noopCollector: EvidenceCollector = {
       name: "scanner-noop",
       async collect() {
@@ -230,6 +368,7 @@ describe("TestEvidenceAgent.run", () => {
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [
         noopCollector,
@@ -249,7 +388,7 @@ describe("TestEvidenceAgent.run", () => {
   });
 
   it("全 noop collector → items.length === 0 + status=complete（首跑没产物的诚实状态）", async () => {
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const noopOne: EvidenceCollector = {
       name: "scanner-noop-1",
       async collect() {
@@ -267,6 +406,7 @@ describe("TestEvidenceAgent.run", () => {
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [noopOne, noopTwo],
     });
@@ -282,12 +422,13 @@ describe("TestEvidenceAgent.run", () => {
   });
 
   it("所有 item 都 failed/skipped 且无 collected → status=failed evidence_unavailable", async () => {
-    const agent = mkAgent();
+    const { agent } = mkAgent();
     const res = await agent.run({
       workItem: WORKITEM,
       task: TASK,
       pipelineRun: { pipelineRunId: "pr_1" },
       profile: PROFILE,
+      cwd: "/tmp/wt",
       evidenceDir: "/tmp/evidence",
       collectors: [
         itemCollector("ci", {

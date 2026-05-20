@@ -30,33 +30,19 @@ import {
   type ReviewerInlineComment,
   type ReviewerRisk,
   type ReviewerSeverityThreshold,
+  type RunnerResult,
   type TaskNode,
   type WorkItem,
 } from "@issuepilot/shared-contracts";
 import { ReviewerSummaryTooLongError, assertReviewerSummaryLength } from "@issuepilot/shared-contracts";
 
 import type { ReviewerRoleProfile } from "../pipelines/role-profile.js";
-
-export interface ReviewerLifecycleResult {
-  runId: string;
-  /** Codex 输出的原始 message（待 parse）。 */
-  rawMessage: string;
-}
-
-export type ReviewerLifecycleOutcome =
-  | { kind: "message"; result: ReviewerLifecycleResult }
-  | { kind: "failed"; reason: LastErrorCode; message: string; runId?: string }
-  | { kind: "cancelled"; cancelledAt: string };
-
-export interface ReviewerLifecycleRunner {
-  run(input: {
-    profile: ReviewerRoleProfile;
-    prompt: string;
-    cwd: string;
-    workItem: WorkItem;
-    task: TaskNode;
-  }): Promise<ReviewerLifecycleOutcome>;
-}
+import { runnerErrorToLastErrorCode } from "../runners/failure-mapping.js";
+import {
+  RunnerRegistryError,
+  type RunnerRegistry,
+} from "../runners/registry.js";
+import type { RunnerEventSink } from "../runners/types.js";
 
 const SEVERITY_RANK: Record<string, number> = {
   low: 1,
@@ -421,29 +407,56 @@ export interface ReviewerAgent {
   run(input: ReviewerAgentRunInput): Promise<ReviewerAgentResult>;
 }
 
+const RUNNER_KIND_CODEX = "codex_app_server" as const;
+
+const runnerRedactedFieldsToReport = (result: RunnerResult): string[] => {
+  if (!result.redactedFields || result.redactedFields.length === 0) return [];
+  return result.redactedFields.map((field) => `runner.${field}`);
+};
+
 export const createReviewerAgent = (deps: {
-  lifecycle: ReviewerLifecycleRunner;
+  runnerRegistry: RunnerRegistry;
+  events?: RunnerEventSink;
   now?: () => string;
   newId?: () => string;
 }): ReviewerAgent => {
-  const now = deps.now ?? (() => new Date().toISOString());
-  const newId = deps.newId ?? (() => randomUUID());
+  const now = deps.now ?? ((): string => new Date().toISOString());
+  const newId = deps.newId ?? ((): string => randomUUID());
 
   return {
     async run(input) {
       const tickNow = input.now ?? now;
       const tickId = input.newId ?? newId;
       const startedAt = tickNow();
-      let outcome: ReviewerLifecycleOutcome;
+      const runnerId = input.profile.runnerId;
+
+      let result: RunnerResult;
       try {
-        outcome = await deps.lifecycle.run({
-          profile: input.profile,
-          prompt: input.profile.prompt,
-          cwd: input.cwd,
-          workItem: input.workItem,
-          task: input.task,
+        const adapter = deps.runnerRegistry.getForRole({
+          role: "reviewer",
+          runnerId,
         });
+        result = await adapter.run(
+          {
+            runnerId,
+            role: "reviewer",
+            prompt: input.profile.prompt,
+            cwd: input.cwd,
+            workItemId: input.workItem.workItemId,
+            taskId: input.task.taskId,
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            roleProfileId: input.profile.roleProfileId,
+            toolAllow: input.profile.toolAllow,
+            sandbox: input.profile.sandbox,
+            metadata: { agentReportRole: "reviewer" },
+            ...(input.profile.timeoutSeconds !== undefined
+              ? { timeoutSeconds: input.profile.timeoutSeconds }
+              : {}),
+          },
+          deps.events ? { events: deps.events } : undefined,
+        );
       } catch (cause) {
+        const isRegistryError = cause instanceof RunnerRegistryError;
         const report: ReviewerAgentReport = {
           agentReportId: tickId(),
           workItemId: input.workItem.workItemId,
@@ -451,12 +464,15 @@ export const createReviewerAgent = (deps: {
           taskId: input.task.taskId,
           role: "reviewer",
           roleProfileId: input.profile.roleProfileId,
+          runnerId,
+          runnerKind: RUNNER_KIND_CODEX,
+          runnerRunId: null,
           status: "failed",
           startedAt,
           completedAt: tickNow(),
           promptTemplateHash: input.profile.promptTemplateHash,
           lastError: {
-            code: "reviewer_unavailable",
+            code: isRegistryError ? "runner_unavailable" : "reviewer_unavailable",
             message: cause instanceof Error ? cause.message : String(cause),
           },
           evidenceLinks: [],
@@ -466,11 +482,15 @@ export const createReviewerAgent = (deps: {
         return { kind: "report", report };
       }
 
-      if (outcome.kind === "cancelled") {
-        return { kind: "cancelled", cancelledAt: outcome.cancelledAt };
+      if (result.status === "cancelled") {
+        return { kind: "cancelled", cancelledAt: result.cancelledAt };
       }
 
-      if (outcome.kind === "failed") {
+      const runnerRunId = result.runId ?? null;
+      const redactedFields = runnerRedactedFieldsToReport(result);
+
+      if (result.status === "failed" || result.status === "timeout") {
+        const errCode = runnerErrorToLastErrorCode(result.error.code);
         const report: ReviewerAgentReport = {
           agentReportId: tickId(),
           workItemId: input.workItem.workItemId,
@@ -478,22 +498,27 @@ export const createReviewerAgent = (deps: {
           taskId: input.task.taskId,
           role: "reviewer",
           roleProfileId: input.profile.roleProfileId,
+          runnerId,
+          runnerKind: RUNNER_KIND_CODEX,
+          runnerRunId,
           status: "failed",
           startedAt,
           completedAt: tickNow(),
-          ...(outcome.runId ? { runId: outcome.runId } : {}),
+          ...(result.runId ? { runId: result.runId } : {}),
           promptTemplateHash: input.profile.promptTemplateHash,
-          lastError: { code: outcome.reason, message: outcome.message },
+          lastError: { code: errCode, message: result.error.message },
           evidenceLinks: [],
-          redactedFields: [],
+          redactedFields,
           reviewer: emptyReviewer(),
         };
         return { kind: "report", report };
       }
 
+      // status === "completed"
+      const rawMessage = result.finalMessage ?? "";
       let parsed: ReviewerParseResult;
       try {
-        parsed = parseReviewerMessage(outcome.result.rawMessage);
+        parsed = parseReviewerMessage(rawMessage);
       } catch (cause) {
         const errCode: LastErrorCode = "parse_failed";
         const report: ReviewerAgentReport = {
@@ -503,17 +528,23 @@ export const createReviewerAgent = (deps: {
           taskId: input.task.taskId,
           role: "reviewer",
           roleProfileId: input.profile.roleProfileId,
+          runnerId,
+          runnerKind: RUNNER_KIND_CODEX,
+          runnerRunId,
           status: "failed",
           startedAt,
           completedAt: tickNow(),
-          runId: outcome.result.runId,
+          ...(result.runId ? { runId: result.runId } : {}),
           promptTemplateHash: input.profile.promptTemplateHash,
           lastError: {
             code: errCode,
-            message: cause instanceof ReviewerParseError ? cause.code : String(cause),
+            message:
+              cause instanceof ReviewerParseError
+                ? cause.code
+                : String(cause),
           },
           evidenceLinks: [],
-          redactedFields: [],
+          redactedFields,
           reviewer: emptyReviewer(),
         };
         return { kind: "report", report };
@@ -533,13 +564,16 @@ export const createReviewerAgent = (deps: {
         taskId: input.task.taskId,
         role: "reviewer",
         roleProfileId: input.profile.roleProfileId,
+        runnerId,
+        runnerKind: RUNNER_KIND_CODEX,
+        runnerRunId,
         status: "complete",
         startedAt,
         completedAt: tickNow(),
-        runId: outcome.result.runId,
+        ...(result.runId ? { runId: result.runId } : {}),
         promptTemplateHash: input.profile.promptTemplateHash,
         evidenceLinks: [],
-        redactedFields: [],
+        redactedFields,
         reviewer: {
           summary: parsed.summary,
           decision: parsed.decision,

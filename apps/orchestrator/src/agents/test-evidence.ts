@@ -32,10 +32,8 @@ import type {
 
 import type { TestEvidenceRoleProfile } from "../pipelines/role-profile.js";
 import { runnerErrorToLastErrorCode } from "../runners/failure-mapping.js";
-import {
-  RunnerRegistryError,
-  type RunnerRegistry,
-} from "../runners/registry.js";
+import { RunnerRegistryError } from "../runners/registry.js";
+import type { RunnerRegistry } from "../runners/types.js";
 import type { RunnerEventSink } from "../runners/types.js";
 
 import { SandboxViolationError } from "./coder.js";

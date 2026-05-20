@@ -19,7 +19,8 @@
  * report 之间越权访问磁盘；读取损坏 JSON → `PipelineStoreReadError`。
  */
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { redact } from "@issuepilot/observability";
@@ -60,6 +61,19 @@ export class PipelineStoreReadError extends Error {
     super(message, options);
   }
 }
+
+/**
+ * V4.6 follow-up Important #2：内部 helper 把 `index.json` 的更新拆成
+ * stage + commit 两步。`stageIndex` 写完暂存文件后返回此 handle，
+ * `commitStagedIndex(staged)` 做 atomic rename，`discardStagedIndex(staged)`
+ * 做 best-effort unlink。
+ */
+type StagedIndex = {
+  /** 暂存文件的绝对路径，已经写完 + fsync 但还没 rename 到 `indexPath`。 */
+  tmp: string;
+  /** 最终 `index.json` 路径，commit 时 `rename(tmp, indexPath)` 完成切换。 */
+  indexPath: string;
+};
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
@@ -116,18 +130,40 @@ const buildPaths = (root: string): PipelineStorePaths => ({
   },
 });
 
+/**
+ * V4.6 follow-up Important #2：写盘走 `staging-file (write + fsync) →
+ * rename` 的 atomic 模式。
+ *
+ * - 暂存文件名带 `randomUUID` 后缀，避免并发 supersede / save 之间
+ *   争抢同名 tmp 文件。
+ * - `fh.sync()` 保证内容真正落盘后再 rename，POSIX rename 本身是原子
+ *   的，所以 `rename` 成功 ⇔ 目标文件可见且完整。
+ * - 整段 `open + write + sync + close + rename` 都包在同一个 try/catch
+ *   里：任意一步失败（write/fsync 期间 ENOSPC、rename 失败等）都
+ *   best-effort `unlink` 暂存文件，避免 role 目录残留半完成 tmp。
+ *   unlink 错误吞掉，让原始错误传播。
+ */
 const writeJsonAtomic = async (
   destination: string,
   payload: unknown,
 ): Promise<void> => {
   await mkdir(path.dirname(destination), { recursive: true });
   const redacted = redact(payload);
-  const tmp = `${destination}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(redacted, null, 2)}\n`, "utf8");
-  // node:fs/promises rename 在大多数 POSIX 系统是原子的；保留两步避免
-  // ESM 环境下 import dance。
-  const { rename } = await import("node:fs/promises");
-  await rename(tmp, destination);
+  const tmp = `${destination}.${randomUUID()}.tmp`;
+  const { open, rename, unlink } = await import("node:fs/promises");
+  try {
+    const fh = await open(tmp, "w");
+    try {
+      await fh.writeFile(`${JSON.stringify(redacted, null, 2)}\n`, "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, destination);
+  } catch (cause) {
+    await unlink(tmp).catch(() => undefined);
+    throw cause;
+  }
 };
 
 const readJsonSafe = async <T>(
@@ -222,6 +258,20 @@ export interface PipelineStore {
    * `next.supersedes = prevId` 双向写回，并在 role index.json 的
    * `supersedeChain[]` 追加 `{ from, to }`。任一报告不存在 → 抛
    * `PipelineStoreReadError`。
+   *
+   * 原子性契约（V4.6 follow-up Important #2）：**atomic via index
+   * commit**——`index.json` 是 supersede 链的唯一 source of truth，
+   * `listAgentReportsForRole` / `latestAgentReportForRole` 仅读 index。
+   * 中途失败时 staging tmp index 被丢弃，`index.json` 文件不变；但
+   * 个别 `<reportId>.json` 可能携带在失败前已写盘的部分
+   * `supersededBy` / `supersedes` 字段，**消费方必须以 index 为准、
+   * 不要直接读 raw 字段**。重跑 `supersedeAgentReport` 是幂等的：
+   * `agentReportIds` 与 `supersedeChain` 都做了 dedupe，重试会收敛
+   * 到成功状态（见对应单测）。
+   *
+   * 并发说明：调用方需要按 `(taskId, role)` 串行化；并发 supersede
+   * 调用可能丢失 `supersedeChain` 条目（pre-existing 限制，本次修
+   * 复未涉及）。
    */
   supersedeAgentReport(input: {
     taskId: string;
@@ -316,17 +366,70 @@ export const createPipelineStore = (
     }
   };
 
-  const writeIndex = async (idx: AgentReportRoleIndex): Promise<void> => {
+  /**
+   * V4.6 follow-up Important #2：把 `<root>/agent-reports/<taskId>/<role>/
+   * index.json` 内容写到一个带 `randomUUID` 后缀的暂存文件，并在 close
+   * 之前 `fh.sync()` 让磁盘真正落盘。返回 `StagedIndex`，由调用方决定
+   * 何时通过 `commitStagedIndex` 做 atomic `rename(tmp, indexPath)`，
+   * 或者 `discardStagedIndex` best-effort 清理。
+   *
+   * 整段 `open + write + sync + close` 都包在同一个 try/catch 里：
+   * 任意一步失败（ENOSPC、I/O 错误等）都会 best-effort `unlink` 暂存
+   * 文件并把原始错误向上抛——调用方此刻还没拿到 handle，自然没法做
+   * `discardStagedIndex`，所以清理责任落在 `stageIndex` 自己。
+   */
+  const stageIndex = async (
+    idx: AgentReportRoleIndex,
+  ): Promise<StagedIndex> => {
     const indexPath = paths.agentReportIndexPath({
       taskId: idx.taskId,
       role: idx.role,
     });
     await mkdir(path.dirname(indexPath), { recursive: true });
-    await writeFile(
-      indexPath,
-      `${JSON.stringify(redact(idx), null, 2)}\n`,
-      "utf8",
-    );
+    const tmp = `${indexPath}.${randomUUID()}.tmp`;
+    const { open, unlink } = await import("node:fs/promises");
+    try {
+      const fh = await open(tmp, "w");
+      try {
+        await fh.writeFile(
+          `${JSON.stringify(redact(idx), null, 2)}\n`,
+          "utf8",
+        );
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+    } catch (cause) {
+      await unlink(tmp).catch(() => undefined);
+      throw cause;
+    }
+    return { tmp, indexPath };
+  };
+
+  const commitStagedIndex = async (staged: StagedIndex): Promise<void> => {
+    const { rename, unlink } = await import("node:fs/promises");
+    try {
+      await rename(staged.tmp, staged.indexPath);
+    } catch (cause) {
+      await unlink(staged.tmp).catch(() => undefined);
+      throw cause;
+    }
+  };
+
+  const discardStagedIndex = async (staged: StagedIndex): Promise<void> => {
+    const { unlink } = await import("node:fs/promises");
+    await unlink(staged.tmp).catch(() => undefined);
+  };
+
+  /** stage + commit 的 convenience helper（saveAgentReport 走的非 supersede 路径用）。 */
+  const writeIndex = async (idx: AgentReportRoleIndex): Promise<void> => {
+    const staged = await stageIndex(idx);
+    try {
+      await commitStagedIndex(staged);
+    } catch (cause) {
+      await discardStagedIndex(staged);
+      throw cause;
+    }
   };
 
   return {
@@ -607,11 +710,12 @@ export const createPipelineStore = (
         ...next,
         supersedes: prevId,
       } as AgentReport;
-      // Persist reports without re-running the index update (we'll patch the
-      // chain ourselves below to keep `supersedeChain[]` in sync).
-      await this.saveAgentReport(updatedPrev, { updateIndex: false });
-      await this.saveAgentReport(updatedNext, { updateIndex: false });
 
+      // V4.6 follow-up Important #2：crash-atomic via index commit。
+      // 在内存里组装 next idx → stage 到 tmp index → 写 next/prev
+      // AgentReport → atomic rename(tmpIndex, indexPath) 一次切换 index。
+      // 个别 `<reportId>.json` 可能携带在失败前已写盘的部分字段；
+      // 消费方以 index 为准，retry 收敛见 supersedeAgentReport docstring。
       const idx = await readIndex({ taskId, role });
       if (!idx.agentReportIds.includes(prevId)) {
         idx.agentReportIds.push(prevId);
@@ -627,7 +731,16 @@ export const createPipelineStore = (
       }
       idx.latestAgentReportId = nextId;
       idx.updatedAt = new Date().toISOString();
-      await writeIndex(idx);
+
+      const staged = await stageIndex(idx);
+      try {
+        await this.saveAgentReport(updatedNext, { updateIndex: false });
+        await this.saveAgentReport(updatedPrev, { updateIndex: false });
+        await commitStagedIndex(staged);
+      } catch (cause) {
+        await discardStagedIndex(staged);
+        throw cause;
+      }
     },
   };
 };

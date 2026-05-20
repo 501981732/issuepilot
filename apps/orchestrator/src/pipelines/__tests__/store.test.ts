@@ -1,3 +1,4 @@
+import * as fsp from "node:fs/promises";
 import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import type {
   ReviewerAgentReport,
   TestEvidenceAgentReport,
 } from "@issuepilot/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   PipelineStorePathError,
@@ -18,6 +19,16 @@ import {
   createPipelineStoresByProject,
   ensurePipelineDirs,
 } from "../store.js";
+
+// V4.6 follow-up Important #2 crash-safety 测试需要在运行时把 `fs.rename`
+// 替换成可控的失败 mock。Node ESM 的 module namespace 是 frozen 的，无法
+// 直接 `vi.spyOn`。用 `vi.mock` 把 `node:fs/promises` 包成一个普通对象，
+// 让 spy 能正确接管，并保证其它测试不受影响（行为与原模块相同）。
+// （`vi.mock` 调用会被 vitest 自动 hoist 到文件顶部，放置位置仅为可读性。）
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof fsp>("node:fs/promises");
+  return { ...actual };
+});
 
 const isoNow = () => "2026-05-19T11:00:00.000Z";
 
@@ -452,6 +463,154 @@ describe("PipelineStore.supersedeAgentReport", () => {
         nextId: "ar_te_missing",
       }),
     ).rejects.toBeInstanceOf(PipelineStoreReadError);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // V4.6 follow-up Important #2：supersedeAgentReport 必须 crash-atomic。
+  // 现状把 prev / next 报告先逐个写盘，再写 index.json；中途 crash 会留下
+  // prev.supersededBy 已切但 index 没更新（或反过来）的半完成状态。
+  // 修复：每次写盘都走 `staging-file (write + fsync) → rename`，且把
+  // index 切换排到最后一步；中途任意一步失败 →
+  //   1) `latestAgentReportId` 仍是 supersede 之前那一刻（baseline =
+  //      prevReport.id，不是 nextReport.id），且
+  //   2) `supersedeChain` 仍为 `[]`，且
+  //   3) role 目录里不残留 `*.tmp` 文件（write 完但 rename 失败的暂存
+  //      文件必须被 best-effort unlink）。
+  //
+  // 设置上：`prevReport` 走完整 saveAgentReport 把 index 推进到 prev；
+  // `nextReport` 用 `{ updateIndex: false }` 只落盘不动 index，让 baseline
+  // 锁在 `latestAgentReportId === prevReport.id`。这样
+  // `supersedeAgentReport` 自身才是 index 推进的唯一来源，crash 中途
+  // 失败时「未推进」语义才能被 latest 字段断到。
+  // ──────────────────────────────────────────────────────────────────────
+  it("supersedeAgentReport is crash-safe: failing mid-way leaves no orphan", async () => {
+    const { root, store } = await createTempStore();
+    const prevReport = coderReport({ agentReportId: "ar_prev" });
+    const nextReport = coderReport({
+      agentReportId: "ar_next",
+      pipelineRunId: "pr_2",
+    });
+    await store.saveAgentReport(prevReport);
+    await store.saveAgentReport(nextReport, { updateIndex: false });
+
+    // baseline：index 仍指向 prevReport，supersedeChain 还没建。
+    const baseline = await store.listAgentReportsForRole({
+      taskId: prevReport.taskId,
+      role: "coder",
+    });
+    expect(baseline.index.latestAgentReportId).toBe(prevReport.agentReportId);
+    expect(baseline.index.supersedeChain).toEqual([]);
+
+    // 注入故障：让 supersedeAgentReport 内部的第二次 fs.rename 抛错（模拟
+    // 写完第一个 AgentReport tmp 文件后磁盘满 / 断电）。第一次和后续 rename
+    // 走真实实现，避免污染其它测试。
+    const realRename = fsp.rename;
+    let renameCalls = 0;
+    const renameSpy = vi
+      .spyOn(fsp, "rename")
+      .mockImplementation(async (...args) => {
+        renameCalls += 1;
+        if (renameCalls === 2) {
+          throw new Error("disk full (test injection)");
+        }
+        return realRename(
+          ...(args as Parameters<typeof realRename>),
+        );
+      });
+
+    try {
+      await expect(
+        store.supersedeAgentReport({
+          taskId: prevReport.taskId,
+          role: "coder",
+          prevId: prevReport.agentReportId,
+          nextId: nextReport.agentReportId,
+        }),
+      ).rejects.toThrow(/disk full/);
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    const after = await store.listAgentReportsForRole({
+      taskId: prevReport.taskId,
+      role: "coder",
+    });
+    // (1) index 没有被部分推进：latest 仍是 prev，chain 仍空。
+    expect(after.index.latestAgentReportId).toBe(prevReport.agentReportId);
+    expect(after.index.supersedeChain).toEqual([]);
+
+    // (2) 失败的 rename 不能在 role 目录里留下 staging tmp 文件。
+    //     旧实现里 writeJsonAtomic / writeIndex 在 rename 失败后没有
+    //     unlink 暂存文件，会留下 `${dest}.tmp`；新实现做了 best-effort
+    //     unlink。
+    const roleDir = join(root, "agent-reports", prevReport.taskId, "coder");
+    const remaining = await fsp.readdir(roleDir);
+    const tmpLeftovers = remaining.filter((name) => name.endsWith(".tmp"));
+    expect(tmpLeftovers).toEqual([]);
+  });
+
+  // V4.6 follow-up Important #1：supersedeAgentReport 在中途失败之后
+  // 必须可以 retry 收敛到完整的成功状态——这是 docstring 「retry is
+  // safe」契约的实测锚定。即使个别 `<reportId>.json` 在前一次失败时
+  // 已写入部分 `supersededBy` / `supersedes` 字段，重跑也不应产生重
+  // 复的 supersedeChain 项 / agentReportIds 项。
+  it("supersedeAgentReport is idempotent: re-running after a failed mid-flight supersede converges to the success state", async () => {
+    const { store } = await createTempStore();
+    const prevReport = coderReport({ agentReportId: "ar_prev" });
+    const nextReport = coderReport({
+      agentReportId: "ar_next",
+      pipelineRunId: "pr_2",
+    });
+    await store.saveAgentReport(prevReport);
+    await store.saveAgentReport(nextReport, { updateIndex: false });
+
+    const realRename = fsp.rename;
+    let renameCalls = 0;
+    const renameSpy = vi
+      .spyOn(fsp, "rename")
+      .mockImplementation(async (...args) => {
+        renameCalls += 1;
+        if (renameCalls === 2) {
+          throw new Error("disk full (test injection)");
+        }
+        return realRename(
+          ...(args as Parameters<typeof realRename>),
+        );
+      });
+
+    try {
+      await expect(
+        store.supersedeAgentReport({
+          taskId: prevReport.taskId,
+          role: "coder",
+          prevId: prevReport.agentReportId,
+          nextId: nextReport.agentReportId,
+        }),
+      ).rejects.toThrow(/disk full/);
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    await expect(
+      store.supersedeAgentReport({
+        taskId: prevReport.taskId,
+        role: "coder",
+        prevId: prevReport.agentReportId,
+        nextId: nextReport.agentReportId,
+      }),
+    ).resolves.toBeUndefined();
+
+    const list = await store.listAgentReportsForRole({
+      taskId: prevReport.taskId,
+      role: "coder",
+    });
+    expect(list.index.latestAgentReportId).toBe(nextReport.agentReportId);
+    expect(list.index.supersedeChain).toEqual([
+      { from: prevReport.agentReportId, to: nextReport.agentReportId },
+    ]);
+    expect([...list.index.agentReportIds].sort()).toEqual(
+      [prevReport.agentReportId, nextReport.agentReportId].sort(),
+    );
   });
 });
 

@@ -5,7 +5,7 @@
 > - 实施计划: `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`
 
 日期：2026-05-20
-状态：实施完成（待 full gate verification）
+状态：实施完成 + full gate verification 通过
 
 ## 范围声明
 
@@ -32,7 +32,7 @@ V4.7 只完成了把 V4.6 三角色 pipeline 从 Codex-specific lifecycle 抽象
 - [x] `apps/dashboard/components/work-items/agent-report-tabs.tsx` 在每个 role panel 内紧凑展示 runner trace；`runnerRunId` 缺失时不渲染空槽位。
 - [x] V4.6 multi-agent e2e 在 `apps/orchestrator/src/__tests__/v4-6-multi-agent-e2e.test.ts` 新增断言：persisted `AgentReport` 必须包含 `runnerId` / `runnerKind` = `codex_app_server`。
 - [x] V1 E2E fixture `tests/e2e/fixtures/workflow.fake.md.tpl` 增加 `runners:` 声明，向前兼容 V4.7 schema。
-- [ ] `scripts/ci-equivalent-check.sh` 全量通过 — 待 final gate；本机如无 `pnpm` 可改用 `NODE_BIN_DIR=...` 跑该脚本。
+- [x] `scripts/ci-equivalent-check.sh` 全量通过（`SKIP_E2E=1`，无 `pnpm` 环境下使用 `NODE_BIN_DIR=...`）；下面 verification record 给出确切的 exit code = 0 与各 stage 输出摘要。
 
 ## 受影响的关键文件
 
@@ -60,7 +60,20 @@ tests/e2e/fixtures/workflow.fake.md.tpl
 - `cd packages/runner-codex-app-server && npx vitest run` → PASS (Task 4 完成时记录)
 - `npx vitest run apps/orchestrator/src/__tests__/v4-6-multi-agent-e2e.test.ts` → 9 tests PASS（含 V4.7 runner trace 断言）
 - `git diff --check` → PASS
-- `scripts/ci-equivalent-check.sh` → 待 final gate 运行
+- `SKIP_E2E=1 NODE_BIN_DIR=... bash scripts/ci-equivalent-check.sh` → exit 0；5 stage 全绿：
+  - stage 1/5 `tsc -b` ✓
+  - stage 2/5 `tsc -p scripts/tsconfig.json` ✓
+  - stage 3/5 `next build (apps/dashboard)` ✓
+  - stage 4/5 `eslint --max-warnings 0` ✓（0 errors, 0 warnings）
+  - stage 5/5 `pnpm -r` 等价的各 package vitest（orchestrator 80 文件 / 942 用例、dashboard 44 文件 / 283 用例、workflow / shared-contracts / runner-codex-app-server 全绿）
+
+## Scope creep audit
+
+`rg -n "local_command|claude_code|dynamic discovery|worker pool|remote runner|runner sdk|plugin marketplace" packages apps` 仅在以下位置匹配，均为「拒绝该值」的负面测试或反例 fixture，不存在生产代码接受这些不受支持的值：
+
+- `packages/shared-contracts/src/__tests__/runner.test.ts`：`isRunnerKind("local_command")` / `isRunnerKind("claude_code")` 均 expect false。
+- `packages/shared-contracts/src/__tests__/agent-report.test.ts`：`isAgentReport({ ..., runnerKind: "claude_code" })` expect false。
+- `packages/workflow/src/__tests__/parse.test.ts`：`kind: local_command` fixture 用于断言 parser 拒绝 unsupported runner kind。
 
 ## V4.7 显式非目标
 

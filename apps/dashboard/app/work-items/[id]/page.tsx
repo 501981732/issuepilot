@@ -67,10 +67,7 @@ export default async function WorkItemDetailRoute(props: {
   // instead of the work item.
   const project = cookies().get(PROJECT_COOKIE_KEY)?.value;
   try {
-    const detail = await getWorkItem(
-      id,
-      project ? { project } : {},
-    );
+    const detail = await getWorkItem(id, project ? { project } : {});
     // V4.6 plan Task 11.7：并行 fetch 每个 task 的 PipelineRun 摘要 +
     // 三 role 完整 AgentReport。orchestrator 在 V4.5 之前的工作单元上
     // 没有 V4.6 数据，会返回 404 `pipeline_run_not_found` / `agent_report_not_found`，
@@ -84,7 +81,10 @@ export default async function WorkItemDetailRoute(props: {
           const res = await getPipeline(id, taskId, opts);
           return [taskId, res];
         } catch (err) {
-          if (err instanceof ApiError && (err.status === 404 || err.status === 400)) {
+          if (
+            err instanceof ApiError &&
+            (err.status === 404 || err.status === 400)
+          ) {
             return [taskId, null];
           }
           throw err;
@@ -93,15 +93,21 @@ export default async function WorkItemDetailRoute(props: {
     );
     const pipelinesByTask = Object.fromEntries(
       pipelinePairs.filter(
-        (entry): entry is [string, GetPipelineResponse] => entry[1] !== null,
+        (entry): entry is [string, GetPipelineResponse] =>
+          entry[1] !== null && entry[1].pipelineRun !== null,
       ),
     );
     // 把所有 task 的「活跃 agent-report 摘要」摊平成一份请求列表，再一次性
     // 走 withConcurrency(8)，避免某个 task 内 supersede 链尾 fan-out 触发
     // 局部无界 Promise.all。
-    const agentReportFetches: { taskId: string; summary: AgentReportSummary }[] = [];
+    const agentReportFetches: {
+      taskId: string;
+      summary: AgentReportSummary;
+    }[] = [];
     for (const [taskId, pipeline] of Object.entries(pipelinesByTask)) {
-      for (const summary of pipeline.agentReports.filter((s) => !s.supersededBy)) {
+      for (const summary of pipeline.agentReports.filter(
+        (s) => !s.supersededBy,
+      )) {
         agentReportFetches.push({ taskId, summary });
       }
     }
@@ -119,7 +125,12 @@ export default async function WorkItemDetailRoute(props: {
             report: reportDetail.agentReport,
           } as const;
         } catch (err) {
-          if (err instanceof ApiError) return null;
+          if (
+            err instanceof ApiError &&
+            (err.status === 404 || err.status === 400)
+          ) {
+            return null;
+          }
           throw err;
         }
       },

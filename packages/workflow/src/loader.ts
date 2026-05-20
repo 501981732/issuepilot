@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { parseWorkflowFile } from "./parse.js";
 import {
   renderPrompt,
@@ -5,7 +7,7 @@ import {
   type PromptRenderOptions,
 } from "./render.js";
 import {
-  expandWorkflowPaths,
+  resolveWorkflow,
   validateWorkflowEnv,
   type EnvLike,
 } from "./resolve.js";
@@ -65,9 +67,9 @@ export function createWorkflowLoader(
   const env = factoryOptions.env ?? process.env;
   const loadWorkflow = async (filePath: string): Promise<WorkflowConfig> => {
     const parsed = await parseWorkflowFile(filePath);
-    const expanded = expandWorkflowPaths(parsed);
-    validateWorkflowEnv(expanded, env);
-    return expanded;
+    const resolved = await resolveWorkflow(parsed, path.dirname(path.resolve(filePath)));
+    validateWorkflowEnv(resolved, env);
+    return resolved;
   };
 
   return {

@@ -4,15 +4,8 @@ import type {
   ReviewerDecision,
 } from "./agent-report.js";
 import { type IssuePilotEvent } from "./events.js";
-import type {
-  PipelineRun,
-  WorkflowRecipe,
-  RecipeSource,
-} from "./pipeline.js";
-import {
-  type RunReportArtifact,
-  type RunReportSummary,
-} from "./report.js";
+import type { PipelineRun, WorkflowRecipe, RecipeSource } from "./pipeline.js";
+import { type RunReportArtifact, type RunReportSummary } from "./report.js";
 import { type RunRecord, type RunStatus } from "./run.js";
 import type {
   TaskNode,
@@ -225,7 +218,8 @@ export type PipelineRouteErrorCode =
   | "role_skip_not_allowed"
   | "workflow_not_found"
   | "invalid_payload"
-  | "service_unavailable";
+  | "service_unavailable"
+  | "pipelines_unavailable";
 
 export interface PipelineRouteError {
   code: PipelineRouteErrorCode;

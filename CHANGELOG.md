@@ -14,7 +14,8 @@
   `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
 - V4 roadmap 更新：
   `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`
-  把 V4.6 状态从 _spec 已制定_ 推进到 _实施已完成_。
+  记录 V4.6 production-ready 本地单机闭环已完成；生产缺口收口记录见
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
 
 ### Tests
 
@@ -25,10 +26,11 @@
   failure-mapping）+ `quality/patterns` / `quality/aggregate` /
   `improvements/templates` + `__tests__/v4-6-multi-agent-e2e.test.ts`
   （本次新增，spec §22.7 全部 7 个核心 + 2 个 plan 补充共 8 个 e2e 场景
-  全绿）。
-- `@issuepilot/dashboard`：44 个测试文件 / 276 个用例全部通过，新增
+  全绿）；production gap closure 后 orchestrator 全量 78 文件 / 925 用例通过。
+- `@issuepilot/dashboard`：44 个测试文件 / 281 个用例全部通过，新增
   pipeline-progress / recipe-selector / revoke-ai-review-button /
-  agent-report-tabs / quality byRole 渲染断言。
+  agent-report-tabs / quality byRole 渲染断言，以及 work-item SSR 500 / 503
+  可见性回归。
 - `apps/orchestrator/src/server/__tests__/server.test.ts` 覆盖 V4.6 新
   路由（pipeline / agent-reports / retry / skip / revoke /
   recipe-override / validate-roles）。
@@ -45,10 +47,9 @@
     自动回退到 V4.5。
   - V4.4 `/api/quality/summary` 已存在字段语义不变；只新增可选 `byRole`
     切片。
-- Reviewer publish 默认开但 **fail soft**：publish 失败仍保留
-  `AgentReport.status = complete`，dashboard 显示 `publish_failed` /
-  `scope_insufficient`；token scope 不足会把报告升级为 `failed` 并 block
-  TaskNode。
+- Reviewer publish 的 service 层、fail-soft 语义、production daemon
+  publisher、team daemon publisher/revoke 均已接入 GitLab MR `diff_refs`；
+  `mrPublication.noteIds` 可被 dashboard revoke 路径真实清理。
 - V4.6 **仅本地单机闭环**：未实现 Claude Code / 其他 runner adapter、
   生产 worker 调度、Postgres 持久化、LLM 兜底；这些目标都留给 V3。
 - GitLab 凭据只在 process memory 中流转；`mrPublication.noteIds` 是唯一
@@ -59,7 +60,8 @@
 
 - 2026-05-20 — **V4.6 follow-up review fixes (critical C1-C4 + important
   1-5) — consolidated summary**：详细 per-task 条目见本段下方。本次 follow-up
-  把 V4.6 multi-agent pipeline 从 "review-incomplete" 推进到 "production-wired"：
+  合并了上一轮 review 记录的修复，但复审确认 V4.6 仍未达到
+  production-ready：
   - **C1** daemon 装配真实 coder / reviewer / test_evidence agent runner —
     `apps/orchestrator/src/agents/codex-lifecycle.ts` 共用 lifecycle adapter
     （Task 4a `7c75a54`）；`daemon.ts` + `team/daemon.ts` 接入 coder + reviewer
@@ -90,6 +92,41 @@
     empty checkpoint commit。
   - 完整补救计划：
     `docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`。
+- 2026-05-20 — **V4.6 production gap closure plan opened**：新增下一轮
+  production gap closure 计划，明确阻塞项包括生产 work-item 启动入口、
+  workflow role `promptTemplateHash`、Codex final output 捕获、GitLab MR
+  `diff_refs` publisher、team revoke、AgentReport failure drilldown 与
+  dashboard 500 / 503 可见性。完成该计划前，README / CHANGELOG / acceptance
+  只声明 “V4.6 基础实现已落地，production gap closure 进行中”。计划：
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
+- 2026-05-20 — **V4.6 production gap closure completed**：把 V4.6 从
+  “基础实现已落地”推进到本地单机 production-ready 闭环：
+  - workflow loader 生产入口调用 `resolveWorkflow()`，daemon 直接拿到稳定
+    `roles.*.promptTemplateHash`。
+  - work-item acceptance / dashboard operator 路径通过
+    `PipelineCoordinator.startPipeline()` 启动真实 `PipelineRun`，legacy
+    `dispatchTask` 作为 fallback 保留。
+  - Codex lifecycle adapter 捕获 final message；reviewer JSON 可解析，
+    coder report 写入真实 branch + diff summary。
+  - tracker-gitlab 映射 MR `diff_refs`；单 daemon 与 team daemon 注入
+    `publishReviewerToMr()` 和 `revokeReviewerMrComments()`，inline note
+    publish / revoke 走同一套 `noteIds` 审计路径。
+  - quality aggregate 把 V4.6 `AgentReport.lastError` 纳入
+    `failurePatterns` / drilldown；dashboard SSR 对 pipeline 500 / 503 不再
+    静默吞掉，并且 `pipelineRun: null` 不渲染空 V4.6 panel。
+  - 验证：`scripts/ci-equivalent-check.sh` 全 stage PASS（tsc、Next build、
+    eslint、per-package vitest、`tests/e2e` 51 tests、`git diff --check`）。
+- 2026-05-20 — **V4.6 post-review production repair**：复审后补齐 5 个
+  闭环缺口：coder lifecycle 记录 GitLab MR tool result；单 daemon / team
+  daemon 给 V4.6 coder 注入真实 GitLab tools；`PipelineRun` 完成后同步
+  `RunReportArtifact`、`TaskRunLink` 与 `TaskNode` 状态；reviewer publish /
+  revoke 使用同一 pipeline 的 coder report；quality AgentReport drilldown
+  指向真实 work-item，并且 status filter 不再隐藏 V4.6 agent failures。
+  - 验证：runner lifecycle 11 tests、orchestrator targeted 150 tests、
+    dashboard quality analytics 10 tests、宽 `tsc -b`、`git diff --check`
+    均通过；最终 `scripts/ci-equivalent-check.sh` 全 stage PASS（含
+    orchestrator 78 文件 / 928 用例、dashboard 44 文件 / 281 用例、
+    `tests/e2e` 51 用例）。
 - 2026-05-20 — **V4.6 follow-up Critical #1 part 3/3（单 daemon + team
   daemon 接通 V4.6 test_evidence agent，移除最后一个
   `agent_not_configured` stub）**：把 4a/4b 落地的

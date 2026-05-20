@@ -84,6 +84,8 @@ export interface AgentLastError {
 /** spec §8.2 公共字段。 */
 export interface AgentReportBase {
   agentReportId: string;
+  /** WorkItem id that owns this report; older persisted reports may omit it. */
+  workItemId?: string;
   pipelineRunId: string;
   taskId: string;
   role: AgentRole;

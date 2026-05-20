@@ -338,35 +338,40 @@ describe("buildQualitySummary", () => {
   });
 
   it("V4.6 byRole slice: coder + test_evidence mixed", () => {
-    const coder = (id: string, status: CoderAgentReport["status"]): CoderAgentReport => ({
-      agentReportId: id,
-      pipelineRunId: "p-1",
-      taskId: "t-1",
-      role: "coder",
-      roleProfileId: "coder@v1",
-      status,
-      startedAt: "2026-05-19T00:00:00.000Z",
-      completedAt: "2026-05-19T00:00:10.000Z",
-      evidenceLinks: [],
-      redactedFields: [],
-      coder: { summary: "ok" },
-    } as unknown as CoderAgentReport);
+    const coder = (
+      id: string,
+      status: CoderAgentReport["status"],
+    ): CoderAgentReport =>
+      ({
+        agentReportId: id,
+        pipelineRunId: "p-1",
+        taskId: "t-1",
+        role: "coder",
+        roleProfileId: "coder@v1",
+        status,
+        startedAt: "2026-05-19T00:00:00.000Z",
+        completedAt: "2026-05-19T00:00:10.000Z",
+        evidenceLinks: [],
+        redactedFields: [],
+        coder: { summary: "ok" },
+      }) as unknown as CoderAgentReport;
     const te = (
       id: string,
       status: TestEvidenceAgentReport["status"],
-    ): TestEvidenceAgentReport => ({
-      agentReportId: id,
-      pipelineRunId: "p-1",
-      taskId: "t-1",
-      role: "test_evidence",
-      roleProfileId: "test_evidence@v1",
-      status,
-      startedAt: "2026-05-19T00:00:00.000Z",
-      completedAt: "2026-05-19T00:00:10.000Z",
-      evidenceLinks: [],
-      redactedFields: [],
-      testEvidence: { evidenceItems: [], baselineEvidence: null },
-    } as TestEvidenceAgentReport);
+    ): TestEvidenceAgentReport =>
+      ({
+        agentReportId: id,
+        pipelineRunId: "p-1",
+        taskId: "t-1",
+        role: "test_evidence",
+        roleProfileId: "test_evidence@v1",
+        status,
+        startedAt: "2026-05-19T00:00:00.000Z",
+        completedAt: "2026-05-19T00:00:10.000Z",
+        evidenceLinks: [],
+        redactedFields: [],
+        testEvidence: { evidenceItems: [], baselineEvidence: null },
+      }) as TestEvidenceAgentReport;
     const reports: AgentReport[] = [
       coder("c1", "complete"),
       coder("c2", "complete"),
@@ -411,5 +416,116 @@ describe("buildQualitySummary", () => {
       agentReports: [reviewer],
     });
     expect(result.byRole?.reviewerApproveRate).toBe(100);
+  });
+
+  it("V4.6 AgentReport failures enter failurePatterns and drilldown", () => {
+    const failedReviewer: ReviewerAgentReport = {
+      agentReportId: "ar-scope",
+      workItemId: "wi-review",
+      pipelineRunId: "pr-1",
+      taskId: "t-review",
+      role: "reviewer",
+      roleProfileId: "reviewer@v1",
+      status: "failed",
+      startedAt: "2026-05-18T12:00:00.000Z",
+      completedAt: "2026-05-18T12:00:05.000Z",
+      evidenceLinks: [],
+      redactedFields: [],
+      lastError: {
+        code: "scope_insufficient",
+        message: "GitLab token needs api scope",
+      },
+      reviewer: {
+        summary: "cannot publish",
+        decision: "cannot_review",
+        confidence: 0,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+        mrPublication: {
+          status: "publish_failed",
+          noteIds: [],
+          lastError: {
+            code: "scope_insufficient",
+            message: "GitLab token needs api scope",
+          },
+        },
+      },
+    };
+    const result = buildQualitySummary({
+      items: [],
+      filters: baseFilters,
+      scope: { mode: "team-project", projectId: "proj-a" },
+      diagnostics: { invalidReportCount: 0 },
+      agentReports: [failedReviewer],
+    });
+    expect(result.failurePatterns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          patternId: "reviewer_cannot_review",
+          count: 1,
+          topProject: "proj-a",
+        }),
+      ]),
+    );
+    expect(result.drilldown).toEqual([
+      expect.objectContaining({
+        itemId: "agent-report:ar-scope",
+        patternIds: ["reviewer_cannot_review"],
+        projectId: "proj-a",
+        taskType: "reviewer",
+        agentReport: {
+          agentReportId: "ar-scope",
+          role: "reviewer",
+          status: "failed",
+        },
+        target: {
+          kind: "agent-report",
+          href: "/work-items/wi-review?agentReport=ar-scope",
+        },
+      }),
+    ]);
+  });
+
+  it("V4.6 AgentReport failures remain visible under failure status filters", () => {
+    const failedReviewer: ReviewerAgentReport = {
+      agentReportId: "ar-status-filter",
+      workItemId: "wi-review",
+      pipelineRunId: "pr-1",
+      taskId: "t-review",
+      role: "reviewer",
+      roleProfileId: "reviewer@v1",
+      status: "failed",
+      startedAt: "2026-05-18T12:00:00.000Z",
+      completedAt: "2026-05-18T12:00:05.000Z",
+      evidenceLinks: [],
+      redactedFields: [],
+      lastError: {
+        code: "scope_insufficient",
+        message: "GitLab token needs api scope",
+      },
+      reviewer: {
+        summary: "cannot publish",
+        decision: "cannot_review",
+        confidence: 0,
+        risks: [],
+        evidenceRequest: [],
+        findings: [],
+        inlineComments: [],
+        mrPublication: { status: "publish_failed", noteIds: [] },
+      },
+    };
+    const result = buildQualitySummary({
+      items: [],
+      filters: { ...baseFilters, status: "run-failed" },
+      scope: { mode: "single-project" },
+      diagnostics: { invalidReportCount: 0 },
+      agentReports: [failedReviewer],
+    });
+
+    expect(result.drilldown.map((d) => d.itemId)).toEqual([
+      "agent-report:ar-status-filter",
+    ]);
   });
 });

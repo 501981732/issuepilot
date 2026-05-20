@@ -10,6 +10,10 @@ import type {
   WorkItem,
 } from "@issuepilot/shared-contracts";
 import type { WorkflowConfig } from "@issuepilot/workflow";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execa } from "execa";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@issuepilot/runner-codex-app-server", () => ({
@@ -113,6 +117,90 @@ describe("createCoderLifecycle.run", () => {
     expect(rpc.close).toHaveBeenCalledTimes(1);
     // tools 默认（未传 opts.tools）应该透传成空数组给 driveLifecycle
     expect(mockedDrive.mock.calls[0]?.[0]?.tools).toEqual([]);
+  });
+
+  it("completed → fills coder diffSummary from finalMessage and branch from cwd git repo", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "ip-coder-lifecycle-"));
+    try {
+      await execa("git", ["init", "-b", "feature/task"], { cwd: tmp });
+      await writeFile(join(tmp, "README.md"), "hello\n", "utf8");
+
+      const rpc = makeFakeRpc();
+      mockedSpawn.mockReturnValue(rpc as never);
+      mockedDrive.mockResolvedValue({
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn_git",
+        threadId: "th_git",
+        finalMessage: "changed README",
+      });
+
+      const runner = createCoderLifecycle(baseOpts());
+      const outcome = await runner.run({ ...RUN_INPUT, cwd: tmp });
+
+      expect(outcome.kind).toBe("completed");
+      if (outcome.kind !== "completed") throw new Error("expected completed");
+      expect(outcome.result.diffSummary).toContain("changed README");
+      expect(outcome.result.branch).toBe("feature/task");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("completed → extracts coder mergeRequest from gitlab_create_merge_request tool result", async () => {
+    const rpc = makeFakeRpc();
+    mockedSpawn.mockReturnValue(rpc as never);
+    mockedDrive.mockResolvedValue({
+      status: "completed",
+      turnsUsed: 1,
+      lastTurnId: "turn_mr",
+      threadId: "th_mr",
+      completedToolCalls: [
+        {
+          tool: "gitlab_create_merge_request",
+          result: {
+            ok: true,
+            data: {
+              iid: 42,
+              webUrl: "https://gitlab.example.com/group/project/-/merge_requests/42",
+              state: "opened",
+            },
+          },
+        },
+      ],
+    } as never);
+
+    const runner = createCoderLifecycle(baseOpts());
+    const outcome = await runner.run(RUN_INPUT);
+
+    expect(outcome.kind).toBe("completed");
+    if (outcome.kind !== "completed") throw new Error("expected completed");
+    expect(outcome.result.mergeRequest).toEqual({
+      iid: 42,
+      url: "https://gitlab.example.com/group/project/-/merge_requests/42",
+      state: "opened",
+    });
+  });
+
+  it("passes workItem/task/role context into lifecycle tools factory", async () => {
+    const rpc = makeFakeRpc();
+    mockedSpawn.mockReturnValue(rpc as never);
+    mockedDrive.mockResolvedValue({
+      status: "completed",
+      turnsUsed: 1,
+      lastTurnId: "turn_tools",
+      threadId: "th_tools",
+    });
+    const tools = vi.fn(() => []);
+
+    const runner = createCoderLifecycle({ ...baseOpts(), tools });
+    await runner.run(RUN_INPUT);
+
+    expect(tools).toHaveBeenCalledWith({
+      workItem: WORKITEM,
+      task: TASK,
+      role: "coder",
+    });
   });
 
   it("failed → outcome.failed with reason=coding_failed 且 message 含 lifecycle failureReason", async () => {
@@ -227,6 +315,7 @@ describe("createReviewerLifecycle.run", () => {
       turnsUsed: 1,
       lastTurnId: "turn_reviewer",
       threadId: "th_2",
+      finalMessage: "```json\n{\"summary\":\"ok\"}\n```",
     });
 
     const runner = createReviewerLifecycle(baseOpts());
@@ -242,7 +331,7 @@ describe("createReviewerLifecycle.run", () => {
     expect(outcome.kind).toBe("message");
     if (outcome.kind !== "message") throw new Error("expected message");
     expect(outcome.result.runId).toBe("turn_reviewer");
-    expect(outcome.result.rawMessage).toBe("");
+    expect(outcome.result.rawMessage).toBe("```json\n{\"summary\":\"ok\"}\n```");
   });
 
   it("failed → outcome.failed with reason=reviewer_unavailable", async () => {

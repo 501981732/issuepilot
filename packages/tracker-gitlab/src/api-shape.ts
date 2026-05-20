@@ -41,6 +41,11 @@ export interface RawMergeRequest {
   title: string;
   description?: string | null;
   updated_at?: string;
+  diff_refs?: {
+    base_sha?: string | null;
+    start_sha?: string | null;
+    head_sha?: string | null;
+  } | null;
 }
 
 export interface RawPipeline {

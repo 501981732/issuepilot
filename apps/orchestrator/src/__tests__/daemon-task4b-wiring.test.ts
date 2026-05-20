@@ -15,8 +15,9 @@
  *   把哪些 agents / resolver 真正注入给了 coordinator。
  * - `@issuepilot/runner-codex-app-server` 同样被 mock，让 coder / reviewer
  *   lifecycle 在测试里安全地跑完一个 `completed` 回路，不真的 spawn Codex。
- * - reviewer publisher 故意不注入 —— 验证 daemon 维持 deferred 决策
- *   （详见 spec §12 TODO + daemon.ts 4b 注释块）。
+ * - reviewer publisher 已在 production gap closure 中注入；本文件只验证
+ *   wiring 存在，具体 publish 成功/失败语义由 daemon-pipeline-wiring 与
+ *   gitlab/mr-comments 测试覆盖。
  * - `test_evidence` 角色在 Task 4c 已接通（`createTestEvidenceAgent` +
  *   scanner snapshot collector）；本文件断言它不再抛 `agent_not_configured`，
  *   而是返回 `TestEvidenceAgentReport`，role / pipelineRunId 落位。
@@ -31,8 +32,17 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { TaskNode, WorkItem } from "@issuepilot/shared-contracts";
-import type { GitLabAdapter } from "@issuepilot/tracker-gitlab";
+import type {
+  ReviewerAgentReport,
+  TaskNode,
+  WorkItem,
+} from "@issuepilot/shared-contracts";
+import {
+  createGitLabClient,
+  type GitLabAdapter,
+  type GitLabApi,
+  type GitLabClient,
+} from "@issuepilot/tracker-gitlab";
 import type { WorkflowConfig } from "@issuepilot/workflow";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -228,7 +238,9 @@ function createFakeServer(): FastifyInstance {
   return {
     close: vi.fn(async () => undefined),
     listen: vi.fn(async () => undefined),
-    server: { address: () => ({ port: 0, address: "127.0.0.1", family: "IPv4" }) },
+    server: {
+      address: () => ({ port: 0, address: "127.0.0.1", family: "IPv4" }),
+    },
   } as unknown as FastifyInstance;
 }
 
@@ -277,9 +289,7 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — single daemon", () =>
   });
 
   it("startDaemon assembles real coder + reviewer agents (no stubs) and a buildRoleProfile-backed resolver", async () => {
-    const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "ip-task4b-single-"),
-    );
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ip-task4b-single-"));
     try {
       const workflow = await buildWorkflowWithTemplates(root);
       const daemon = await startDaemon(
@@ -305,10 +315,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — single daemon", () =>
           mockedCreateCoordinator.mock.calls[0]![0]!;
         const agents = opts.agents;
 
-        // Self-review item: reviewer publisher is intentionally NOT
-        // injected. If a future change wires it without extending
-        // tracker-gitlab.getMergeRequest, this assertion red-lights.
-        expect(agents.reviewerPublisher).toBeUndefined();
+        // V4.6 production gap closure：tracker-gitlab now exposes MR
+        // diff_refs, so daemon should inject a real reviewer publisher.
+        expect(agents.reviewerPublisher?.publish).toEqual(expect.any(Function));
 
         // ── 1) coder agent — real wiring -------------------------------
         // 直接调一次 coder runner，断言 daemon 注入的不是 thrower：
@@ -466,7 +475,7 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
         const opts: CreateCoordinatorOptions =
           mockedCreateCoordinator.mock.calls[0]![0]!;
         const agents: CoordinatorAgents = opts.agents;
-        expect(agents.reviewerPublisher).toBeUndefined();
+        expect(agents.reviewerPublisher?.publish).toEqual(expect.any(Function));
 
         const coderResult = await agents.coder.run(makeCoderInput());
         expect(coderResult.kind).toBe("report");
@@ -516,6 +525,209 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("team daemon publisher and revoke use the project GitLab client", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "ip-task5-team-publish-"),
+    );
+    try {
+      const projectRoot = path.join(root, "p1-workspace");
+      await fs.mkdir(projectRoot, { recursive: true });
+      const workflow = await buildWorkflowWithTemplates(projectRoot);
+      const fakeTeamConfig: TeamConfig = {
+        version: 1,
+        defaults: {} as TeamConfig["defaults"],
+        projects: [],
+        server: { host: "127.0.0.1", port: 0 },
+        scheduler: {
+          maxConcurrentRuns: 1,
+          maxConcurrentRunsPerProject: 1,
+          leaseTtlMs: 60_000,
+          pollIntervalMs: 10_000,
+        },
+        source: {
+          path: path.join(root, "team.yaml"),
+          sha256: "deadbeefcafe1234",
+          loadedAt: isoNow,
+        },
+      } as unknown as TeamConfig;
+      const project: RegisteredProject = {
+        id: "proj-a",
+        name: "Project A",
+        projectPath: projectRoot,
+        workflowProfilePath: path.join(projectRoot, "workflow.profile.md"),
+        effectiveWorkflowPath: workflow.source.path,
+        enabled: true,
+        workflow,
+        lastPollAt: null,
+        activeRuns: 0,
+      };
+      const fakeRegistry: ProjectRegistry = {
+        enabledProjects: () => [project],
+        project: (id) => (id === project.id ? project : undefined),
+        summaries: () => [],
+        updateProjectPoll: () => undefined,
+        updateProjectActiveRuns: () => undefined,
+      };
+      const fakeGitLab = buildFakeTeamGitLab();
+      let capturedDeps: ServerDeps | undefined;
+
+      const handle = await startTeamDaemon(
+        { configPath: fakeTeamConfig.source.path },
+        {
+          loadTeamConfig: vi.fn(async () => fakeTeamConfig),
+          createProjectRegistry: vi.fn(async () => fakeRegistry),
+          createGitLab: vi.fn(async () => fakeGitLab.adapter),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            capturedDeps = deps;
+            return createFakeServer();
+          }),
+          createLeaseStore: vi.fn(() => ({
+            acquire: vi.fn(async () => true),
+            release: vi.fn(async () => undefined),
+            list: vi.fn(async () => []),
+            isHeldByOther: vi.fn(async () => false),
+          })) as unknown as Parameters<
+            typeof startTeamDaemon
+          >[1]["createLeaseStore"],
+          state: createRuntimeState(),
+        },
+      );
+
+      try {
+        const opts: CreateCoordinatorOptions =
+          mockedCreateCoordinator.mock.calls.at(-1)![0]!;
+        const agents: CoordinatorAgents = opts.agents;
+        const store = capturedDeps!.pipelineStoreByProject!.get("proj-a")!;
+        await store.saveAgentReport({
+          agentReportId: "ar_coder_team",
+          pipelineRunId: "pr_team",
+          taskId: sampleTask.taskId,
+          role: "coder",
+          roleProfileId: "coder@v1",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          coder: {
+            diffSummary: "diff",
+            branch: "issuepilot/t",
+            mergeRequest: {
+              iid: 42,
+              url: "https://gitlab.example.com/x/-/merge_requests/42",
+              state: "opened",
+            },
+          },
+        });
+        await store.saveAgentReport({
+          agentReportId: "ar_coder_newer_wrong_mr",
+          pipelineRunId: "pr_other",
+          taskId: sampleTask.taskId,
+          role: "coder",
+          roleProfileId: "coder@v1",
+          status: "complete",
+          startedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          coder: {
+            diffSummary: "newer diff from another pipeline",
+            branch: "issuepilot/other",
+            mergeRequest: {
+              iid: 99,
+              url: "https://gitlab.example.com/x/-/merge_requests/99",
+              state: "opened",
+            },
+          },
+        });
+        const reviewerReport: ReviewerAgentReport = {
+          agentReportId: "ar_reviewer_team",
+          pipelineRunId: "pr_team",
+          taskId: sampleTask.taskId,
+          role: "reviewer",
+          roleProfileId: "reviewer@v1",
+          status: "complete",
+          startedAt: isoNow,
+          completedAt: isoNow,
+          evidenceLinks: [],
+          redactedFields: [],
+          reviewer: {
+            summary: "Looks good",
+            decision: "approve_with_comments",
+            confidence: 0.9,
+            risks: [],
+            evidenceRequest: [],
+            findings: [],
+            inlineComments: [
+              {
+                id: "ic1",
+                filePath: "src/a.ts",
+                lineRange: { start: 10, end: 10 },
+                severity: "medium",
+                category: "correctness",
+                message: "Check this line",
+              },
+            ],
+            mrPublication: { status: "pending", noteIds: [] },
+          },
+        };
+
+        const published = await agents.reviewerPublisher!.publish({
+          workItem: sampleWorkItem,
+          task: sampleTask,
+          pipelineRun: {
+            ...makePipelineRun(),
+            pipelineRunId: "pr_team",
+            agentReportIds: {
+              coder: "ar_coder_team",
+              reviewer: null,
+              test_evidence: null,
+            },
+          },
+          profile: makeReviewerInput().profile,
+          reviewerReport,
+        });
+        expect(published.mrPublication.status).toBe("published");
+        expect(published.mrPublication.noteIds).toEqual(["700", "701"]);
+        expect(fakeGitLab.create).toHaveBeenCalledTimes(2);
+
+        await store.saveAgentReport({
+          ...reviewerReport,
+          reviewer: {
+            ...reviewerReport.reviewer,
+            mrPublication: published.mrPublication,
+          },
+        });
+        await store.savePipelineRun({
+          ...makePipelineRun(),
+          pipelineRunId: "pr_team",
+          agentReportIds: {
+            coder: "ar_coder_team",
+            reviewer: reviewerReport.agentReportId,
+            test_evidence: null,
+          },
+        });
+        const revoke = await capturedDeps!
+          .pipelinesByProject!.get("proj-a")!
+          .revokeAiReview({ agentReportId: reviewerReport.agentReportId });
+        expect(revoke.ok).toBe(true);
+        expect(fakeGitLab.remove.mock.calls).toEqual([
+          ["group/project", 42, 700],
+          ["group/project", 42, 701],
+        ]);
+        const after = await store.findAgentReportById(
+          reviewerReport.agentReportId,
+        );
+        expect(
+          after?.report.role === "reviewer" &&
+            after.report.reviewer.mrPublication.noteIds,
+        ).toEqual([]);
+      } finally {
+        await handle.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
@@ -535,9 +747,7 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
     // runId 永远不会命中，eventStore.append 被静默跳过。本用例真把
     // V4.6 coder lifecycle event 跑一遍并读 jsonl 文件，把那个回归
     // 兜住。
-    const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "ip-task4c-publish-"),
-    );
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ip-task4c-publish-"));
     try {
       const workflow = await buildWorkflowWithTemplates(root);
       // 让 driveLifecycle 在主动 emit 一个事件后落 completed —— adapter
@@ -614,9 +824,10 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
           .split("\n")
           .filter((l) => l.trim().length > 0)
           .map((l) => JSON.parse(l) as Record<string, unknown>);
-        const v46Lines = lines.filter((l) =>
-          typeof l["type"] === "string" &&
-          (l["type"] as string).startsWith("codex_v46_coder_"),
+        const v46Lines = lines.filter(
+          (l) =>
+            typeof l["type"] === "string" &&
+            (l["type"] as string).startsWith("codex_v46_coder_"),
         );
         expect(v46Lines.length).toBeGreaterThan(0);
         const startedLine = v46Lines.find(
@@ -698,7 +909,9 @@ describe("Task 4c — V4.6 daemon testEvidence wiring (C1 part 3/3)", () => {
               render: vi.fn(() => "prompt"),
             },
             createGitLab: vi.fn(async () => createFakeGitLab()),
-            createServer: vi.fn(async (_deps: ServerDeps) => createFakeServer()),
+            createServer: vi.fn(async (_deps: ServerDeps) =>
+              createFakeServer(),
+            ),
             startLoop: vi.fn(() => ({
               tick: vi.fn(async () => undefined),
               stop: vi.fn(async () => undefined),
@@ -759,9 +972,7 @@ describe("Task 4c — V4.6 daemon testEvidence wiring (C1 part 3/3)", () => {
   );
 
   it("testEvidence rejects non-test_evidence profile with role_profile_invalid", async () => {
-    const root = await fs.mkdtemp(
-      path.join(os.tmpdir(), "ip-task4c-profile-"),
-    );
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ip-task4c-profile-"));
     try {
       const workflow = await buildWorkflowWithTemplates(root);
       const daemon = await startDaemon(
@@ -824,7 +1035,11 @@ function makePipelineRun(): {
   taskId: string;
   recipe: "full_pipeline";
   recipeSource: "workflow_default";
-  agentReportIds: { coder: null; reviewer: null; test_evidence: null };
+  agentReportIds: {
+    coder: string | null;
+    reviewer: string | null;
+    test_evidence: string | null;
+  };
   status: "running_coding";
   currentRole: "coder";
   createdAt: string;
@@ -879,6 +1094,64 @@ function makeReviewerInput() {
       publishToMr: true,
       severityThreshold: "medium" as const,
       maxInlineComments: 25,
+    },
+  };
+}
+
+function buildFakeTeamGitLab(): {
+  adapter: GitLabAdapter & { client: GitLabClient<GitLabApi> };
+  create: ReturnType<typeof vi.fn>;
+  remove: ReturnType<typeof vi.fn>;
+} {
+  let nextId = 700;
+  const create = vi.fn(async () => ({ id: nextId++ }));
+  const remove = vi.fn(async () => undefined);
+  const client = createGitLabClient<GitLabApi>({
+    baseUrl: "https://gitlab.example.com",
+    tokenEnv: "GL_TOKEN",
+    projectId: "group/project",
+    env: { get: () => "tok" },
+    GitlabCtor: function GitlabStub(this: object) {
+      Object.assign(this, {
+        MergeRequestNotes: { all: vi.fn(), create, remove },
+      });
+    } as never,
+  });
+  return {
+    create,
+    remove,
+    adapter: {
+      client,
+      listCandidateIssues: vi.fn(async () => []),
+      getIssue: vi.fn(async () => {
+        throw new Error("not used");
+      }),
+      closeIssue: vi.fn(async () => ({ labels: [], state: undefined })),
+      transitionLabels: vi.fn(async () => ({ labels: [] })),
+      createIssueNote: vi.fn(async () => ({ id: 1 })),
+      updateIssueNote: vi.fn(async () => {}),
+      findWorkpadNote: vi.fn(async () => null),
+      findLatestIssuePilotWorkpadNote: vi.fn(async () => null),
+      findMergeRequestBySourceBranch: vi.fn(async () => null),
+      createMergeRequest: vi.fn(async () => ({
+        id: 1,
+        iid: 42,
+        webUrl: "https://gitlab.example.com/x",
+      })),
+      updateMergeRequest: vi.fn(async () => {}),
+      getMergeRequest: vi.fn(async () => ({
+        iid: 42,
+        webUrl: "https://gitlab.example.com/x",
+        state: "opened",
+        diffRefs: {
+          baseSha: "base",
+          startSha: "start",
+          headSha: "head",
+        },
+      })),
+      listMergeRequestsBySourceBranch: vi.fn(async () => []),
+      listMergeRequestNotes: vi.fn(async () => []),
+      getPipelineStatus: vi.fn(async () => "unknown"),
     },
   };
 }

@@ -75,7 +75,10 @@ describe("failure and blocked classifications E2E", () => {
     await ws.gitlabServer.waitFor(
       (s) => {
         const issue = s.issues.get(ISSUE_IID);
-        return !!issue && issue.labels.includes("ai-failed");
+        const failureNote = (s.notes.get(ISSUE_IID) ?? []).find((n) =>
+          n.body.includes("## IssuePilot run failed"),
+        );
+        return !!issue && issue.labels.includes("ai-failed") && !!failureNote;
       },
       { timeoutMs: 15_000, intervalMs: 50 },
     );
@@ -345,5 +348,5 @@ describe("failure and blocked classifications E2E", () => {
     // for the approval request. The script engine now enforces that
     // contract: any error response would have aborted runScript and the
     // run would never have reached `human-review`.
-  }, 30_000);
+  }, 60_000);
 });

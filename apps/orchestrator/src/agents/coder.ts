@@ -143,6 +143,7 @@ export const createCoderAgent = (deps: {
         const code = codeToBranch(cause);
         const report: CoderAgentReport = {
           agentReportId: tickId(),
+          workItemId: input.workItem.workItemId,
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           role: "coder",
@@ -169,6 +170,7 @@ export const createCoderAgent = (deps: {
       if (outcome.kind === "failed") {
         const report: CoderAgentReport = {
           agentReportId: tickId(),
+          workItemId: input.workItem.workItemId,
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           role: "coder",
@@ -205,6 +207,7 @@ export const createCoderAgent = (deps: {
       const r = outcome.result;
       const report: CoderAgentReport = {
         agentReportId: tickId(),
+        workItemId: input.workItem.workItemId,
         pipelineRunId: input.pipelineRun.pipelineRunId,
         taskId: input.task.taskId,
         role: "coder",

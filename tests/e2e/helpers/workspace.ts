@@ -91,8 +91,22 @@ export async function createE2EWorkspace(
   const tmpRoot = mkdtempSync(join(tmpdir(), "issuepilot-e2e-"));
   const workspaceRoot = join(tmpRoot, "workspaces");
   const repoCacheRoot = join(tmpRoot, "repos");
+  const promptsRoot = join(tmpRoot, "prompts");
   mkdirSync(workspaceRoot, { recursive: true });
   mkdirSync(repoCacheRoot, { recursive: true });
+  mkdirSync(promptsRoot, { recursive: true });
+  writeFileSync(
+    join(promptsRoot, "coder.md"),
+    "Implement the task described by the issue and keep changes scoped.\n",
+  );
+  writeFileSync(
+    join(promptsRoot, "reviewer.md"),
+    "Review the task output and return structured reviewer findings.\n",
+  );
+  writeFileSync(
+    join(promptsRoot, "test-evidence.md"),
+    "Collect validation evidence for the completed task.\n",
+  );
 
   const bareRepo = await createFakeBareRepo();
   const gitlabState = createGitLabState({ projectId });

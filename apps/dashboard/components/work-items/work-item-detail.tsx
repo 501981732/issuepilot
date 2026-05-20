@@ -139,12 +139,7 @@ export function WorkItemDetail({
         setBusy(false);
       }
     },
-    [
-      data.plan.current.planId,
-      data.workItem.workItemId,
-      operator,
-      reload,
-    ],
+    [data.plan.current.planId, data.workItem.workItemId, operator, reload],
   );
 
   const handleRegenerate = useCallback(async () => {
@@ -190,12 +185,9 @@ export function WorkItemDetail({
     async (taskId: string, body: ReplanTaskRequest) => {
       setError(null);
       try {
-        await replanWorkItemTask(
-          data.workItem.workItemId,
-          taskId,
-          body,
-          { operator },
-        );
+        await replanWorkItemTask(data.workItem.workItemId, taskId, body, {
+          operator,
+        });
         await reload();
       } catch (err) {
         setError((err as Error).message);
@@ -208,12 +200,9 @@ export function WorkItemDetail({
     async (taskId: string, body: MarkTaskReworkRequest) => {
       setError(null);
       try {
-        await markWorkItemTaskRework(
-          data.workItem.workItemId,
-          taskId,
-          body,
-          { operator },
-        );
+        await markWorkItemTaskRework(data.workItem.workItemId, taskId, body, {
+          operator,
+        });
         await reload();
       } catch (err) {
         setError((err as Error).message);
@@ -498,7 +487,9 @@ function V46PipelineSections({
     Partial<Record<AgentReport["role"], AgentReport>>
   >;
 }) {
-  const tasksWithPipeline = tasks.filter((t) => pipelinesByTask[t.taskId]);
+  const tasksWithPipeline = tasks.filter(
+    (t) => pipelinesByTask[t.taskId]?.pipelineRun,
+  );
   if (tasksWithPipeline.length === 0) return null;
   return (
     <div className="space-y-4" data-component="v46-pipeline-sections">

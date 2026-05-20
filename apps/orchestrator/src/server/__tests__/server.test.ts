@@ -2666,11 +2666,7 @@ describe("V4.1 work item routes", () => {
         patchPreview: { status: "not_generated"; targetDescription: string };
         confidence: "high";
         risk: "low";
-        status:
-          | "open"
-          | "accepted"
-          | "rejected"
-          | "deferred";
+        status: "open" | "accepted" | "rejected" | "deferred";
         actionHistory: Array<{
           action: "generated";
           actor: "system";
@@ -3033,6 +3029,22 @@ describe("V4.1 work item routes", () => {
         );
         expect(validate.statusCode).toBe(200);
         expect(validate.json()).toEqual({ valid: true, errors: [] });
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("single-mode: missing pipeline service returns explicit pipelines_unavailable", async () => {
+      const { app } = await buildTestApp();
+      try {
+        const res = await app.inject(
+          "/api/agent-reports/ar_missing_pipeline_service",
+        );
+        expect(res.statusCode).toBe(503);
+        expect(res.json()).toMatchObject({
+          ok: false,
+          code: "pipelines_unavailable",
+        });
       } finally {
         await app.close();
       }

@@ -17,9 +17,7 @@ export const QUALITY_METRIC_ID_VALUES = [
 
 export type QualityMetricId = (typeof QUALITY_METRIC_ID_VALUES)[number];
 
-export const isQualityMetricId = (
-  value: unknown,
-): value is QualityMetricId =>
+export const isQualityMetricId = (value: unknown): value is QualityMetricId =>
   typeof value === "string" &&
   (QUALITY_METRIC_ID_VALUES as readonly string[]).includes(value);
 
@@ -51,9 +49,7 @@ export const FAILURE_PATTERN_ID_VALUES = [
 
 export type FailurePatternId = (typeof FAILURE_PATTERN_ID_VALUES)[number];
 
-export const isFailurePatternId = (
-  value: unknown,
-): value is FailurePatternId =>
+export const isFailurePatternId = (value: unknown): value is FailurePatternId =>
   typeof value === "string" &&
   (FAILURE_PATTERN_ID_VALUES as readonly string[]).includes(value);
 
@@ -99,8 +95,7 @@ export const QUALITY_STATUS_FILTER_VALUES = [
   "report-incomplete",
 ] as const;
 
-export type QualityStatusFilter =
-  (typeof QUALITY_STATUS_FILTER_VALUES)[number];
+export type QualityStatusFilter = (typeof QUALITY_STATUS_FILTER_VALUES)[number];
 
 export const isQualityStatusFilter = (
   value: unknown,
@@ -165,12 +160,14 @@ export interface QualityDrilldownItem {
   issue?: { iid: number; title: string; url?: string };
   workItem?: { workItemId: string; title: string };
   task?: { taskId: string; title: string };
+  agentReport?: { agentReportId: string; role: string; status: string };
   run?: { runId: string; status: string };
   evidenceId?: string;
   updatedAt: string;
   target:
     | { kind: "run"; href: string }
     | { kind: "work-item"; href: string }
+    | { kind: "agent-report"; href: string }
     | { kind: "evidence"; href: string };
 }
 

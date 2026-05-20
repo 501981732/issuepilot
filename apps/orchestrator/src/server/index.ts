@@ -786,13 +786,11 @@ export async function createServer(
       if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const iidNum = Number(request.params.iid);
       if (!Number.isInteger(iidNum) || iidNum <= 0) {
-        return reply
-          .code(400)
-          .send({
-            ok: false,
-            code: "invalid_iid",
-            message: "iid must be a positive integer",
-          });
+        return reply.code(400).send({
+          ok: false,
+          code: "invalid_iid",
+          message: "iid must be a positive integer",
+        });
       }
       const operator = extractOperator(
         request.headers as Record<string, unknown>,
@@ -836,13 +834,11 @@ export async function createServer(
       if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
       const detail = await ctx.service.detail(request.params.id);
       if (!detail) {
-        return reply
-          .code(404)
-          .send({
-            ok: false,
-            code: "not_found",
-            message: "work item not found",
-          });
+        return reply.code(404).send({
+          ok: false,
+          code: "not_found",
+          message: "work item not found",
+        });
       }
       return reply.code(200).send(detail);
     },
@@ -1441,10 +1437,7 @@ export async function createServer(
         statusCode: 503,
         body: {
           ok: false,
-          // 503 falls outside spec §18.4; we still use a deterministic shape
-          // so dashboards can render a clear "service unavailable" hint
-          // instead of a 5xx black box.
-          code: "agent_report_not_found",
+          code: "pipelines_unavailable",
           message: "Pipeline service is not configured on this orchestrator",
         },
       };

@@ -89,7 +89,12 @@ export interface GitLabAdapter {
   ): Promise<void>;
   getMergeRequest(
     mrIid: number,
-  ): Promise<{ iid: number; webUrl: string; state: string }>;
+  ): Promise<{
+    iid: number;
+    webUrl: string;
+    state: string;
+    diffRefs?: { baseSha: string; startSha: string; headSha: string };
+  }>;
   listMergeRequestsBySourceBranch(sourceBranch: string): Promise<
     Array<{
       iid: number;

@@ -82,6 +82,7 @@ export interface TestEvidenceAgent {
 
 const buildReport = (input: {
   agentReportId: string;
+  workItemId?: string;
   pipelineRunId: string;
   taskId: string;
   roleProfileId: string;
@@ -95,6 +96,7 @@ const buildReport = (input: {
   lastErrorMessage?: string;
 }): TestEvidenceAgentReport => ({
   agentReportId: input.agentReportId,
+  ...(input.workItemId ? { workItemId: input.workItemId } : {}),
   pipelineRunId: input.pipelineRunId,
   taskId: input.taskId,
   role: "test_evidence",
@@ -163,6 +165,7 @@ export const createTestEvidenceAgent = (deps: {
               kind: "report",
               report: buildReport({
                 agentReportId: tickId(),
+                workItemId: input.workItem.workItemId,
                 pipelineRunId: input.pipelineRun.pipelineRunId,
                 taskId: input.task.taskId,
                 roleProfileId: input.profile.roleProfileId,
@@ -181,6 +184,7 @@ export const createTestEvidenceAgent = (deps: {
             kind: "report",
             report: buildReport({
               agentReportId: tickId(),
+              workItemId: input.workItem.workItemId,
               pipelineRunId: input.pipelineRun.pipelineRunId,
               taskId: input.task.taskId,
               roleProfileId: input.profile.roleProfileId,
@@ -224,6 +228,7 @@ export const createTestEvidenceAgent = (deps: {
         kind: "report",
         report: buildReport({
           agentReportId: tickId(),
+          workItemId: input.workItem.workItemId,
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           roleProfileId: input.profile.roleProfileId,

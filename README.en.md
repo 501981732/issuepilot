@@ -106,21 +106,21 @@ restart through tracker + filesystem signals instead of an external database.
 The differences live in **what we are optimizing for** and **how we implement
 it**:
 
-| Dimension       | OpenAI Symphony (reference, Elixir)                             | IssuePilot (the direction in this repo)                                                            |
-| --------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Positioning     | Public prototype; recommended to fork and harden internally     | Internal P0 product direction; targeting day-to-day use by an engineering team                     |
-| Issue tracker   | Linear                                                          | GitLab (SaaS and self-managed, Group Access Token or Personal Token)                               |
-| State machine   | Linear issue **status** (state-based)                           | GitLab **labels** (`ai-ready` / `ai-running` / `human-review` / …)                                 |
-| Workflow file   | `WORKFLOW.md` at the repo root                                  | `WORKFLOW.md` (YAML front matter + Markdown prompt)                                        |
-| Language        | Elixir / OTP                                                    | TypeScript / Node.js 22 LTS                                                                        |
-| Runtime         | Single Elixir service + optional status surface                 | Orchestrator daemon (Fastify) + read-only Next.js dashboard (Tailwind/shadcn)                      |
-| Workspace       | Per-issue workspace                                             | Bare mirror + git worktree under `~/.issuepilot/{repos,workspaces,state}`                          |
-| Events / logs   | Structured logs + optional status surface                       | JSONL event store + atomic run records + SSE live stream + pino structured logging                 |
-| MR / PR writes  | Performed by the agent through workflow-defined tools           | Hybrid: Codex can use narrow GitLab dynamic tools, while the orchestrator owns claim, reconciliation, and fallback MR / note / label writes |
-| Restart recovery | Tracker + filesystem driven                                    | Driven by labels + handoff note marker (`<!-- issuepilot:run:<runId> -->`)                         |
-| Security stance | Each implementation declares its own trust posture              | Rejects `danger-full-access` sandboxes, redacts tokens end-to-end, pins Codex cwd to the worktree  |
-| Open SPEC       | `SPEC.md` v1 (language-agnostic)                                | `SPEC.md` retained as reference; product spec lives in `docs/superpowers/specs/`                   |
-| Status          | Evaluation-only prototype; harden before production use         | V1 local pilot usable; release lock still pending evidence/tag archival                            |
+| Dimension        | OpenAI Symphony (reference, Elixir)                         | IssuePilot (the direction in this repo)                                                                                                     |
+| ---------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Positioning      | Public prototype; recommended to fork and harden internally | Internal P0 product direction; targeting day-to-day use by an engineering team                                                              |
+| Issue tracker    | Linear                                                      | GitLab (SaaS and self-managed, Group Access Token or Personal Token)                                                                        |
+| State machine    | Linear issue **status** (state-based)                       | GitLab **labels** (`ai-ready` / `ai-running` / `human-review` / …)                                                                          |
+| Workflow file    | `WORKFLOW.md` at the repo root                              | `WORKFLOW.md` (YAML front matter + Markdown prompt)                                                                                         |
+| Language         | Elixir / OTP                                                | TypeScript / Node.js 22 LTS                                                                                                                 |
+| Runtime          | Single Elixir service + optional status surface             | Orchestrator daemon (Fastify) + read-only Next.js dashboard (Tailwind/shadcn)                                                               |
+| Workspace        | Per-issue workspace                                         | Bare mirror + git worktree under `~/.issuepilot/{repos,workspaces,state}`                                                                   |
+| Events / logs    | Structured logs + optional status surface                   | JSONL event store + atomic run records + SSE live stream + pino structured logging                                                          |
+| MR / PR writes   | Performed by the agent through workflow-defined tools       | Hybrid: Codex can use narrow GitLab dynamic tools, while the orchestrator owns claim, reconciliation, and fallback MR / note / label writes |
+| Restart recovery | Tracker + filesystem driven                                 | Driven by labels + handoff note marker (`<!-- issuepilot:run:<runId> -->`)                                                                  |
+| Security stance  | Each implementation declares its own trust posture          | Rejects `danger-full-access` sandboxes, redacts tokens end-to-end, pins Codex cwd to the worktree                                           |
+| Open SPEC        | `SPEC.md` v1 (language-agnostic)                            | `SPEC.md` retained as reference; product spec lives in `docs/superpowers/specs/`                                                            |
+| Status           | Evaluation-only prototype; harden before production use     | V1 local pilot usable; release lock still pending evidence/tag archival                                                                     |
 
 If you want the Linear + Elixir reference implementation, jump straight to
 [`elixir/`](elixir/README.md) and [`SPEC.md`](SPEC.md). If you want the
@@ -215,14 +215,14 @@ GitLab issue has ai-ready label
 
 P0 labels:
 
-| Label | Meaning |
-| --- | --- |
-| `ai-ready` | Candidate issue that IssuePilot can pick up. |
-| `ai-running` | Claimed issue with an active run. |
-| `human-review` | MR is ready for human review. |
-| `ai-rework` | Human requested another AI pass after review, or the MR was closed without merge. |
-| `ai-failed` | Run failed and needs human intervention. |
-| `ai-blocked` | Missing information, permission, or secret. |
+| Label          | Meaning                                                                           |
+| -------------- | --------------------------------------------------------------------------------- |
+| `ai-ready`     | Candidate issue that IssuePilot can pick up.                                      |
+| `ai-running`   | Claimed issue with an active run.                                                 |
+| `human-review` | MR is ready for human review.                                                     |
+| `ai-rework`    | Human requested another AI pass after review, or the MR was closed without merge. |
+| `ai-failed`    | Run failed and needs human intervention.                                          |
+| `ai-blocked`   | Missing information, permission, or secret.                                       |
 
 ## Repository Layout
 
@@ -476,7 +476,7 @@ workspace cleanup. Visual versions:
 - Team-mode walkthrough: [`USAGE.md` — Part 5](USAGE.md#part-5--v2-team-mode-shared-machine--multiple-projects)
 
 - ✅ Phase 1 — Team Runtime Foundation: `issuepilot run --config
-  /path/to/issuepilot.team.yaml` team mode for multi-project loading,
+/path/to/issuepilot.team.yaml` team mode for multi-project loading,
   lease-backed scheduling, and project-aware dashboard state.
 - ✅ Single daemon manages multiple projects on a shared box; concurrency
   is configurable from 1 to 5 with global + per-project lease slots.
@@ -564,7 +564,7 @@ Wave 2 follow-ups (post user dog-food):
   (`-translate-y-0.5` + `shadow-2`) and drop the verbose runId line
   (still in `title=` / `aria-label`); titles `line-clamp-2`.
 - ✅ ServiceHeader collapses its forensic metadata (`Last config
-  reload` / `Workspace usage` / `Next cleanup`) behind a
+reload` / `Workspace usage` / `Next cleanup`) behind a
   `More details` disclosure so the strip stays compact.
 - ✅ All four Reports counters (`Total` / `Ready` / `Blocked` /
   `Median duration`) now carry a 7-day inline sparkline driven by a
@@ -575,7 +575,7 @@ Wave 1 (the original layout refresh):
 - ✅ **Top-bar shell** replaces the 232px left sidebar. Primary nav and the
   locale / theme / mode-tag tools collapse into a sticky horizontal strip
   (`max-w-[1440px]`, `bg-surface/95 backdrop-blur`); a `Skip to main
-  content` link is the first focusable element. The change frees ~232px of
+content` link is the first focusable element. The change frees ~232px of
   horizontal space — enough for the kanban view to render its six lifecycle
   columns without x-overflow on 1280px laptops.
 - ✅ **Hybrid Review Packet inspector**. List view keeps the split-pane
@@ -595,7 +595,7 @@ Wave 1 (the original layout refresh):
   paths from the head (`bdo` + `dir="rtl"`) so the file name stays visible,
   with the full path exposed via the native `title=` tooltip.
 - ✅ **Section header de-noising**. Mid-page `text-[11px] uppercase
-  tracking-[0.18em]` micro-labels were rolled back to plain
+tracking-[0.18em]` micro-labels were rolled back to plain
   `text-base font-semibold`; the `font-mono` micro-label treatment is
   reserved for page-level overhead labels and `dt` metadata, where it
   reads as a kicker rather than visual noise.
@@ -613,7 +613,7 @@ orchestrates, and improves engineering work. V4 does not own deployment,
 permissions, budgets, or observability; it owns workflow intelligence. V3 later
 productionizes the capabilities that prove valuable here.
 
-- **Work Items / Parent Review Packet for large issues** — *landed in V4.1*.
+- **Work Items / Parent Review Packet for large issues** — _landed in V4.1_.
   An IssuePilot operator can plan a GitLab Issue from the Command Center,
   accept / edit / regenerate the LLM-drafted task plan in
   `/work-items/<id>`, watch every synthetic task run land its own MR, and
@@ -622,8 +622,8 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md`;
   implementation plan:
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-1-workflow-spine.md`.
-- **Task Graph + dependency execution + branch chaining** — *landed in
-  V4.2*. The `/work-items/<id>` page now toggles between the grouped task
+- **Task Graph + dependency execution + branch chaining** — _landed in
+  V4.2_. The `/work-items/<id>` page now toggles between the grouped task
   list and an SVG Task Graph (topology layout, critical-path highlight).
   Orchestration honours `dependsOn`: when a downstream task has a single
   upstream that is `completed` but whose MR is still `opened`, the daemon
@@ -638,7 +638,7 @@ productionizes the capabilities that prove valuable here.
   `x-issuepilot-project` so two projects never see each other's WorkItems.
   Implementation plan:
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-2-task-graph.md`.
-- **Review Packet + Evidence** — *landed in V4.3*. WorkItem reports now
+- **Review Packet + Evidence** — _landed in V4.3_. WorkItem reports now
   index reviewer evidence from task worktrees (`screenshot`, `recording`,
   `playwright`, `command_output`, `test_result`) and keep AI/system claims
   separate from human-confirmed evidence. The parent Review Packet derives
@@ -650,7 +650,7 @@ productionizes the capabilities that prove valuable here.
   plan:
   `docs/superpowers/plans/2026-05-17-issuepilot-v4-3-review-packet-evidence.md`.
 - **Quality Analytics (success rate / failure patterns / drill-down)** —
-  *landed in V4.4*. `/reports` gains a Quality Analytics section that
+  _landed in V4.4_. `/reports` gains a Quality Analytics section that
   aggregates success, failure, rework, CI, review, missing-evidence, and
   median-duration metrics from the local `ReportStore`, `WorkItemStore`,
   `RunReportArtifact`, `WorkItemReport`, `TaskPlan`, and `TaskRunLink`
@@ -665,7 +665,7 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`;
   implementation plan:
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`.
-- **Workflow / Skills Improvement Loop** — *in V4.5 implementation*. V4.5 turns
+- **Workflow / Skills Improvement Loop** — _in V4.5 implementation_. V4.5 turns
   V4.4 failure patterns, drill-down items, missing evidence, review rework,
   and CI failures into auditable `ImprovementRecommendation` records. Each
   recommendation carries evidence refs, a target kind, confidence, risk, and
@@ -683,21 +683,20 @@ productionizes the capabilities that prove valuable here.
 - **Cross-issue dependency analysis**: detect blockers, duplicated work,
   upstream/downstream dependencies, and mergeable tasks, then surface them as
   an engineering work graph.
-- **Multi-agent collaboration** (V4.6 shipped): coding agent, reviewer
+- **Multi-agent collaboration** (V4.6 production-ready local loop): coding agent, reviewer
   agent, and test/evidence agent roles, orchestrated by a single
   `PipelineCoordinator` over a recipe (`coding_only` /
   `coding_plus_reviewer` / `full_pipeline`) and producing one
-  `AgentReport` per role. Highlights:
+  `AgentReport` per role. Current foundation:
   - **PipelineRun + AgentReport** capture every role's prompt / sandbox /
     token scope / supersede chain; retry / skip reuse the same `PipelineRun`
     and never drop the reviewer comments that were already pushed to MR.
-  - **Reviewer + GitLab MR publish loop** under spec §12's six safety
-    rails (`[ai-reviewer]` prefix, 1 summary note + N inline notes,
-    `severity_threshold` / `max_inline_comments` filter, fail-soft
-    publishing, idempotent revoke, redaction tracked into
-    `AgentReport.redactedFields[]`). Missing scope upgrades the reviewer
-    report to `failed` / `scope_insufficient` and transitions the TaskNode
-    to `blocked` / `reviewer_cannot_review`.
+  - **Reviewer + GitLab MR publish production loop** under spec
+    §12's six safety rails (`[ai-reviewer]` prefix, 1 summary note + N
+    inline notes, `severity_threshold` / `max_inline_comments` filter,
+    fail-soft publishing, idempotent revoke, redaction tracked into
+    `AgentReport.redactedFields[]`). Single daemon and team daemon now use
+    tracker-gitlab MR `diff_refs` for publish and revoke.
   - **Test/Evidence Agent** reuses the V4.3 evidence collectors; partial
     runs surface as `partial` PipelineRun + `awaiting_human_review`
     TaskNode (`evidence_partial`).
@@ -710,7 +709,8 @@ productionizes the capabilities that prove valuable here.
     V4.6 by-role panel under `/reports`.
   - **Quality + improvement integration**: `FailurePatternId` adds 13
     V4.6 failure modes (reviewer / test_evidence / pipeline / sandbox /
-    storage / redaction); `ImprovementTargetKind` gains
+    storage / redaction); `AgentReport` failures enter `/reports` failure
+    patterns and drilldown; `ImprovementTargetKind` gains
     `role_configuration` so operators can push fixes to reviewer /
     test_evidence role profiles.
   - Design spec:
@@ -728,6 +728,12 @@ productionizes the capabilities that prove valuable here.
     `service_unavailable` mapping, SSR concurrency cap 8,
     discriminated-union narrowing in AgentReportTabs). Full record:
     `docs/superpowers/plans/2026-05-20-v4-6-followup-critical-fixes.md`.
+  - **Production gap closure completed on 2026-05-20**: production work-item
+    acceptance / dashboard paths start `PipelineRun`; workflow loader generates
+    role prompt hashes; Codex lifecycle captures final output plus coder diff /
+    branch; GitLab MR `diff_refs` publisher, team revoke, AgentReport failure
+    drilldown, and dashboard 500 / 503 visibility are wired. Acceptance plan:
+    `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

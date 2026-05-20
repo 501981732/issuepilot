@@ -191,7 +191,9 @@ export function QualityAnalytics({ summary }: QualityAnalyticsProps) {
           />
 
           <DrilldownTable items={filteredDrilldown} t={t} />
-          {summary.byRole ? <ByRolePanel byRole={summary.byRole} t={t} /> : null}
+          {summary.byRole ? (
+            <ByRolePanel byRole={summary.byRole} t={t} />
+          ) : null}
         </>
       ) : (
         <Card>
@@ -592,7 +594,17 @@ function DrilldownTable({
                       </span>
                     </td>
                     <td className="px-4 py-2.5 text-sm text-fg">
-                      {item.task ? (
+                      {item.agentReport ? (
+                        <span
+                          className="line-clamp-1"
+                          title={item.agentReport.agentReportId}
+                        >
+                          <span className="font-mono text-[11px] text-fg-subtle">
+                            {item.agentReport.role}
+                          </span>{" "}
+                          {item.agentReport.agentReportId}
+                        </span>
+                      ) : item.task ? (
                         <span className="line-clamp-1" title={item.task.title}>
                           <span className="font-mono text-[11px] text-fg-subtle">
                             {item.task.taskId}

@@ -19,16 +19,13 @@
  * - 无论 happy / error / cancel，`rpc.close()` 都在 `finally` 调用一次，
  *   匹配 `daemon.ts:1294` 的现行习惯。
  *
- * 已知折中（TODO V4.7）：
- * - `CoderLifecycleRunResult.diffSummary` / `branch` 没有真正可读源 —
- *   lifecycle 本身不暴露 worktree diff 信息，需要从 cwd 调 `git` 反查
- *   或从 agent tool call 截获。本版先 pass 空串，`createCoderAgent` 已经
- *   在 `outcome.partial?.* ?? ""` 上做了兜底渲染。
- * - `ReviewerLifecycleResult.rawMessage` 同样没有 lifecycle 级捕获口；
- *   现阶段一律 pass `""`，下游 `parseReviewerMessage` 会判定缺
- *   ```json fence 抛 `prompt_output_schema_mismatch`，再由
- *   `createReviewerAgent` 翻成 `parse_failed`。这是诚实的中间态行为
- *   —— 4b/4c 会把真正的 reviewer message 抓取链路再补上来。
+ * 当前输出策略：
+ * - `CoderLifecycleRunResult.diffSummary` 优先使用 cwd 的 `git diff --stat`
+ *   / `git status --short`，并把 lifecycle final message 作为人类可读摘要
+ *   前缀；`branch` 从 cwd 的当前 git branch 读取。
+ * - `ReviewerLifecycleResult.rawMessage` 使用 lifecycle 捕获到的最后一条
+ *   Codex notification message，下游 `parseReviewerMessage` 负责校验 JSON
+ *   fence 与 schema。
  */
 
 import {
@@ -42,6 +39,7 @@ import type {
   WorkItem,
 } from "@issuepilot/shared-contracts";
 import type { WorkflowConfig } from "@issuepilot/workflow";
+import { execa } from "execa";
 
 import { splitCommand } from "../codex/split-command.js";
 
@@ -56,6 +54,17 @@ import type {
 } from "./reviewer.js";
 
 type DriveResult = Awaited<ReturnType<typeof driveLifecycle>>;
+
+interface CoderGitSummary {
+  diffSummary?: string;
+  branch?: string;
+}
+
+interface CoderMergeRequestSummary {
+  iid: number;
+  url: string;
+  state: "opened" | "merged" | "closed";
+}
 
 interface SharedRunInput {
   prompt: string;
@@ -81,7 +90,11 @@ export interface CodexLifecycleOptions {
    * 可选 tool schema 生产函数。coder 角色用 GitLab tools；reviewer /
    * test_evidence 默认 read-only tool set。默认值 `() => []`。
    */
-  tools?: () => ToolSchema[];
+  tools?: (ctx: {
+    workItem: WorkItem;
+    task: TaskNode;
+    role: AgentRole;
+  }) => ToolSchema[];
   /** 测试用：注入时钟（决定 cancelled outcome 的 `cancelledAt`）。 */
   now?: () => string;
   /**
@@ -138,18 +151,24 @@ const timeoutMessage = (result: DriveResult): string =>
 export const mapCoderOutcome = (
   result: DriveResult,
   opts: CodexLifecycleOptions,
+  git: CoderGitSummary = {},
 ): CoderLifecycleOutcome => {
   switch (result.status) {
-    case "completed":
+    case "completed": {
+      const mergeRequest = extractMergeRequest(result);
       return {
         kind: "completed",
         result: {
           runId: result.lastTurnId ?? "",
-          // TODO V4.7：从 cwd 反查真正的 git diff / branch 名再回填。
-          diffSummary: "",
-          branch: "",
+          diffSummary:
+            git.diffSummary && result.finalMessage
+              ? `${result.finalMessage}\n${git.diffSummary}`
+              : (git.diffSummary ?? result.finalMessage ?? ""),
+          branch: git.branch ?? "",
+          ...(mergeRequest ? { mergeRequest } : {}),
         },
       };
+    }
     case "failed":
       return coderFailed(
         result.failureReason ?? "lifecycle reported failed",
@@ -164,6 +183,27 @@ export const mapCoderOutcome = (
   }
 };
 
+const isMrState = (value: unknown): value is "opened" | "merged" | "closed" =>
+  value === "opened" || value === "merged" || value === "closed";
+
+const extractMergeRequest = (
+  result: DriveResult,
+): CoderMergeRequestSummary | undefined => {
+  for (const call of [...(result.completedToolCalls ?? [])].reverse()) {
+    if (call.tool !== "gitlab_create_merge_request") continue;
+    const wrapper = call.result as
+      | { ok?: unknown; data?: Record<string, unknown> }
+      | undefined;
+    if (!wrapper || wrapper.ok !== true || !wrapper.data) continue;
+    const iid = wrapper.data["iid"];
+    const webUrl = wrapper.data["webUrl"] ?? wrapper.data["web_url"];
+    if (typeof iid !== "number" || typeof webUrl !== "string") continue;
+    const state = wrapper.data["state"];
+    return { iid, url: webUrl, state: isMrState(state) ? state : "opened" };
+  }
+  return undefined;
+};
+
 export const mapReviewerOutcome = (
   result: DriveResult,
   opts: CodexLifecycleOptions,
@@ -174,10 +214,7 @@ export const mapReviewerOutcome = (
         kind: "message",
         result: {
           runId: result.lastTurnId ?? "",
-          // TODO V4.7：捕获 codex agent 的最终 message 作为 rawMessage；
-          // 目前 lifecycle 没有暴露 message 出口，下游 parser 会按
-          // `prompt_output_schema_mismatch` 翻译成 `parse_failed`。
-          rawMessage: "",
+          rawMessage: result.finalMessage ?? "",
         },
       };
     case "failed":
@@ -191,6 +228,52 @@ export const mapReviewerOutcome = (
       return reviewerFailed("lifecycle reported blocked", result.lastTurnId);
     case "cancelled":
       return { kind: "cancelled", cancelledAt: nowFor(opts) };
+  }
+};
+
+const readCoderGitSummary = async (cwd: string): Promise<CoderGitSummary> => {
+  const branch = await readGitBranch(cwd);
+  const diffSummary = await readGitDiffSummary(cwd);
+  return {
+    ...(branch ? { branch } : {}),
+    ...(diffSummary ? { diffSummary } : {}),
+  };
+};
+
+const readGitBranch = async (cwd: string): Promise<string | undefined> => {
+  try {
+    const { stdout } = await execa("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+    });
+    const branch = stdout.trim();
+    return branch.length > 0 ? branch : undefined;
+  } catch {
+    try {
+      const { stdout } = await execa("git", ["symbolic-ref", "--short", "HEAD"], {
+        cwd,
+      });
+      const branch = stdout.trim();
+      return branch.length > 0 ? branch : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+};
+
+const readGitDiffSummary = async (cwd: string): Promise<string | undefined> => {
+  try {
+    const { stdout } = await execa("git", ["diff", "--stat"], { cwd });
+    const summary = stdout.trim();
+    if (summary.length > 0) return summary;
+  } catch {
+    return undefined;
+  }
+  try {
+    const { stdout } = await execa("git", ["status", "--short"], { cwd });
+    const summary = stdout.trim();
+    return summary.length > 0 ? summary : undefined;
+  } catch {
+    return undefined;
   }
 };
 
@@ -229,7 +312,9 @@ const runLifecycle = async (
       approvalPolicy: opts.codex.approvalPolicy,
       turnSandboxPolicy: opts.codex.turnSandboxPolicy,
       turnTimeoutMs: opts.codex.turnTimeoutMs,
-      tools: opts.tools ? opts.tools() : [],
+      tools: opts.tools
+        ? opts.tools({ workItem: input.workItem, task: input.task, role })
+        : [],
       onEvent,
       // `exactOptionalPropertyTypes` 下不能直接传 `undefined`，必须条件展开。
       ...(opts.onTurnActive ? { onTurnActive: opts.onTurnActive } : {}),
@@ -244,7 +329,11 @@ export const createCoderLifecycle = (
 ): CoderLifecycleRunner => ({
   async run(input: CoderLifecycleRunInput): Promise<CoderLifecycleOutcome> {
     const result = await runLifecycle(opts, "coder", input);
-    return mapCoderOutcome(result, opts);
+    const git =
+      result.status === "completed"
+        ? await readCoderGitSummary(input.cwd)
+        : {};
+    return mapCoderOutcome(result, opts, git);
   },
 });
 

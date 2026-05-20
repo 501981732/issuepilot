@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import {
+  createCredentialResolver,
+  createCredentialsStore,
+  type CredentialResolver,
+  type CredentialsStore,
+} from "@issuepilot/credentials";
 import { createEventBus, type EventBus } from "@issuepilot/observability";
+import { createGitLabTools } from "@issuepilot/runner-codex-app-server";
 import type {
   CoderAgentReport,
   IssuePilotInternalEvent,
@@ -10,7 +17,16 @@ import type {
   TaskNode,
   TestEvidenceAgentReport,
   WorkItem,
+  WorkflowRecipe,
 } from "@issuepilot/shared-contracts";
+import {
+  createGitLabAdapter,
+  createGitLabAdapterFromCredential,
+  type GitLabAdapter,
+  type GitLabAdapterHandle,
+  type GitLabApi,
+  type GitLabClient,
+} from "@issuepilot/tracker-gitlab";
 import { slugify } from "@issuepilot/workspace";
 
 import { createCoderAgent } from "../agents/coder.js";
@@ -21,6 +37,10 @@ import {
 import { collectorsForTask } from "../agents/evidence-collectors.js";
 import { createReviewerAgent } from "../agents/reviewer.js";
 import { createTestEvidenceAgent } from "../agents/test-evidence.js";
+import {
+  publishReviewerToMr,
+  revokeReviewerMrComments as revokeReviewerMrCommentsHelper,
+} from "../gitlab/mr-comments.js";
 import { createImprovementService } from "../improvements/service.js";
 import { createImprovementStore } from "../improvements/store.js";
 import {
@@ -29,6 +49,10 @@ import {
   type CoordinatorAgents,
   type RoleProfileResolver,
 } from "../pipelines/coordinator.js";
+import {
+  buildPipelineRunReport,
+  taskStatusFromPipelineStatus,
+} from "../pipelines/report-artifact.js";
 import {
   buildRoleProfile,
   type CoderRoleProfile,
@@ -39,10 +63,7 @@ import {
   createPipelineService,
   type PipelineService,
 } from "../pipelines/service.js";
-import {
-  createPipelineStore,
-  type PipelineStore,
-} from "../pipelines/store.js";
+import { createPipelineStore, type PipelineStore } from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { createPipelineQualitySummaryCallback } from "../quality/pipeline-summary.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
@@ -56,7 +77,10 @@ import {
   createWorkItemPlanner,
   type RawPlanResponse,
 } from "../work-items/planner.js";
-import { createWorkItemService } from "../work-items/service.js";
+import {
+  createWorkItemService,
+  tickWorkItem as tickWorkItemImpl,
+} from "../work-items/service.js";
 import { createWorkItemStore } from "../work-items/store.js";
 
 import {
@@ -105,6 +129,11 @@ export interface StartTeamDaemonDeps {
   compileCentralWorkflowProject?:
     | CentralWorkflowCompilerLike["compileCentralWorkflowProject"]
     | undefined;
+  createGitLab?:
+    | ((project: RegisteredProject) => GitLabAdapter | Promise<GitLabAdapter>)
+    | undefined;
+  credentialResolver?: CredentialResolver | undefined;
+  credentialsStore?: CredentialsStore | undefined;
   createServer?: typeof createServer | undefined;
   createLeaseStore?:
     | ((opts: { filePath: string; now?: () => Date }) => LeaseStore)
@@ -125,6 +154,14 @@ function deriveLeaseFilePath(config: TeamConfig): string {
     "state",
     `leases-${config.source.sha256.slice(0, 12)}.json`,
   );
+}
+
+function hostnameFromBaseUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return baseUrl.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  }
 }
 
 // V2 team daemon emits events with the shared internal envelope so the SSE
@@ -157,6 +194,22 @@ function buildProjectWorkItemService(
   project: RegisteredProject,
   eventBus: EventBus<TeamEvent>,
   reportStore: ReportStore,
+  getPipelineStarter?: () =>
+      | ((input: {
+          workItem: WorkItem;
+          task: TaskNode;
+          pendingRecipe?: WorkflowRecipe;
+      }) => Promise<{
+          pipelineRunId: string;
+          branch: string;
+          taskStatus: TaskNode["status"];
+          mergeRequest?: {
+            iid: number;
+            url?: string;
+            state?: "opened" | "merged" | "closed";
+          };
+        }>)
+    | undefined,
 ): { service: WorkItemService; store: ReturnType<typeof createWorkItemStore> } {
   const store = createWorkItemStore({
     rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
@@ -176,7 +229,42 @@ function buildProjectWorkItemService(
         `team-mode planFromIssue is not wired yet for project ${project.id}: configure a GitLab adapter`,
       );
     },
-    tick: async () => {},
+    tick: async (wi) => {
+      const startPipelineForTask = getPipelineStarter?.();
+      if (!startPipelineForTask) return;
+      const plan = await store.getCurrentPlan(wi.workItemId);
+      if (!plan || plan.status !== "accepted") return;
+      const links = await store.listAllTaskRunLinks(wi.workItemId);
+      return tickWorkItemImpl(wi, plan, links, {
+        availableSlots: () => project.workflow.agent.maxConcurrentAgents,
+        getRunReport: (runId) => reportStore.get(runId),
+        startPipelineForTask,
+        dispatchTask: async () => {
+          throw new Error(
+            `team-mode legacy dispatch is not wired for project ${project.id}`,
+          );
+        },
+        saveTaskRunLink: async (link) => {
+          await store.saveTaskRunLink(link);
+        },
+        saveTaskNode: async (taskId, patch) => {
+          const plan = await store.getCurrentPlan(wi.workItemId);
+          if (!plan) return;
+          const nextTasks = plan.tasks.map((t) =>
+            t.taskId === taskId ? ({ ...t, ...patch } as typeof t) : t,
+          );
+          await store.saveTaskPlan({ ...plan, tasks: nextTasks });
+        },
+        emit: (event) => {
+          eventBus.publish({
+            type: event.type,
+            ts: event.ts,
+            runId: event.runId ?? null,
+            detail: { ...event.detail, project: project.id },
+          } as unknown as TeamEvent);
+        },
+      });
+    },
     reconcileWorkItem: async () => {},
     aggregateDeps: {
       getRunReport: (runId) => reportStore.get(runId),
@@ -282,13 +370,71 @@ export async function startTeamDaemon(
    * 该 project 的 byRole 切片保持 undefined。
    */
   const pipelineStoreByProject = new Map<string, PipelineStore>();
+  const credentialsStore = deps.credentialsStore ?? createCredentialsStore();
+  const credentialResolver =
+    deps.credentialResolver ??
+    createCredentialResolver({
+      store: credentialsStore,
+    });
+  const gitlabByProject = new Map<string, Promise<GitLabAdapter>>();
+  const gitlabForProject = (
+    project: RegisteredProject,
+  ): Promise<GitLabAdapter> => {
+    const cached = gitlabByProject.get(project.id);
+    if (cached) return cached;
+    const created = (async () => {
+      if (deps.createGitLab) return deps.createGitLab(project);
+      const tracker = project.workflow.tracker;
+      const hostname = hostnameFromBaseUrl(tracker.baseUrl);
+      const resolveInput: { hostname: string; trackerTokenEnv?: string } = {
+        hostname,
+      };
+      if (tracker.tokenEnv) resolveInput.trackerTokenEnv = tracker.tokenEnv;
+      const credential = await credentialResolver.resolve(resolveInput);
+      if (credential.source === "env" && tracker.tokenEnv) {
+        return createGitLabAdapter({
+          baseUrl: tracker.baseUrl,
+          projectId: tracker.projectId,
+          tokenEnv: tracker.tokenEnv,
+        });
+      }
+      return createGitLabAdapterFromCredential({
+        baseUrl: tracker.baseUrl,
+        projectId: tracker.projectId,
+        credential,
+      });
+    })();
+    gitlabByProject.set(project.id, created);
+    return created;
+  };
   for (const project of registry.enabledProjects()) {
     const reportStore = createReportStore({
       rootDir: path.join(project.workflow.workspace.root, ".issuepilot"),
     });
     reportsByProject.set(project.id, reportStore);
+    let projectStartPipelineForTask:
+        | ((input: {
+          workItem: WorkItem;
+          task: TaskNode;
+          pendingRecipe?: WorkflowRecipe;
+        }) => Promise<{
+          pipelineRunId: string;
+          branch: string;
+          taskStatus: TaskNode["status"];
+          mergeRequest?: {
+            iid: number;
+            url?: string;
+            state?: "opened" | "merged" | "closed";
+          };
+        }>)
+      | undefined;
     const { service: workItemService, store: workItemStore } =
-      buildProjectWorkItemService(project, eventBus, reportStore);
+      buildProjectWorkItemService(
+        project,
+        eventBus,
+        reportStore,
+        () => projectStartPipelineForTask,
+      );
     workItemsByProject.set(project.id, workItemService);
     qualityByProject.set(project.id, {
       metadata: {
@@ -336,6 +482,7 @@ export async function startTeamDaemon(
       pipelineStore = createPipelineStore({
         root: path.join(project.workflow.workspace.root, ".issuepilot"),
       });
+      const activePipelineStore = pipelineStore;
       pipelineStoreByProject.set(project.id, pipelineStore);
       /**
        * V4.6 follow-up Task 4b (review C1 part 2/3) — 镜像单 daemon 的
@@ -401,10 +548,62 @@ export async function startTeamDaemon(
           },
         } as unknown as TeamEvent);
       };
+      const gitlabToolsAdapter = {
+        getIssue: async (iid: number) => {
+          const gitlab = await gitlabForProject(project);
+          const fullIssue = await gitlab.getIssue(iid);
+          return {
+            ...fullIssue,
+            labels: [...fullIssue.labels],
+          };
+        },
+        transitionLabels: async (
+          iid: number,
+          opts: { add: string[]; remove: string[]; requireCurrent?: string[] },
+        ) => (await gitlabForProject(project)).transitionLabels(iid, opts),
+        createIssueNote: async (iid: number, body: string) =>
+          (await gitlabForProject(project)).createIssueNote(iid, body),
+        updateIssueNote: async (
+          iid: number,
+          noteId: number,
+          update: { body: string },
+        ) =>
+          (await gitlabForProject(project)).updateIssueNote(
+            iid,
+            noteId,
+            update.body,
+          ),
+        createMergeRequest: async (input: {
+          sourceBranch: string;
+          targetBranch: string;
+          title: string;
+          description: string;
+          issueIid: number;
+        }) => (await gitlabForProject(project)).createMergeRequest(input),
+        updateMergeRequest: async (
+          mrIid: number,
+          input: Parameters<GitLabAdapter["updateMergeRequest"]>[1],
+        ) => (await gitlabForProject(project)).updateMergeRequest(mrIid, input),
+        getMergeRequest: async (mrIid: number) =>
+          (await gitlabForProject(project)).getMergeRequest(mrIid),
+        listMergeRequestNotes: async (mrIid: number) =>
+          (await gitlabForProject(project)).listMergeRequestNotes(mrIid),
+        getPipelineStatus: async (ref: string) =>
+          (await gitlabForProject(project)).getPipelineStatus(ref),
+      };
       const coderLifecycle = createCoderLifecycle({
         codex: projectWorkflow.codex,
         maxTurns: projectWorkflow.agent.maxTurns,
         threadName: threadNameFor,
+        tools: (ctx) =>
+          createGitLabTools(gitlabToolsAdapter, {
+            id: String(ctx.workItem.sourceIssue.iid),
+            iid: ctx.workItem.sourceIssue.iid,
+            title: ctx.workItem.sourceIssue.title,
+            url: ctx.workItem.sourceIssue.url,
+            projectId: ctx.workItem.sourceIssue.projectId,
+            labels: [],
+          }),
         onEvent: (type, data, ctx) =>
           publishLifecycleEvent({
             role: "coder",
@@ -450,20 +649,23 @@ export async function startTeamDaemon(
           "evidence",
           task.taskId,
         );
-      /**
-       * V4.6 follow-up Task 4b — reviewer publisher 故意不注入到
-       * CoordinatorAgents：`publishReviewerToMr` 需要 `MrRef` 携带
-       * `{iid, baseSha, startSha, headSha}`，但当前 GitLab adapter 的
-       * `getMergeRequest` 只暴露 `{iid, webUrl, state}`，缺 diff_refs。
-       * 扩展 tracker-gitlab `MergeRequestSummary` 是跨 package 改动，
-       * 不在本次 critical-fix 范围内。在 publisher 接通之前 coordinator
-       * 仍能跑：reviewer 报告正常落盘，`mrPublication` 保持 agent 初始
-       * 值（`pending` / `skipped_by_config`），dashboard 也能显示。
-       * Tracking：docs/superpowers/specs/2026-05-11-issuepilot-design.md §12
-       */
+      const buildPublishFailed = (message: string) => ({
+        mrPublication: {
+          status: "publish_failed" as const,
+          noteIds: [],
+          lastError: {
+            code: "gitlab_rate_limited" as const,
+            message,
+          },
+        },
+        redactedFieldsAdded: [],
+        scopeInsufficient: false as const,
+      });
       const pipelineAgents: CoordinatorAgents = {
         coder: {
-          async run(input): Promise<
+          async run(
+            input,
+          ): Promise<
             | { kind: "report"; report: CoderAgentReport }
             | { kind: "cancelled"; cancelledAt: string }
           > {
@@ -484,7 +686,9 @@ export async function startTeamDaemon(
           },
         },
         reviewer: {
-          async run(input): Promise<
+          async run(
+            input,
+          ): Promise<
             | { kind: "report"; report: ReviewerAgentReport }
             | { kind: "cancelled"; cancelledAt: string }
           > {
@@ -505,7 +709,9 @@ export async function startTeamDaemon(
           },
         },
         testEvidence: {
-          async run(input): Promise<
+          async run(
+            input,
+          ): Promise<
             | { kind: "report"; report: TestEvidenceAgentReport }
             | { kind: "cancelled"; cancelledAt: string }
           > {
@@ -523,6 +729,49 @@ export async function startTeamDaemon(
               profile: teProfile,
               evidenceDir: evidenceDirFor(input.workItem, input.task),
               collectors: collectorsForTask(input.task),
+            });
+          },
+        },
+        reviewerPublisher: {
+          async publish(input) {
+            const coderId = input.pipelineRun.agentReportIds.coder;
+            const coder = coderId
+              ? await activePipelineStore.getAgentReport({
+                  taskId: input.task.taskId,
+                  role: "coder",
+                  agentReportId: coderId,
+                })
+              : null;
+            const mrIid =
+              coder?.role === "coder"
+                ? coder.coder.mergeRequest?.iid
+                : undefined;
+            if (!mrIid) {
+              return buildPublishFailed(
+                `cannot publish reviewer report ${input.reviewerReport.agentReportId}: coder report has no mergeRequest.iid`,
+              );
+            }
+            const gitlab = await gitlabForProject(project);
+            const client = (gitlab as GitLabAdapterHandle).client as
+              | GitLabClient<GitLabApi>
+              | undefined;
+            if (!client) {
+              return buildPublishFailed(
+                `team-mode GitLab adapter for project ${project.id} does not expose .client; cannot publish reviewer comments`,
+              );
+            }
+            const mr = await gitlab.getMergeRequest(mrIid);
+            if (!mr.diffRefs) {
+              return buildPublishFailed(
+                `GitLab MR !${mrIid} did not include diff_refs; cannot create inline review comments`,
+              );
+            }
+            return publishReviewerToMr({
+              client,
+              reviewerReport: input.reviewerReport,
+              mrRef: { iid: mr.iid, ...mr.diffRefs },
+              publishToMr: input.profile.publishToMr,
+              requiredScope: "api",
             });
           },
         },
@@ -562,23 +811,98 @@ export async function startTeamDaemon(
           },
         },
       });
-      // V4.6 fix C3：mirror 单 daemon 的撤销 callback wiring。team-mode
-      // 当前还没有 per-project GitLab adapter（参考 `buildProjectWorkItemService`
-      // 里的 fetchIssue stub），所以 callback 抛 typed error，把缺口显式
-      // 暴露给 dashboard / 测试，而不是让 service 静默把本地 mrPublication.
-      // status 翻成 "revoked" 却没删 GitLab note —— spec §12 的契约失败必须
-      // 是 5xx 而非 200。Phase X 真正把 team-mode 接通 GitLab 后再换成
-      // 单 daemon 同款 adapter callback。
-      const projectIdForCallback = project.id;
+      projectStartPipelineForTask = async ({
+        workItem,
+        task,
+        pendingRecipe,
+      }) => {
+        const result = await pipelineCoordinator.startPipeline({
+          workItem,
+          task,
+          workflowDefault: projectDefaultRecipe,
+          ...(pendingRecipe ? { pendingRecipe } : {}),
+        });
+        const report = buildPipelineRunReport({
+          workItem,
+          pipelineRun: result.pipelineRun,
+          finalStatus: result.finalStatus,
+          reports: result.reports,
+        });
+        await reportStore.save(report);
+        const mergeRequest = report.mergeRequest
+          ? {
+              iid: report.mergeRequest.iid,
+              ...(report.mergeRequest.url
+                ? { url: report.mergeRequest.url }
+                : {}),
+              ...(report.mergeRequest.state
+                ? { state: report.mergeRequest.state }
+                : {}),
+            }
+          : undefined;
+        return {
+          pipelineRunId: result.pipelineRun.pipelineRunId,
+          branch: report.run.branch,
+          taskStatus: taskStatusFromPipelineStatus(result.finalStatus),
+          ...(mergeRequest ? { mergeRequest } : {}),
+        };
+      };
       const teamPipelineRevokeCallback = async (input: {
         agentReportId: string;
         noteIds: string[];
         operator?: string;
       }): Promise<{ revokedAt: string }> => {
-        void input;
-        throw new Error(
-          `team-mode revokeReviewerMrComments not wired for project ${projectIdForCallback}: per-project GitLab adapter is not configured yet (see team/daemon.ts).`,
+        void input.operator;
+        const found = await activePipelineStore.findAgentReportById(
+          input.agentReportId,
         );
+        if (!found || found.role !== "reviewer") {
+          throw new Error(
+            `team-mode revoke callback: reviewer agent report ${input.agentReportId} not found for project ${project.id}`,
+          );
+        }
+        const run = await activePipelineStore.getPipelineRunByIdOnly({
+          pipelineRunId: found.report.pipelineRunId,
+        });
+        const coderId = run?.agentReportIds.coder;
+        const coder = coderId
+          ? await activePipelineStore.getAgentReport({
+              taskId: found.taskId,
+              role: "coder",
+              agentReportId: coderId,
+            })
+          : await activePipelineStore.latestAgentReportForRole({
+              taskId: found.taskId,
+              role: "coder",
+            });
+        const mrIid =
+          coder?.role === "coder" ? coder.coder.mergeRequest?.iid : undefined;
+        if (!mrIid) {
+          throw new Error(
+            `team-mode revoke callback: cannot resolve mrIid for reviewer report ${input.agentReportId} in project ${project.id}`,
+          );
+        }
+        const gitlab = await gitlabForProject(project);
+        const client = (gitlab as GitLabAdapterHandle).client as
+          | GitLabClient<GitLabApi>
+          | undefined;
+        if (!client) {
+          throw new Error(
+            `team-mode revoke callback: GitLab adapter for project ${project.id} does not expose .client; cannot delete MR notes`,
+          );
+        }
+        const reviewerReport = found.report;
+        const mrPublication =
+          reviewerReport.role === "reviewer"
+            ? reviewerReport.reviewer.mrPublication
+            : { status: "revoked" as const, noteIds: [] };
+        await revokeReviewerMrCommentsHelper({
+          client,
+          mrIid,
+          mrPublication,
+          requiredScope: "api",
+        });
+        return { revokedAt: new Date().toISOString() };
       };
       pipelinesByProject.set(
         project.id,

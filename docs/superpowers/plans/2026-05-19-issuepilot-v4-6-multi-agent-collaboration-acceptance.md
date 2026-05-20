@@ -1,7 +1,7 @@
 # IssuePilot V4.6 Multi-Agent Collaboration 验收清单
 
 日期：2026-05-19
-状态：implementation complete（待 PR 入主干前最终 CI gate）
+状态：production-ready 本地单机闭环已完成（2026-05-20 production gap closure 通过）
 
 关联文档：
 
@@ -35,10 +35,10 @@
   cancelled），TaskNode 对应增加 `running_coding` / `running_reviewer`
   / `running_test_evidence` / `awaiting_human_review`，dashboard
   `task-list` / `task-graph` 全部上色。
-- [x] **(6) Reviewer publish 默认开 + fail soft**：`reviewerPublisher`
-  注入 GitLab MR 推送；publish 失败/scope 不足时 reviewer 报告依然
-  `complete`（spec §16.3），inline comments 与 summary 不被丢；dashboard
-  显示 `mr.published / publish_failed / scope_insufficient` 状态。
+- [x] **(6) Reviewer publish production wiring + fail soft**：service 层
+  `reviewerPublisher` / dashboard 状态 / fail-soft 语义已实现；production
+  daemon 与 team daemon 通过 tracker-gitlab MR `diff_refs` 注入
+  `publishReviewerToMr()`，reviewer findings 可真实推到 GitLab MR。
 - [x] **(7) Revoke AI Review**：`POST /api/agent-reports/:id/revoke-ai-review`
   幂等地把 reviewer 在 GitLab MR 上的 note 删除并写
   `mrPublication.status = revoked`；dashboard `RevokeAiReviewButton`
@@ -167,6 +167,67 @@ V4.6 code review 标记 4 项 Critical + 5 项 Important。补救实施计划：
 复跑 `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh` 全 5 stage PASS。
 最终 verification gate（不带 `SKIP_E2E`）由 Task 10 后的 empty
 checkpoint commit 收尾。
+
+## Production gap closure（2026-05-20）
+
+上一轮 follow-up 已修复当时记录的 4 项 Critical + 5 项 Important，并通过
+`SKIP_E2E=1` 本地 gate；复审确认的 production gaps 已在下一轮计划中收口：
+`docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`。
+
+- [x] 生产 work-item acceptance / dashboard 路径能真实启动
+  `PipelineCoordinator.startPipeline()`，不再只走 legacy `dispatchTask`
+  或测试专用入口。
+- [x] Workflow loader 在生产入口生成 `roles.*.promptTemplateHash`，daemon
+  装配 role profile 不再依赖调用方补 `resolveWorkflow()`。
+- [x] Codex lifecycle adapter 捕获最终 agent 输出；reviewer 不再因为
+  `rawMessage: ""` 固定 `parse_failed`，coder report 有真实 diff / branch
+  摘要。
+- [x] GitLab tracker 返回 MR `diff_refs`，daemon 注入
+  `publishReviewerToMr()`，reviewer inline comments 可真实 publish + revoke。
+- [x] Team daemon revoke、AgentReport failure pattern drilldown、dashboard
+  500 / 503 error visibility 全部补齐。
+- [x] 完整 gate 与 fake GitLab / fake Codex 验收通过后，README / CHANGELOG
+  状态已升级为 V4.6 production-ready。
+
+验证记录：
+
+- 2026-05-20：targeted tests 通过：orchestrator
+  `daemon-task4b-wiring` / `team/daemon` / `server` / `quality/aggregate`、
+  shared-contracts `api`、dashboard work-item SSR / detail / quality analytics。
+- 2026-05-20：`scripts/ci-equivalent-check.sh` 全 stage PASS（`tsc -b`、
+  scripts tsc、Next build、eslint、per-package vitest、`tests/e2e` 51 tests、
+  `git diff --check`）。
+
+## Post-review repair（2026-05-20）
+
+Production gap closure 后再次复审，发现 coder MR、PipelineRun 完成同步、
+same-pipeline publish / revoke、AgentReport drilldown 和 status-filtered
+quality failures 仍有闭环风险；本轮已完成二次修复：
+
+- coder lifecycle 从成功的 `gitlab_create_merge_request` tool result 提取
+  `mergeRequest`，daemon / team daemon 对 V4.6 coder 注入真实 GitLab tools。
+- V4.6 `PipelineRun` 完成后同步写 `RunReportArtifact`、`TaskRunLink` 和
+  `TaskNode`，让 work-item aggregate、handoff 与 downstream dependencies
+  能感知 `awaiting_human_review`。
+- reviewer publish / revoke 按同一个 `pipelineRun.agentReportIds.coder`
+  定位 MR，避免误用同 task 的更新 report。
+- `AgentReport.workItemId` 进入 shared contract，quality drilldown 指向真实
+  work-item detail。
+- `run-failed` / `run-blocked` 等 status filter 下仍保留匹配的 V4.6
+  `AgentReport.lastError` failure rows。
+
+Post-review targeted verification：
+
+- `packages/runner-codex-app-server` lifecycle tests：11 passed。
+- `apps/orchestrator` targeted suites：150 passed。
+- `apps/dashboard` quality analytics tests：10 passed。
+- `npx tsc -b packages/shared-contracts packages/runner-codex-app-server
+  packages/workflow packages/tracker-gitlab apps/orchestrator apps/dashboard`
+  PASS。
+- `git diff --check` PASS。
+- `bash scripts/ci-equivalent-check.sh` 全 stage PASS：`tsc -b`、scripts
+  tsc、Next build、eslint、per-package vitest、`tests/e2e` 51 tests、
+  `git diff --check`。
 
 ## Out-of-Scope 自检
 

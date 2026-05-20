@@ -6,6 +6,7 @@ import type {
   ReviewerRoleConfig,
   CoderRoleConfig,
 } from "@issuepilot/shared-contracts";
+import { createWorkflowLoader } from "@issuepilot/workflow";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 
 import {
@@ -164,5 +165,71 @@ describe("buildRoleProfile", () => {
       task: { id: "t_1", title: "T" },
     });
     expect(profile.prompt).toBe("X=[missing: extra.unknown] Y=T");
+  });
+
+  it("V4.6 production: loader 返回的 role config 可直接 buildRoleProfile", async () => {
+    const workflowRoot = await mkdtemp(join(tmpdir(), "ip-role-profile-loader-"));
+    try {
+      await mkdir(join(workflowRoot, "prompts"), { recursive: true });
+      await writeFile(
+        join(workflowRoot, "prompts", "reviewer.md"),
+        "Review {{work_item.iid}} task {{task.title}}",
+        "utf8",
+      );
+      await writeFile(
+        join(workflowRoot, "prompts", "coder.md"),
+        "Code {{task.title}}",
+        "utf8",
+      );
+      await writeFile(
+        join(workflowRoot, "prompts", "test-evidence.md"),
+        "Evidence {{task.title}}",
+        "utf8",
+      );
+      const workflowPath = join(workflowRoot, "workflow.md");
+      await writeFile(
+        workflowPath,
+        `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+  token_env: "ISSUEPILOT_TEST_TOKEN"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+roles:
+  coder:
+    prompt_template: "prompts/coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    prompt_template: "prompts/reviewer.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    prompt_template: "prompts/test-evidence.md"
+    sandbox: read_only_source_write_evidence
+---
+Prompt body
+`,
+        "utf8",
+      );
+
+      const loader = createWorkflowLoader({
+        env: { ISSUEPILOT_TEST_TOKEN: "secret" },
+      });
+      const workflow = await loader.loadOnce(workflowPath);
+      const role = workflow.roles.reviewer;
+      expect(role?.promptTemplateHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(role).toBeDefined();
+
+      const profile = await buildRoleProfile({
+        role: role!,
+        workItem: { id: "wi_42", iid: 42, title: "demo" },
+        task: { id: "t_99", title: "Fix bug" },
+      });
+      expect(profile.prompt).toBe("Review 42 task Fix bug");
+      expect(profile.roleProfileId).toMatch(/^reviewer@[0-9a-f]{7}$/);
+    } finally {
+      await rm(workflowRoot, { recursive: true, force: true });
+    }
   });
 });

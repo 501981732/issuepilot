@@ -14,8 +14,9 @@
  *   - `unknown_recipe` / `role_mismatch` / `role_skip_not_allowed` /
  *     `invalid_payload` / `project_required` / `project_query_not_allowed`
  *     → 400
- *   - `service_unavailable` → 503（V4.6 follow-up Important #5：coordinator
- *     抛 `agent_not_configured` 时使用，区别于 400 invalid_payload）
+ *   - `service_unavailable` / `pipelines_unavailable` → 503（V4.6 follow-up
+ *     Important #5：coordinator 抛 `agent_not_configured` 时使用，区别于
+ *     400 invalid_payload）
  */
 
 import {
@@ -70,6 +71,7 @@ function statusFromCode(code: PipelineRouteErrorCode): number {
     case "project_query_not_allowed":
       return 400;
     case "service_unavailable":
+    case "pipelines_unavailable":
       return 503;
     default: {
       // Exhaustiveness — TypeScript will surface uncovered codes here.
@@ -100,51 +102,45 @@ export function registerPipelineRoutes(
   app.get<{
     Params: { wid: string; tid: string };
     Querystring: { project?: unknown };
-  }>(
-    "/api/work-items/:wid/tasks/:tid/pipeline",
-    async (request, reply) => {
-      const ctx = resolveContext(
-        request.headers as Record<string, unknown>,
-        (request.query as { project?: unknown }).project,
-      );
-      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
-      const result = await ctx.service.getPipelineForTask({
-        workItemId: request.params.wid,
-        taskId: request.params.tid,
-      });
-      if (!result.ok) {
-        return reply
-          .code(statusFromCode(result.error.code))
-          .send({ ok: false, ...result.error });
-      }
-      return reply.code(200).send(result.value);
-    },
-  );
+  }>("/api/work-items/:wid/tasks/:tid/pipeline", async (request, reply) => {
+    const ctx = resolveContext(
+      request.headers as Record<string, unknown>,
+      (request.query as { project?: unknown }).project,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+    const result = await ctx.service.getPipelineForTask({
+      workItemId: request.params.wid,
+      taskId: request.params.tid,
+    });
+    if (!result.ok) {
+      return reply
+        .code(statusFromCode(result.error.code))
+        .send({ ok: false, ...result.error });
+    }
+    return reply.code(200).send(result.value);
+  });
 
   // ── GET /api/work-items/:wid/tasks/:tid/pipelines ───────────────────
   app.get<{
     Params: { wid: string; tid: string };
     Querystring: { project?: unknown };
-  }>(
-    "/api/work-items/:wid/tasks/:tid/pipelines",
-    async (request, reply) => {
-      const ctx = resolveContext(
-        request.headers as Record<string, unknown>,
-        (request.query as { project?: unknown }).project,
-      );
-      if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
-      const result = await ctx.service.listPipelinesForTask({
-        workItemId: request.params.wid,
-        taskId: request.params.tid,
-      });
-      if (!result.ok) {
-        return reply
-          .code(statusFromCode(result.error.code))
-          .send({ ok: false, ...result.error });
-      }
-      return reply.code(200).send(result.value);
-    },
-  );
+  }>("/api/work-items/:wid/tasks/:tid/pipelines", async (request, reply) => {
+    const ctx = resolveContext(
+      request.headers as Record<string, unknown>,
+      (request.query as { project?: unknown }).project,
+    );
+    if (!ctx.ok) return reply.code(ctx.statusCode).send(ctx.body);
+    const result = await ctx.service.listPipelinesForTask({
+      workItemId: request.params.wid,
+      taskId: request.params.tid,
+    });
+    if (!result.ok) {
+      return reply
+        .code(statusFromCode(result.error.code))
+        .send({ ok: false, ...result.error });
+    }
+    return reply.code(200).send(result.value);
+  });
 
   // ── GET /api/agent-reports/:id ─────────────────────────────────────
   app.get<{ Params: { id: string } }>(

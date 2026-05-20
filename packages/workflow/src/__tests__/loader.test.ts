@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -31,6 +37,19 @@ afterEach(async () => {
 function makeTmpFile(content: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "issuepilot-loader-"));
   tmpDirs.push(dir);
+  const promptsDir = path.join(dir, "prompts");
+  mkdirSync(promptsDir, { recursive: true });
+  writeFileSync(path.join(promptsDir, "coder.md"), "coder prompt", "utf8");
+  writeFileSync(
+    path.join(promptsDir, "reviewer.md"),
+    "reviewer prompt",
+    "utf8",
+  );
+  writeFileSync(
+    path.join(promptsDir, "test-evidence.md"),
+    "test evidence prompt",
+    "utf8",
+  );
   const filePath = path.join(dir, "workflow.md");
   writeFileSync(filePath, content, "utf8");
   return filePath;
@@ -59,6 +78,22 @@ describe("createWorkflowLoader", () => {
       path.join(os.homedir(), ".issuepilot/workspaces"),
     );
     expect(cfg.promptTemplate).toMatch(/You are the AI engineer/);
+  });
+
+  it("V4.6 production: loadOnce resolves role promptTemplateHash values", async () => {
+    const loader = createWorkflowLoader({
+      env: { ISSUEPILOT_TEST_TOKEN: "secret" },
+    });
+    const cfg = await loader.loadOnce(VALID_PATH);
+
+    expect(cfg.roles.coder?.promptTemplateHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(cfg.roles.reviewer?.promptTemplateHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(cfg.roles.test_evidence?.promptTemplateHash).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+    expect(path.isAbsolute(cfg.roles.reviewer?.promptTemplate ?? "")).toBe(
+      true,
+    );
   });
 
   it("loadOnce 在 tracker.token_env 缺失时拒绝配置", async () => {

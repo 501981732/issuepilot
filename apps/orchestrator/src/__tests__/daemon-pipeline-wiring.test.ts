@@ -1012,4 +1012,177 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3)", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("acceptPlan starts a real V4.6 PipelineRun through the work-item production path", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "ip-daemon-accept-pipeline-"),
+    );
+    try {
+      const workflow = buildV46Workflow(root);
+      const templatesDir = path.join(root, "templates");
+      await fs.mkdir(templatesDir, { recursive: true });
+      const coderTpl = path.join(templatesDir, "c.md");
+      const reviewerTpl = path.join(templatesDir, "r.md");
+      const teTpl = path.join(templatesDir, "t.md");
+      await fs.writeFile(coderTpl, "Coder: {{task.title}}", "utf8");
+      await fs.writeFile(reviewerTpl, "Reviewer: {{task.title}}", "utf8");
+      await fs.writeFile(teTpl, "TE: {{task.title}}", "utf8");
+      const wiredWorkflow: WorkflowConfig = {
+        ...workflow,
+        roles: {
+          coder: { ...workflow.roles!.coder!, promptTemplate: coderTpl },
+          reviewer: {
+            ...workflow.roles!.reviewer!,
+            promptTemplate: reviewerTpl,
+          },
+          test_evidence: {
+            ...workflow.roles!.test_evidence!,
+            promptTemplate: teTpl,
+          },
+        },
+      };
+
+      const { adapter: fakeGitLab } = buildFakeGitLabWithDeleteSpy();
+      fakeGitLab.getIssue = vi.fn(async () => ({
+        iid: 4242,
+        title: "accept plan pipeline",
+        description: "Issue body",
+        url: "https://gitlab.example.com/group/project/-/issues/4242",
+        projectId: "group/project",
+        labels: ["ai-ready"],
+      }));
+
+      let captured: ServerDeps | undefined;
+      const daemon = await startDaemon(
+        { workflowPath: wiredWorkflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => wiredWorkflow),
+            start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => fakeGitLab),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            captured = deps;
+            return createFakeServer();
+          }),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+          })),
+          state: createRuntimeState(),
+          workItemPlanner: {
+            draft: vi.fn(async ({ workItemId }) => ({
+              ok: true,
+              plan: {
+                planId: "tp_accept_pipeline",
+                workItemId: workItemId ?? "wi_accept_pipeline",
+                version: 1,
+                tasks: [
+                  {
+                    taskId: "t_accept_1",
+                    title: "first task",
+                    goal: "g",
+                    scope: "s",
+                    dependsOn: [],
+                    suggestedValidation: [],
+                    status: "planned",
+                    runIds: [],
+                    riskLevel: "low",
+                  },
+                  {
+                    taskId: "t_accept_2",
+                    title: "second task",
+                    goal: "g",
+                    scope: "s",
+                    dependsOn: [],
+                    suggestedValidation: [],
+                    status: "planned",
+                    runIds: [],
+                    riskLevel: "low",
+                  },
+                ],
+                dependencies: [],
+                operatorEdits: [],
+                status: "draft",
+              },
+            })),
+          },
+        },
+      );
+
+      try {
+        if (!captured?.workItems || !captured.pipelineStore) {
+          throw new Error("server deps not captured");
+        }
+        driveMock.mockResolvedValue({
+          status: "completed",
+          turnsUsed: 1,
+          lastTurnId: "turn_accept_pipeline",
+          threadId: "thread_accept_pipeline",
+          finalMessage:
+            "```json\n{\"summary\":\"ok\",\"decision\":\"approve_with_comments\",\"confidence\":0.9,\"risks\":[],\"evidenceRequest\":[],\"findings\":[],\"inlineComments\":[]}\n```",
+        });
+
+        const draft = await captured.workItems.planFromIssue({
+          iid: 4242,
+          regenerate: false,
+          operator: "alice",
+        });
+        if ("code" in draft) {
+          throw new Error(`planFromIssue failed: ${draft.code}`);
+        }
+
+        const accepted = await captured.workItems.acceptPlan({
+          workItemId: draft.workItem.workItemId,
+          planId: draft.plan.planId,
+          edits: [],
+          operator: "alice",
+        });
+        if ("code" in accepted) {
+          throw new Error(`acceptPlan failed: ${accepted.code}`);
+        }
+
+        const latest = await captured.pipelineStore.latestForTask({
+          workItemId: draft.workItem.workItemId,
+          taskId: "t_accept_1",
+        });
+        expect(latest).toBeTruthy();
+        expect(latest?.workItemId).toBe(draft.workItem.workItemId);
+        expect(latest?.taskId).toBe("t_accept_1");
+        expect(latest?.agentReportIds.coder).toBeTruthy();
+        expect(latest?.agentReportIds.reviewer).toBeTruthy();
+        expect(latest?.agentReportIds.test_evidence).toBeTruthy();
+        expect(latest?.status).toBe("awaiting_human_review");
+
+        const coder = await captured.pipelineStore.latestAgentReportForRole({
+          taskId: "t_accept_1",
+          role: "coder",
+        });
+        expect(coder?.role).toBe("coder");
+        const reviewer = await captured.pipelineStore.latestAgentReportForRole({
+          taskId: "t_accept_1",
+          role: "reviewer",
+        });
+        expect(reviewer?.role).toBe("reviewer");
+        if (reviewer?.role !== "reviewer") {
+          throw new Error("expected reviewer report");
+        }
+        expect(reviewer.status).toBe("complete");
+        expect(reviewer.reviewer.decision).toBe("approve_with_comments");
+        const testEvidence =
+          await captured.pipelineStore.latestAgentReportForRole({
+            taskId: "t_accept_1",
+            role: "test_evidence",
+          });
+        expect(testEvidence?.role).toBe("test_evidence");
+        expect(spawnMock).toHaveBeenCalled();
+        expect(driveMock).toHaveBeenCalled();
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

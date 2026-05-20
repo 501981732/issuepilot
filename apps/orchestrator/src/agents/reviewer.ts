@@ -446,6 +446,7 @@ export const createReviewerAgent = (deps: {
       } catch (cause) {
         const report: ReviewerAgentReport = {
           agentReportId: tickId(),
+          workItemId: input.workItem.workItemId,
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           role: "reviewer",
@@ -472,6 +473,7 @@ export const createReviewerAgent = (deps: {
       if (outcome.kind === "failed") {
         const report: ReviewerAgentReport = {
           agentReportId: tickId(),
+          workItemId: input.workItem.workItemId,
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           role: "reviewer",
@@ -496,6 +498,7 @@ export const createReviewerAgent = (deps: {
         const errCode: LastErrorCode = "parse_failed";
         const report: ReviewerAgentReport = {
           agentReportId: tickId(),
+          workItemId: input.workItem.workItemId,
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           role: "reviewer",
@@ -525,6 +528,7 @@ export const createReviewerAgent = (deps: {
 
       const report: ReviewerAgentReport = {
         agentReportId: tickId(),
+        workItemId: input.workItem.workItemId,
         pipelineRunId: input.pipelineRun.pipelineRunId,
         taskId: input.task.taskId,
         role: "reviewer",

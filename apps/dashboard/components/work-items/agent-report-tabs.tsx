@@ -61,6 +61,40 @@ function severityTone(sev: string): BadgeTone {
   return "neutral";
 }
 
+/**
+ * V4.7 runner trace metadata row：在每个 role panel 内紧贴 status badge 下方
+ * 展示 `runnerId`、`runnerKind`、`runnerRunId`，供调试和审计跨任务的 runner
+ * 行为。设计约束（详见 plan Task 7.2）：
+ * - 复用现有 `text-xs text-fg-muted` 风格，不引入新卡片或缩进。
+ * - `runnerRunId` 缺失（`null` / `undefined`）时不渲染空槽位，避免给用户留下
+ *   「这里应该有值」的误导。
+ * - 长 id 使用 `break-all` 自动换行，避免触发横向滚动条。
+ */
+function RunnerTrace({ report }: { report: AgentReport }) {
+  const runId = report.runnerRunId ?? null;
+  return (
+    <dl
+      data-testid={`agent-runner-trace-${report.role}`}
+      className="grid gap-x-3 gap-y-1 text-xs text-fg-muted sm:grid-cols-3"
+    >
+      <div>
+        <dt className="font-medium text-fg">Runner</dt>
+        <dd className="break-all">{report.runnerId}</dd>
+      </div>
+      <div>
+        <dt className="font-medium text-fg">Kind</dt>
+        <dd className="break-all">{report.runnerKind}</dd>
+      </div>
+      {runId ? (
+        <div data-testid={`agent-runner-trace-${report.role}-runId`}>
+          <dt className="font-medium text-fg">Run</dt>
+          <dd className="break-all">{runId}</dd>
+        </div>
+      ) : null}
+    </dl>
+  );
+}
+
 export interface AgentReportTabsProps {
   reports: Partial<Record<AgentRole, AgentReport>>;
 }
@@ -128,6 +162,7 @@ function CoderPanel({ report }: { report: CoderAgentReport }) {
       <header className="flex items-center gap-2">
         <Badge tone={statusTone(report.status)}>{report.status}</Badge>
       </header>
+      <RunnerTrace report={report} />
       <p className="whitespace-pre-wrap text-sm text-fg">
         {report.coder.diffSummary}
       </p>
@@ -164,6 +199,7 @@ function ReviewerPanel({ report }: { report: ReviewerAgentReport }) {
           mrPublicationStatus={report.reviewer.mrPublication.status}
         />
       </header>
+      <RunnerTrace report={report} />
       <p className="whitespace-pre-wrap text-sm text-fg">
         {report.reviewer.summary}
       </p>
@@ -235,6 +271,7 @@ function TestEvidencePanel({ report }: { report: TestEvidenceAgentReport }) {
       <header className="flex items-center gap-2">
         <Badge tone={statusTone(report.status)}>{report.status}</Badge>
       </header>
+      <RunnerTrace report={report} />
       <section>
         <h4 className="text-xs font-semibold text-fg-muted">
           {t("evidenceItems.title")} ({report.testEvidence.evidenceItems.length})

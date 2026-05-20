@@ -17,6 +17,12 @@ const baseFields = {
   pipelineRunId: "p-1",
   taskId: "t-1",
   roleProfileId: "v1",
+  // V4.7: every AgentReport carries runner trace fields. Fixtures must
+  // include them so V4.6 dashboard render tests stay compatible with the
+  // strengthened `isAgentReport()` guard in shared-contracts.
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: "turn-1",
   startedAt: "2026-05-19T00:00:00.000Z",
   completedAt: "2026-05-19T00:01:00.000Z",
   evidenceLinks: [],
@@ -174,5 +180,44 @@ describe("AgentReportTabs (V4.6)", () => {
     expect(screen.getByTestId("coder-panel").textContent).toMatch(
       /wrote 12 files \+ tests/,
     );
+  });
+
+  it("V4.7 shows compact runner trace metadata on each role panel", () => {
+    render(
+      <AgentReportTabs
+        reports={{
+          coder: coderReport({
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: "turn-coder",
+          }),
+        }}
+      />,
+    );
+    const trace = screen.getByTestId("agent-runner-trace-coder");
+    // Both runnerId and runnerKind happen to be the same string in V4.7
+    // (only one supported kind), so we just assert the values are visible
+    // and the runId is rendered in its own slot.
+    expect(trace.textContent).toMatch(/codex_app_server/);
+    expect(trace.textContent).toMatch(/turn-coder/);
+  });
+
+  it("V4.7 does not render an empty runnerRunId slot when missing", () => {
+    render(
+      <AgentReportTabs
+        reports={{
+          reviewer: reviewerReport({
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: null,
+          }),
+        }}
+      />,
+    );
+    const trace = screen.getByTestId("agent-runner-trace-reviewer");
+    expect(trace.textContent).toMatch(/codex_app_server/);
+    expect(
+      screen.queryByTestId("agent-runner-trace-reviewer-runId"),
+    ).not.toBeInTheDocument();
   });
 });

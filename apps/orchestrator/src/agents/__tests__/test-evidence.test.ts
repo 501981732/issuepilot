@@ -212,6 +212,75 @@ describe("TestEvidenceAgent.run", () => {
     expect(res.cancelledAt).toBe("2026-05-19T11:05:00.000Z");
   });
 
+  it("collector 返回 noop → agent 跳过该 outcome（V4.6 follow-up Task 4c review）", async () => {
+    // 防回归：把 `{ kind: "noop" }` 的 collector 与一条 collected 混在
+    // 一起，结果里应该只看到 collected 那一条，noop 不会被记进
+    // evidenceItems。把 agent.ts 里 `if (out.kind === "noop") continue;`
+    // 删掉后这里的 length 会变 1（noop 落进 else 分支当 baseline）或
+    // type 校验直接挂掉，断言必红。
+    const agent = mkAgent();
+    const noopCollector: EvidenceCollector = {
+      name: "scanner-noop",
+      async collect() {
+        return { kind: "noop" };
+      },
+    };
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      evidenceDir: "/tmp/evidence",
+      collectors: [
+        noopCollector,
+        itemCollector("ci", {
+          kind: "ci_log",
+          target: "pnpm test",
+          source: "pnpm",
+          status: "collected",
+          artifactPath: "/tmp/evidence/ci.txt",
+        }),
+      ],
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.status).toBe("complete");
+    expect(res.report.testEvidence.evidenceItems.length).toBe(1);
+    expect(res.report.testEvidence.evidenceItems[0]?.source).toBe("pnpm");
+  });
+
+  it("全 noop collector → items.length === 0 + status=complete（首跑没产物的诚实状态）", async () => {
+    const agent = mkAgent();
+    const noopOne: EvidenceCollector = {
+      name: "scanner-noop-1",
+      async collect() {
+        return { kind: "noop" };
+      },
+    };
+    const noopTwo: EvidenceCollector = {
+      name: "scanner-noop-2",
+      async collect() {
+        return { kind: "noop" };
+      },
+    };
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      evidenceDir: "/tmp/evidence",
+      collectors: [noopOne, noopTwo],
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    // items.length===0 走 `complete` 分支（test-evidence.ts:194-205 中
+    // allFailed 的前提是 `items.length > 0`）。这是 4c review 要求的
+    // 诚实路径：dashboard 看到 testEvidence complete + 空 evidenceItems
+    // 而不是 "evidence_unavailable" 的伪 failed。
+    expect(res.report.status).toBe("complete");
+    expect(res.report.lastError).toBeUndefined();
+    expect(res.report.testEvidence.evidenceItems).toEqual([]);
+    expect(res.report.evidenceLinks).toEqual([]);
+  });
+
   it("所有 item 都 failed/skipped 且无 collected → status=failed evidence_unavailable", async () => {
     const agent = mkAgent();
     const res = await agent.run({

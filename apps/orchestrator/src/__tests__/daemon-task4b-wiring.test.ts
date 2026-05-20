@@ -17,8 +17,9 @@
  *   lifecycle 在测试里安全地跑完一个 `completed` 回路，不真的 spawn Codex。
  * - reviewer publisher 故意不注入 —— 验证 daemon 维持 deferred 决策
  *   （详见 spec §12 TODO + daemon.ts 4b 注释块）。
- * - `test_evidence` 角色仍然抛 `agent_not_configured`（Task 4c 会接），
- *   测试断言这一点是「这次只做 2/3 角色，testEvidence 留待 4c」。
+ * - `test_evidence` 角色在 Task 4c 已接通（`createTestEvidenceAgent` +
+ *   scanner snapshot collector）；本文件断言它不再抛 `agent_not_configured`，
+ *   而是返回 `TestEvidenceAgentReport`，role / pipelineRunId 落位。
  *
  * Bug-catching 验证：如果把 daemon.ts 里 `coder` / `reviewer` 复原为
  * 原来的 `throw new CoordinatorError("...", "agent_not_configured")` stub，
@@ -330,27 +331,38 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — single daemon", () =>
         expect(reviewerResult.report.role).toBe("reviewer");
         expect(reviewerResult.report.roleProfileId).toMatch(/^reviewer@/);
 
-        // ── 3) test_evidence remains a stub (Task 4c handles) ----------
-        await expect(
-          agents.testEvidence.run({
-            workItem: sampleWorkItem,
-            task: sampleTask,
-            pipelineRun: makePipelineRun(),
-            profile: {
-              role: "test_evidence",
-              roleProfileId: "test_evidence@abcdef0",
-              prompt: "te",
-              promptTemplateHash: "abcdef0123",
-              sandbox: "read_only_source_write_evidence",
-              toolAllow: [],
-              timeoutSeconds: undefined,
-              tokenScopeRequirements: undefined,
-            },
-          }),
-        ).rejects.toMatchObject({
-          name: "CoordinatorError",
-          code: "agent_not_configured",
+        // ── 3) test_evidence — Task 4c wired ---------------------------
+        // 不再抛 `agent_not_configured`：daemon 现在注入真实
+        // `createTestEvidenceAgent` + scanner-snapshot collector。
+        // evidenceDir 在测试 fixture 下不存在 → collector 落 `noop`
+        // → agent 跳过该 outcome → items 空 → status="complete"
+        // （test-evidence.ts:194-205 的 allFailed 前提是
+        // `items.length > 0`）。这是 Task 4c review 要求的诚实路径：
+        // 「首跑还没攒证据」与「证据收集失败」必须可区分。
+        const tePipelineRun = makePipelineRun();
+        const teResult = await agents.testEvidence.run({
+          workItem: sampleWorkItem,
+          task: sampleTask,
+          pipelineRun: tePipelineRun,
+          profile: {
+            role: "test_evidence",
+            roleProfileId: "test_evidence@abcdef0",
+            prompt: "te",
+            promptTemplateHash: "abcdef0123",
+            sandbox: "read_only_source_write_evidence",
+            toolAllow: [],
+            timeoutSeconds: undefined,
+            tokenScopeRequirements: undefined,
+          },
         });
+        expect(teResult.kind).toBe("report");
+        if (teResult.kind !== "report") return;
+        expect(teResult.report.role).toBe("test_evidence");
+        expect(teResult.report.pipelineRunId).toBe(tePipelineRun.pipelineRunId);
+        expect(teResult.report.taskId).toBe(sampleTask.taskId);
+        expect(teResult.report.status).toBe("complete");
+        expect(teResult.report.lastError).toBeUndefined();
+        expect(teResult.report.testEvidence.evidenceItems).toEqual([]);
 
         // ── 4) RoleProfileResolver — buildRoleProfile-backed ----------
         const resolver: RoleProfileResolver = opts.roleProfileResolver;
@@ -465,12 +477,246 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
         const reviewerResult = await agents.reviewer.run(makeReviewerInput());
         expect(reviewerResult.kind).toBe("report");
 
-        // testEvidence on team daemon is still a stub (Task 4c handles).
-        await expect(
-          agents.testEvidence.run({
+        // testEvidence on team daemon — Task 4c wired（mirror 单 daemon
+        // 的断言：empty evidenceDir → noop → items.length===0 → status
+        // = "complete"，dashboard 能区分「首跑」与「真失败」）。
+        const tePipelineRun = makePipelineRun();
+        const teResult = await agents.testEvidence.run({
+          workItem: sampleWorkItem,
+          task: sampleTask,
+          pipelineRun: tePipelineRun,
+          profile: {
+            role: "test_evidence",
+            roleProfileId: "test_evidence@abcdef0",
+            prompt: "te",
+            promptTemplateHash: "abcdef0123",
+            sandbox: "read_only_source_write_evidence",
+            toolAllow: [],
+            timeoutSeconds: undefined,
+            tokenScopeRequirements: undefined,
+          },
+        });
+        expect(teResult.kind).toBe("report");
+        if (teResult.kind !== "report") return;
+        expect(teResult.report.role).toBe("test_evidence");
+        expect(teResult.report.pipelineRunId).toBe(tePipelineRun.pipelineRunId);
+        expect(teResult.report.status).toBe("complete");
+        expect(teResult.report.testEvidence.evidenceItems).toEqual([]);
+
+        const coderProfile = await opts.roleProfileResolver.resolveRoleProfile(
+          "coder",
+          { workItem: sampleWorkItem, task: sampleTask },
+        );
+        expect(coderProfile?.role).toBe("coder");
+        expect(coderProfile?.prompt).toContain(sampleTask.title);
+      } finally {
+        await handle.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
+  beforeEach(() => {
+    mockedCreateCoordinator.mockClear();
+    mockedDriveLifecycle.mockClear();
+  });
+
+  afterEach(() => {
+    mockedCreateCoordinator.mockClear();
+    mockedDriveLifecycle.mockClear();
+  });
+
+  it("codex_v46_coder_* events make it into eventStore (regression for the 4c review Block 1)", async () => {
+    // Bug-catching：在 daemon.ts `publishEvent` 内只读 runIndex /
+    // state.runs 解析 issueIid 时，pipeline-<taskId>-coder 这个合成
+    // runId 永远不会命中，eventStore.append 被静默跳过。本用例真把
+    // V4.6 coder lifecycle event 跑一遍并读 jsonl 文件，把那个回归
+    // 兜住。
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "ip-task4c-publish-"),
+    );
+    try {
+      const workflow = await buildWorkflowWithTemplates(root);
+      // 让 driveLifecycle 在主动 emit 一个事件后落 completed —— adapter
+      // 会把 ctx 透到 daemon，daemon publishLifecycleEvent 调
+      // publishEvent，期望 eventStore 真的 append。
+      mockedDriveLifecycle.mockImplementation(async (input) => {
+        input.onEvent("task_started", { hint: "regression" });
+        return {
+          status: "completed",
+          turnsUsed: 1,
+          lastTurnId: "turn_regression",
+          threadId: "th_regression",
+        };
+      });
+
+      const daemon = await startDaemon(
+        { workflowPath: workflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => workflow),
+            start: vi.fn(async () => ({
+              stop: vi.fn(async () => undefined),
+            })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => createFakeGitLab()),
+          createServer: vi.fn(async (_deps: ServerDeps) => createFakeServer()),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => undefined),
+            stop: vi.fn(async () => undefined),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+      try {
+        const opts: CreateCoordinatorOptions =
+          mockedCreateCoordinator.mock.calls[0]![0]!;
+        await opts.agents.coder.run({
+          workItem: sampleWorkItem,
+          task: sampleTask,
+          pipelineRun: makePipelineRun(),
+          profile: {
+            role: "coder",
+            roleProfileId: "coder@abcdef0",
+            prompt: "do",
+            promptTemplateHash: "abcdef0123",
+            sandbox: "read_write_worktree",
+            toolAllow: [],
+            timeoutSeconds: undefined,
+            tokenScopeRequirements: undefined,
+          },
+        });
+        // eventStore.append 是 fire-and-forget；轮询读 jsonl 文件最多
+        // 等 ~2s 给 I/O 落盘。
+        const eventFile = path.join(
+          root,
+          ".issuepilot",
+          "events",
+          // slugify("group/project") => "group-project"
+          `group-project-${sampleWorkItem.sourceIssue.iid}.jsonl`,
+        );
+        let content = "";
+        for (let i = 0; i < 40; i += 1) {
+          try {
+            content = await fs.readFile(eventFile, "utf8");
+            if (content.includes("codex_v46_coder_task_started")) break;
+          } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(content).toContain("codex_v46_coder_task_started");
+        const lines = content
+          .split("\n")
+          .filter((l) => l.trim().length > 0)
+          .map((l) => JSON.parse(l) as Record<string, unknown>);
+        const v46Lines = lines.filter((l) =>
+          typeof l["type"] === "string" &&
+          (l["type"] as string).startsWith("codex_v46_coder_"),
+        );
+        expect(v46Lines.length).toBeGreaterThan(0);
+        const startedLine = v46Lines.find(
+          (l) => l["type"] === "codex_v46_coder_task_started",
+        );
+        expect(startedLine).toBeDefined();
+        expect(startedLine?.["runId"]).toBe(
+          `pipeline-${sampleTask.taskId}-coder`,
+        );
+        // toEventRecord flattens detail to top-level (daemon.ts:222-244)：
+        // 除了 detail.issue / detail.data，其它字段会被 spread 到记录
+        // 顶层。所以 issueIid / taskId / role 出现在 record 顶层。
+        expect(startedLine?.["issueIid"]).toBe(sampleWorkItem.sourceIssue.iid);
+        expect(startedLine?.["taskId"]).toBe(sampleTask.taskId);
+        expect(startedLine?.["role"]).toBe("coder");
+        // fallbackEventIssue 根据 detail.issueIid 重建 issue 字段，
+        // dashboard 时间线按 issue.iid 渲染时不会丢。
+        const issue = startedLine?.["issue"] as Record<string, unknown>;
+        expect(issue?.["iid"]).toBe(sampleWorkItem.sourceIssue.iid);
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Task 4c — V4.6 daemon testEvidence wiring (C1 part 3/3)", () => {
+  beforeEach(() => {
+    mockedCreateCoordinator.mockClear();
+    mockedDriveLifecycle.mockClear();
+  });
+
+  afterEach(() => {
+    mockedCreateCoordinator.mockClear();
+    mockedDriveLifecycle.mockClear();
+  });
+
+  it(
+    "testEvidence collector returns `collected` when evidenceDir is pre-populated " +
+      "(proves daemon wired createTestEvidenceAgent + scanner-snapshot)",
+    async () => {
+      const root = await fs.mkdtemp(
+        path.join(os.tmpdir(), "ip-task4c-collect-"),
+      );
+      try {
+        const workflow = await buildWorkflowWithTemplates(root);
+        // 模拟 V4.5 dispatch 提前在 evidenceDir 留下产物（playwright zip /
+        // screenshot / log）。Task 4c 的 scanner-snapshot collector 只看
+        // 「目录是否存在 + 有没有 entry」，所以一个 dummy 文件就足够把
+        // outcome 翻到 `collected`。layout 必须与 daemon.ts:`evidenceDirFor`
+        // 一致：`<workspace.root>/<projectSlug>/<issueIid>/.issuepilot/
+        // evidence/<taskId>`。
+        const evidenceDir = path.join(
+          root,
+          // slugify("group/project") => "group-project"
+          "group-project",
+          String(sampleWorkItem.sourceIssue.iid),
+          ".issuepilot",
+          "evidence",
+          sampleTask.taskId,
+        );
+        await fs.mkdir(evidenceDir, { recursive: true });
+        await fs.writeFile(
+          path.join(evidenceDir, "playwright.zip"),
+          "fake-evidence",
+          "utf8",
+        );
+
+        const daemon = await startDaemon(
+          { workflowPath: workflow.source.path },
+          {
+            workflowLoader: {
+              loadOnce: vi.fn(async () => workflow),
+              start: vi.fn(async () => ({
+                stop: vi.fn(async () => undefined),
+              })),
+              render: vi.fn(() => "prompt"),
+            },
+            createGitLab: vi.fn(async () => createFakeGitLab()),
+            createServer: vi.fn(async (_deps: ServerDeps) => createFakeServer()),
+            startLoop: vi.fn(() => ({
+              tick: vi.fn(async () => undefined),
+              stop: vi.fn(async () => undefined),
+            })),
+            state: createRuntimeState(),
+          },
+        );
+        try {
+          expect(mockedCreateCoordinator).toHaveBeenCalledTimes(1);
+          const opts: CreateCoordinatorOptions =
+            mockedCreateCoordinator.mock.calls[0]![0]!;
+          const agents = opts.agents;
+
+          const tePipelineRun = makePipelineRun();
+          const teResult = await agents.testEvidence.run({
             workItem: sampleWorkItem,
             task: sampleTask,
-            pipelineRun: makePipelineRun(),
+            pipelineRun: tePipelineRun,
             profile: {
               role: "test_evidence",
               roleProfileId: "test_evidence@abcdef0",
@@ -481,20 +727,90 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
               timeoutSeconds: undefined,
               tokenScopeRequirements: undefined,
             },
+          });
+          // 4c 真正的成功路径：scanner-snapshot 看见 evidenceDir 有内容
+          // → item.status="collected" + artifactPath=evidenceDir →
+          // agent 把 final status 翻成 "complete"（test-evidence.ts:204）。
+          // 把 daemon.ts 里的 testEvidence wiring revert 成
+          // `throw CoordinatorError(..., "agent_not_configured")` 后，
+          // 这里 `agents.testEvidence.run(...)` 会 reject，整个用例必红。
+          expect(teResult.kind).toBe("report");
+          if (teResult.kind !== "report") return;
+          expect(teResult.report.status).toBe("complete");
+          expect(teResult.report.role).toBe("test_evidence");
+          expect(teResult.report.pipelineRunId).toBe(
+            tePipelineRun.pipelineRunId,
+          );
+          expect(teResult.report.lastError).toBeUndefined();
+          const items = teResult.report.testEvidence.evidenceItems;
+          expect(items.length).toBe(1);
+          expect(items[0]?.status).toBe("collected");
+          expect(items[0]?.source).toBe("scanner");
+          expect(items[0]?.artifactPath).toBe(evidenceDir);
+          // evidenceLinks 顶层聚合应当复用 artifactPath（agent 行为契约）。
+          expect(teResult.report.evidenceLinks).toEqual([evidenceDir]);
+        } finally {
+          await daemon.stop();
+        }
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("testEvidence rejects non-test_evidence profile with role_profile_invalid", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "ip-task4c-profile-"),
+    );
+    try {
+      const workflow = await buildWorkflowWithTemplates(root);
+      const daemon = await startDaemon(
+        { workflowPath: workflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => workflow),
+            start: vi.fn(async () => ({
+              stop: vi.fn(async () => undefined),
+            })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => createFakeGitLab()),
+          createServer: vi.fn(async (_deps: ServerDeps) => createFakeServer()),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => undefined),
+            stop: vi.fn(async () => undefined),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+      try {
+        const opts: CreateCoordinatorOptions =
+          mockedCreateCoordinator.mock.calls[0]![0]!;
+        // 故意送一个 coder profile：daemon 的 narrow guard 必须把这条
+        // 误用打成 `role_profile_invalid`，而不是把 coder profile 透给
+        // testEvidenceAgent（会爆 evidenceDir / collectors 错位）。
+        await expect(
+          opts.agents.testEvidence.run({
+            workItem: sampleWorkItem,
+            task: sampleTask,
+            pipelineRun: makePipelineRun(),
+            profile: {
+              role: "coder" as never,
+              roleProfileId: "coder@abcdef0",
+              prompt: "do",
+              promptTemplateHash: "abcdef0123",
+              sandbox: "read_write_worktree",
+              toolAllow: [],
+              timeoutSeconds: undefined,
+              tokenScopeRequirements: undefined,
+            },
           }),
         ).rejects.toMatchObject({
           name: "CoordinatorError",
-          code: "agent_not_configured",
+          code: "role_profile_invalid",
         });
-
-        const coderProfile = await opts.roleProfileResolver.resolveRoleProfile(
-          "coder",
-          { workItem: sampleWorkItem, task: sampleTask },
-        );
-        expect(coderProfile?.role).toBe("coder");
-        expect(coderProfile?.prompt).toContain(sampleTask.title);
       } finally {
-        await handle.stop();
+        await daemon.stop();
       }
     } finally {
       await fs.rm(root, { recursive: true, force: true });

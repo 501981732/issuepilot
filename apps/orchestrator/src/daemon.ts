@@ -56,7 +56,9 @@ import {
   createCoderLifecycle,
   createReviewerLifecycle,
 } from "./agents/codex-lifecycle.js";
+import { collectorsForTask } from "./agents/evidence-collectors.js";
 import { createReviewerAgent } from "./agents/reviewer.js";
+import { createTestEvidenceAgent } from "./agents/test-evidence.js";
 import { splitCommand } from "./codex/split-command.js";
 import { revokeReviewerMrComments as revokeReviewerMrCommentsHelper } from "./gitlab/mr-comments.js";
 import { createImprovementService } from "./improvements/service.js";
@@ -94,6 +96,7 @@ import {
   buildRoleProfile,
   type CoderRoleProfile,
   type ReviewerRoleProfile,
+  type TestEvidenceRoleProfile,
 } from "./pipelines/role-profile.js";
 import { createPipelineService } from "./pipelines/service.js";
 import { createPipelineStore, type PipelineStore } from "./pipelines/store.js";
@@ -608,6 +611,35 @@ export async function startDaemon(
     }): string =>
       `${workflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
 
+    /**
+     * V4.6 follow-up Task 4c — `publishLifecycleEvent` 接受 lifecycle
+     * adapter 透回来的 ctx，把 `issueIid` + `taskId` + `role` 写进
+     * `event.detail`，让 `publishEvent`（daemon.ts:884-922）能从
+     * `event.detail.issueIid` 解出 (projectSlug, issueIid) 真把事件
+     * 落到 eventStore；`runId` 也由占位升级为 task 粒度，dashboard 可
+     * 按 task / pipelineRunId 过滤。pipelineRunId 来自 closure 透传
+     * （adapter 没暴露 pipelineRun，但 daemon 装配层在每次 V4.6 agent
+     * run 时已经拿得到 input.pipelineRun.pipelineRunId）。
+     */
+    const publishLifecycleEvent = (input: {
+      role: "coder" | "reviewer" | "test_evidence";
+      type: string;
+      data: unknown;
+      workItem: WorkItem;
+      task: TaskNode;
+    }): void => {
+      publishEvent({
+        type: `codex_v46_${input.role}_${input.type}`,
+        runId: `pipeline-${input.task.taskId}-${input.role}`,
+        ts: new Date().toISOString(),
+        detail: {
+          data: input.data,
+          issueIid: input.workItem.sourceIssue.iid,
+          taskId: input.task.taskId,
+          role: input.role,
+        },
+      });
+    };
     const coderLifecycle = createCoderLifecycle({
       codex: workflow.codex,
       maxTurns: workflow.agent.maxTurns,
@@ -616,16 +648,13 @@ export async function startDaemon(
       // dispatch path 已经在 `runAgent` 闭包里直接调 GitLab，V4.6
       // pipeline 还没接 worktree / MR 创建链路，下一个 follow-up
       // 再把 createGitLabTools 接上来。
-      onEvent: (type, data) =>
-        publishEvent({
-          type: `codex_v46_coder_${type}`,
-          // V4.6 pipeline 在这一层 scope 里没有 runId（PipelineRun.id
-          // 在 coordinator 内部生成），先用占位 runId 把事件落到固定
-          // bucket。AgentReport 自身仍然携带 canonical pipelineRunId
-          // / agentReportId / taskId，所以审计链路完整。
-          runId: "pipeline-coder",
-          ts: new Date().toISOString(),
-          detail: { data },
+      onEvent: (type, data, ctx) =>
+        publishLifecycleEvent({
+          role: "coder",
+          type,
+          data,
+          workItem: ctx.workItem,
+          task: ctx.task,
         }),
     });
 
@@ -633,17 +662,44 @@ export async function startDaemon(
       codex: workflow.codex,
       maxTurns: workflow.agent.maxTurns,
       threadName: threadNameFor,
-      onEvent: (type, data) =>
-        publishEvent({
-          type: `codex_v46_reviewer_${type}`,
-          runId: "pipeline-reviewer",
-          ts: new Date().toISOString(),
-          detail: { data },
+      onEvent: (type, data, ctx) =>
+        publishLifecycleEvent({
+          role: "reviewer",
+          type,
+          data,
+          workItem: ctx.workItem,
+          task: ctx.task,
         }),
     });
 
     const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
     const reviewerAgent = createReviewerAgent({ lifecycle: reviewerLifecycle });
+    /**
+     * V4.6 follow-up Task 4c — test_evidence agent 接入真实
+     * collectors。`createTestEvidenceAgent` 自身不挂 Codex（spec §8.2 /
+     * §16.1：test_evidence 用 evidence collectors 路径，不必再起一次
+     * lifecycle），所以这里直接 new agent + 在 pipelineAgents.testEvidence
+     * 的 adapter 里按 task 注入 evidenceDir + collectors。
+     *
+     * evidenceDir 与 V4.5 `scanRunEvidence` 共享 `.issuepilot/evidence/`
+     * 父目录，但 partition 方式不同：V4.5 按 runId 切
+     * (`<taskWorktreePath>/.issuepilot/evidence/<runId>`)，V4.6 这里按
+     * taskId 切 (`<workspace.root>/<projectSlug>/<issueIid>/.issuepilot/
+     * evidence/<taskId>`)。前序 V4.5 dispatch / coder 写到 runId 子目录
+     * 的产物不会被本 collector 自动扫到 —— V4.6 默认 layout 的目标是给
+     * V4.6 自己的 evidence 产物留位（V4.7 接入 ensureWorktree 后 coder
+     * agent 会直接写到这里）。
+     */
+    const testEvidenceAgent = createTestEvidenceAgent({});
+    const evidenceDirFor = (workItem: WorkItem, task: TaskNode): string =>
+      path.join(
+        workflow.workspace.root,
+        slugify(workflow.tracker.projectId),
+        String(workItem.sourceIssue.iid),
+        ".issuepilot",
+        "evidence",
+        task.taskId,
+      );
 
     /**
      * Coordinator 的 `AgentRunInput` 不含 `cwd`（worktree path 是 daemon
@@ -708,15 +764,25 @@ export async function startDaemon(
         },
       },
       testEvidence: {
-        // Task 4c 会接 test_evidence agent；本次仍保留 typed stub。
-        async run(): Promise<
+        async run(input): Promise<
           | { kind: "report"; report: TestEvidenceAgentReport }
           | { kind: "cancelled"; cancelledAt: string }
         > {
-          throw new CoordinatorError(
-            "V4.6 test_evidence agent runner is not wired on this daemon yet",
-            "agent_not_configured",
-          );
+          if (input.profile.role !== "test_evidence") {
+            throw new CoordinatorError(
+              `test_evidence agent received non-test_evidence profile: ${input.profile.role}`,
+              "role_profile_invalid",
+            );
+          }
+          const teProfile: TestEvidenceRoleProfile = input.profile;
+          return testEvidenceAgent.run({
+            workItem: input.workItem,
+            task: input.task,
+            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+            profile: teProfile,
+            evidenceDir: evidenceDirFor(input.workItem, input.task),
+            collectors: collectorsForTask(input.task),
+          });
         },
       },
     };
@@ -899,13 +965,30 @@ export async function startDaemon(
       );
     const record = toEventRecord({ ...event, issue });
     eventBus.publish(record);
+    // V4.6 follow-up Task 4c review: lifecycle events from
+    // createCoderLifecycle / createReviewerLifecycle ride synthetic
+    // runIds (`pipeline-<taskId>-<role>`) that never enter runIndex
+    // and never have a state.runs entry — those runs are coordinator-
+    // owned, not V4.5 dispatch-owned. Without consulting
+    // `event.detail.issueIid` / `iid` (the same fields the issue
+    // hydrator above already reads) the gate would short-circuit and
+    // `eventStore.append` would silently drop every codex_v46_*
+    // event. Accept any finite positive integer; non-numeric / 0 /
+    // negative values still bail out, matching the pre-4c behavior.
+    const detailIidRaw = event.detail["issueIid"] ?? event.detail["iid"];
+    const detailIid =
+      typeof detailIidRaw === "number" ||
+      (typeof detailIidRaw === "string" && detailIidRaw !== "")
+        ? Number(detailIidRaw)
+        : NaN;
     const issueIid =
       existing?.issueIid ??
       (typeof run?.["issue"] === "object" &&
       run["issue"] !== null &&
       "iid" in run["issue"]
         ? Number((run["issue"] as { iid: unknown }).iid)
-        : undefined);
+        : undefined) ??
+      (Number.isFinite(detailIid) && detailIid > 0 ? detailIid : undefined);
     if (!issueIid || !Number.isFinite(issueIid)) return;
     const key = existing ?? runKey(workflow, issueIid);
     runIndex.set(record.runId, key);

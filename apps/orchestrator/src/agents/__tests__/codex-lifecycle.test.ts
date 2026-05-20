@@ -4,7 +4,11 @@
  * 与 finally close 行为符合契约（V4.6 follow-up Critical 1 part 1/3）。
  */
 
-import type { TaskNode, WorkItem } from "@issuepilot/shared-contracts";
+import type {
+  AgentRole,
+  TaskNode,
+  WorkItem,
+} from "@issuepilot/shared-contracts";
 import type { WorkflowConfig } from "@issuepilot/workflow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -329,6 +333,99 @@ describe("onTurnActive 透传", () => {
     expect(driveInputWithout && "onTurnActive" in driveInputWithout).toBe(
       false,
     );
+  });
+});
+
+describe("onEvent ctx 透传（Task 4c）", () => {
+  it("把 daemon 注入的 3-arg onEvent 适配成 driveLifecycle 的 2-arg 签名，ctx 中带 workItem/task/role", async () => {
+    const rpc = makeFakeRpc();
+    mockedSpawn.mockReturnValue(rpc as never);
+
+    // 让 driveLifecycle 主动触发一次 onEvent('task_started', { x: 1 })，
+    // 再回 completed。adapter 必须在 lifecycle 调用其 2-arg onEvent 时
+    // 把 ctx 透给 daemon 注入的 3-arg 闭包。
+    mockedDrive.mockImplementation(async (input) => {
+      input.onEvent("task_started", { x: 1 });
+      return {
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn_ctx",
+        threadId: "th_ctx",
+      };
+    });
+
+    const captured: Array<{
+      type: string;
+      data: unknown;
+      ctxRole: AgentRole;
+      ctxIid: number;
+      ctxTaskId: string;
+    }> = [];
+    const onEvent: NonNullable<CodexLifecycleOptions["onEvent"]> = (
+      type,
+      data,
+      ctx,
+    ) =>
+      captured.push({
+        type,
+        data,
+        ctxRole: ctx.role,
+        ctxIid: ctx.workItem.sourceIssue.iid,
+        ctxTaskId: ctx.task.taskId,
+      });
+
+    const coderRunner = createCoderLifecycle({ ...baseOpts(), onEvent });
+    await coderRunner.run(RUN_INPUT);
+
+    const reviewerRunner = createReviewerLifecycle({
+      ...baseOpts(),
+      onEvent,
+    });
+    await reviewerRunner.run({
+      profile: { roleProfileId: "reviewer@x" } as never,
+      prompt: "review",
+      cwd: "/tmp/wt",
+      workItem: WORKITEM,
+      task: TASK,
+    });
+
+    expect(captured).toEqual([
+      {
+        type: "task_started",
+        data: { x: 1 },
+        ctxRole: "coder",
+        ctxIid: WORKITEM.sourceIssue.iid,
+        ctxTaskId: TASK.taskId,
+      },
+      {
+        type: "task_started",
+        data: { x: 1 },
+        ctxRole: "reviewer",
+        ctxIid: WORKITEM.sourceIssue.iid,
+        ctxTaskId: TASK.taskId,
+      },
+    ]);
+  });
+
+  it("未传 onEvent 时 adapter 给 driveLifecycle 一个 no-op，不抛错", async () => {
+    const rpc = makeFakeRpc();
+    mockedSpawn.mockReturnValue(rpc as never);
+    mockedDrive.mockImplementation(async (input) => {
+      // 模拟 lifecycle 在没人订阅事件时也会触发 onEvent —— adapter 必须
+      // 提供 noop fallback，不能让 lifecycle 调到 undefined。
+      input.onEvent("turn_started", { y: 2 });
+      return {
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn_noop",
+        threadId: "th_noop",
+      };
+    });
+
+    const coderRunner = createCoderLifecycle(baseOpts());
+    await expect(coderRunner.run(RUN_INPUT)).resolves.toMatchObject({
+      kind: "completed",
+    });
   });
 });
 

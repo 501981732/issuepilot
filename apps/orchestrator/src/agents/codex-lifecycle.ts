@@ -84,8 +84,21 @@ export interface CodexLifecycleOptions {
   tools?: () => ToolSchema[];
   /** 测试用：注入时钟（决定 cancelled outcome 的 `cancelledAt`）。 */
   now?: () => string;
-  /** 测试用：转发 lifecycle event。默认 no-op，匹配 daemon 当前行为。 */
-  onEvent?: (type: string, data?: unknown) => void;
+  /**
+   * 转发 lifecycle event。默认 no-op，匹配 daemon 当前行为。
+   *
+   * V4.6 follow-up Task 4c：`ctx` 把当前 `run()` 的 `workItem` / `task` /
+   * `role` 透到 daemon 的 `publishEvent` 闭包里，让 detail 能携带
+   * `issueIid` + `pipelineRunId`（由 daemon 通过 closure 决定）+
+   * `taskId`，event store append 链路才能真正落库（详见
+   * `daemon.ts:884-922`）。adapter 本身保持纯翻译，没有读取 ctx —
+   * 这是 daemon wiring 层的可观测性扩展点。
+   */
+  onEvent?: (
+    type: string,
+    data: unknown,
+    ctx: { workItem: WorkItem; task: TaskNode; role: AgentRole },
+  ) => void;
   /**
    * 透传到 `driveLifecycle.onTurnActive`：daemon 当前在
    * daemon.ts:1285-1286 用它把 `cancelTurn` 注册到 `runCancelRegistry`，
@@ -188,6 +201,18 @@ const runLifecycle = async (
 ): Promise<DriveResult> => {
   const cmd = splitCommand(opts.codex.command);
   const rpc = spawnRpc({ ...cmd, cwd: input.cwd });
+  // 把 daemon 注入的 3-arg `onEvent` 适配成 `driveLifecycle` 期待的
+  // 2-arg 签名：在每次 lifecycle event 触发时把当前 `run()` 的
+  // workItem / task / role 透回去，无 daemon 注入时退化为 no-op。
+  const lifecycleOnEvent = opts.onEvent;
+  const onEvent = lifecycleOnEvent
+    ? (type: string, data?: unknown): void =>
+        lifecycleOnEvent(type, data, {
+          workItem: input.workItem,
+          task: input.task,
+          role,
+        })
+    : (): void => {};
   try {
     return await driveLifecycle({
       rpc,
@@ -205,7 +230,7 @@ const runLifecycle = async (
       turnSandboxPolicy: opts.codex.turnSandboxPolicy,
       turnTimeoutMs: opts.codex.turnTimeoutMs,
       tools: opts.tools ? opts.tools() : [],
-      onEvent: opts.onEvent ?? (() => {}),
+      onEvent,
       // `exactOptionalPropertyTypes` 下不能直接传 `undefined`，必须条件展开。
       ...(opts.onTurnActive ? { onTurnActive: opts.onTurnActive } : {}),
     });

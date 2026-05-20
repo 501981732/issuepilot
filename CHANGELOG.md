@@ -57,6 +57,125 @@
 
 ### Added
 
+- 2026-05-20 — **V4.6 follow-up Critical #1 part 3/3（单 daemon + team
+  daemon 接通 V4.6 test_evidence agent，移除最后一个
+  `agent_not_configured` stub）**：把 4a/4b 落地的
+  `createTestEvidenceAgent` 真正接到 `apps/orchestrator/src/daemon.ts`
+  和 `apps/orchestrator/src/team/daemon.ts` 的 V4.6 pipeline 装配块。
+  这之前两条 daemon 在 V4.6 pipeline 组装时把
+  `CoordinatorAgents.testEvidence` 打成
+  `CoordinatorError(..., "agent_not_configured")` 抛错 stub，导致 V4.6
+  pipeline 走到 reviewer 之后无法继续；4c 收口后 V4.6 multi-agent
+  pipeline 在单 + team 两条 daemon 上都不再有任何 stub。
+  - 新增 `apps/orchestrator/src/agents/evidence-collectors.ts`：导出
+    `createDefaultEvidenceCollectors()` / `collectorsForTask(task)`。
+    当前默认 collector 只有一条 `scanner-snapshot`：检查
+    `<evidenceDir>` 是否存在且非空——存在产物则 emit
+    `{kind:"command_output", target:"evidence-scanner",
+    source:"scanner", status:"collected", artifactPath:evidenceDir}`，
+    缺失则 emit `status:"skipped"`。诚实可落地的 4c 默认行为：把
+    V4.5 dispatch 路径已经写到 `<workspace.root>/<projectSlug>/
+    <issueIid>/.issuepilot/evidence/<taskId>` 的产物聚合成一条
+    evidence item，dashboard 能跳转 artifactPath；per-file 切片留给
+    V4.7（agent 协议需要扩 `CollectorOutcome | CollectorOutcome[]`
+    才能 emit 多条 item）。
+  - `daemon.ts` / `team/daemon.ts` 装 `createTestEvidenceAgent({})` 并
+    在 `pipelineAgents.testEvidence` 的 adapter 里：narrow profile 成
+    `TestEvidenceRoleProfile`（runtime guard +
+    `CoordinatorError("role_profile_invalid")`）、按 task 算
+    `evidenceDir` 路径（与 V4.5 `scanRunEvidence` 输出一致）、调
+    `collectorsForTask(task)` 拿默认 collector 集，再把
+    `testEvidenceAgent.run(...)` 的 `kind: "report"` / `kind:
+    "cancelled"` 结构直接当成 `AgentRunResult` 返回。
+  - **lifecycle adapter `onEvent` 扩成 3-arg**：
+    `CodexLifecycleOptions.onEvent: (type, data, ctx: { workItem, task,
+    role }) => void`。daemon 闭包之前用占位 `runId:
+    "pipeline-coder" / "pipeline-reviewer"` 调 `publishEvent`，
+    `daemon.ts:884-922` 里 `event.detail.issueIid` 找不到、
+    `runIndex.get(runId)` 也找不到→eventStore.append 直接 skip。4c 让
+    daemon 闭包从 ctx 取 `workItem.sourceIssue.iid` / `task.taskId` /
+    `role`，写入 `event.detail` 并把 `runId` 升级为
+    `pipeline-<taskId>-<role>`：eventStore 现在能真正落库，dashboard
+    可按 task / role 过滤 codex_v46_* 事件。team-mode 同理把 ctx
+    字段写到 `event.detail` 让 SSE consumer 能 fan-out。
+  - 测试：
+    - `agents/__tests__/codex-lifecycle.test.ts` 新增 2 条 describe
+      （`onEvent ctx 透传（Task 4c）`）：(a) 用 fake
+      `driveLifecycle` 主动触发 `input.onEvent('task_started', …)`，
+      断言 adapter 把 ctx 透到 daemon 注入的 3-arg 闭包，coder /
+      reviewer 各一次；(b) 未传 onEvent 时 adapter 给 lifecycle 一个
+      no-op，不抛错。
+    - `__tests__/daemon-task4b-wiring.test.ts` 把现有 4b 两条用例的
+      testEvidence 断言从「rejects `agent_not_configured`」改成
+      「resolves report + role + pipelineRunId + 至少 1 条 evidence
+      item」；并新增 `Task 4c — V4.6 daemon testEvidence wiring (C1
+      part 3/3)` describe，2 条用例：(a) 预先在 evidenceDir 写一个
+      `playwright.zip` dummy，断言 report.status="complete" +
+      items[0].status="collected" + `evidenceLinks=[evidenceDir]`；
+      (b) 故意送 coder profile 断言 narrow guard 翻成
+      `role_profile_invalid` 而不是把脏 profile 透给 agent。
+  - 验证：`scripts/ci-equivalent-check.sh`（SKIP_E2E=1）全 5 个 stage
+    通过：`tsc -b` clean、`tsc -p scripts/tsconfig.json` clean、`next
+    build` clean、`eslint --max-warnings 0` clean、orchestrator
+    vitest 78 文件 / 915 用例全绿、dashboard vitest 44 文件 / 277 用例
+    全绿、`git diff --check` clean。
+  - Review 修复（2026-05-20 commit amend，原 SHA `bf1e360`）：
+    - **Block 1（publishEvent gate 漏掉 codex_v46_* 事件）**：
+      `daemon.ts` `publishEvent` 的 issueIid 解析链原本只读
+      `runIndex.get(record.runId)` / `state.getRun(record.runId)`，
+      合成 runId `pipeline-<taskId>-<role>` 永远不在 map 里，导致
+      gate 在 `!issueIid` 处短路、`eventStore.append` 被静默跳过。
+      把 `event.detail.issueIid` / `event.detail.iid` 加入解析链
+      （仅接受 finite 正整数，复用上面 `fallbackEventIssue` 已经在
+      读的同一对字段），现在 codex_v46_* 事件真正落到
+      `<workspace.root>/.issuepilot/events/<projectSlug>-<iid>.jsonl`。
+      `team/daemon.ts` 没有自己的 eventStore append（事件统一走
+      `eventBus.publish`），同源 bug 不存在，仅在注释中标注。
+    - 回归测试：`__tests__/daemon-task4b-wiring.test.ts` 新增
+      `Task 4c review — publishEvent gate accepts detail.issueIid`
+      describe，真起 daemon、用 mocked driveLifecycle 触发
+      `onEvent("task_started", ...)`，轮询读 jsonl 文件断言
+      `type=codex_v46_coder_task_started` + 顶层
+      `issueIid` / `taskId` / `role` / `runId` /
+      `issue.iid` 字段全部正确（toEventRecord 把 detail flatten
+      到顶层；fallbackEventIssue 重建 issue 字段）。把 daemon.ts
+      gate 改动 stash 掉后这条测试必红 —— 已现场验证。
+    - **Block 2（empty evidenceDir → testEvidence failed）**：
+      之前 `scanner-snapshot` 在 evidenceDir 不存在 / 为空时 emit
+      `{kind:"item", status:"skipped"}`，agent 会把 final status
+      翻成 `failed` + `evidence_unavailable`（`test-evidence.ts:
+      189-204` 的 `allFailed = items.length > 0 && !hasCollected`
+      逻辑）。从 dashboard 看，「首跑还没攒证据」与「证据收集真的
+      失败」无法区分，UX 与保留 `agent_not_configured` 几乎等价。
+      修复：`agents/test-evidence.ts` `CollectorOutcome` 加一个
+      `{ kind: "noop" }` variant，agent 循环 `if (out.kind ===
+      "noop") continue;` 直接跳过；`scanner-snapshot` 在 evidenceDir
+      不存在 / 为空时 emit `{kind:"noop"}`。现在首跑 testEvidence
+      正确落 `status="complete"` + `evidenceItems=[]`。
+      测试：`agents/__tests__/test-evidence.test.ts` 新增 2 条
+      用例（混合 noop + collected 时 noop 被跳过；纯 noop 时
+      items.length===0 + status=complete）；`daemon-task4b-wiring.
+      test.ts` 把 4b 单 + team daemon 的「empty evidenceDir」断言
+      从 `status="failed" + evidence_unavailable` 改成
+      `status="complete" + evidenceItems=[]`；Task 4c collected
+      branch 测试不变（dummy file → status=complete + items[0].
+      status="collected" + artifactPath=evidenceDir）。
+    - **Nit（evidenceDirFor 注释失真）**：之前注释「与 V4.5
+      `scanRunEvidence` 输出路径一致」事实上不对，V4.5 按 runId
+      切 (`<taskWorktreePath>/.issuepilot/evidence/<runId>`)，V4.6
+      按 taskId 切 (`<workspace.root>/<projectSlug>/<issueIid>/
+      .issuepilot/evidence/<taskId>`)。两条 daemon 的 evidenceDirFor
+      注释已校正为「共享 `.issuepilot/evidence/` 父目录；V4.5
+      按 runId partition，V4.6 按 taskId partition」。
+  - 已知折中（TODO V4.7，源码注释已标注）：(a) 默认 collector 只
+    在有产物时 emit 一条快照式 evidence item；要 per-file 必须扩
+    agent `CollectorOutcome` 协议为 batch outcome（plan note 已
+    允许，但跨契约改动留给 V4.7）。(b) lifecycle adapter 仍未捕获
+    reviewer 的最终 message，4b 注释里的 `parse_failed` 现状不变。
+    (c) test_evidence agent 没有 codex lifecycle，所以暂时不需要
+    ctx threading；当未来 test_evidence 改成挂 lifecycle 时，4c
+    这套 adapter 已经把 ctx 通路开好。
+
 - 2026-05-20 — **V4.6 follow-up Critical #1 part 2/3（单 daemon + team
   daemon 接通 V4.6 coder + reviewer agents）**：把 4a 落地的
   `createCoderLifecycle` / `createReviewerLifecycle` 真正接到

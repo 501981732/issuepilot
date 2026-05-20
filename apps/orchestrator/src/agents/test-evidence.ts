@@ -42,7 +42,18 @@ export interface CollectorInput {
 export type CollectorOutcome =
   | { kind: "item"; item: TestEvidenceItem }
   | { kind: "baseline"; baseline: TestEvidenceBaseline }
-  | { kind: "cancel"; cancelledAt: string };
+  | { kind: "cancel"; cancelledAt: string }
+  /**
+   * V4.6 follow-up Task 4c review: collector executed but had nothing
+   * to contribute (typical: scanner-snapshot on a worktree where the
+   * prior agents haven't produced any evidence yet). Agent loop skips
+   * the outcome entirely so it does NOT inflate `items.length` and
+   * trip the `allFailed` branch (`items.length > 0 && !hasCollected`).
+   * The honest pipeline state in that case is `status = "complete"`
+   * with `evidenceItems = []` — exactly what an empty collector run
+   * should look like, not `evidence_unavailable`.
+   */
+  | { kind: "noop" };
 
 export interface EvidenceCollector {
   /** 用于日志 / SandboxViolationError 上下文。 */
@@ -135,6 +146,11 @@ export const createTestEvidenceAgent = (deps: {
           });
           if (out.kind === "cancel") {
             return { kind: "cancelled", cancelledAt: out.cancelledAt };
+          }
+          if (out.kind === "noop") {
+            // Collector explicitly opted out — skip without recording
+            // an item/baseline.
+            continue;
           }
           if (out.kind === "item") {
             items.push(out.item);

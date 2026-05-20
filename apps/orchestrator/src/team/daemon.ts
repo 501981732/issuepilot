@@ -18,7 +18,9 @@ import {
   createCoderLifecycle,
   createReviewerLifecycle,
 } from "../agents/codex-lifecycle.js";
+import { collectorsForTask } from "../agents/evidence-collectors.js";
 import { createReviewerAgent } from "../agents/reviewer.js";
+import { createTestEvidenceAgent } from "../agents/test-evidence.js";
 import { createImprovementService } from "../improvements/service.js";
 import { createImprovementStore } from "../improvements/store.js";
 import {
@@ -31,6 +33,7 @@ import {
   buildRoleProfile,
   type CoderRoleProfile,
   type ReviewerRoleProfile,
+  type TestEvidenceRoleProfile,
 } from "../pipelines/role-profile.js";
 import {
   createPipelineService,
@@ -365,49 +368,88 @@ export async function startTeamDaemon(
         role: "coder" | "reviewer" | "test_evidence";
       }): string =>
         `${projectWorkflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
+      /**
+       * V4.6 follow-up Task 4c —— lifecycle adapter `onEvent` 现在带 ctx
+       * （workItem / task / role），让 team-mode event envelope 也能带上
+       * issueIid + taskId + role；与单 daemon 的 `publishEvent` 落库链路
+       * 不同（team-mode 没有共享 eventStore，所有事件统一走 `eventBus.publish`
+       * 给 `/api/state` 路由），所以这里只是把 ctx 字段透到 detail，
+       * dashboard 侧可以过滤、聚合。
+       */
       const publishLifecycleEvent = (input: {
+        role: "coder" | "reviewer" | "test_evidence";
         type: string;
-        runId: string;
         data: unknown;
+        workItem: WorkItem;
+        task: TaskNode;
       }): void => {
         const ts = new Date().toISOString();
         eventBus.publish({
           id: randomUUID(),
-          runId: input.runId,
-          type: input.type,
-          message: input.type,
+          runId: `pipeline-${input.task.taskId}-${input.role}`,
+          type: `codex_v46_${input.role}_${input.type}`,
+          message: `codex_v46_${input.role}_${input.type}`,
           createdAt: ts,
           ts,
           data: input.data,
-          detail: { project: project.id, data: input.data },
+          detail: {
+            project: project.id,
+            data: input.data,
+            issueIid: input.workItem.sourceIssue.iid,
+            taskId: input.task.taskId,
+            role: input.role,
+          },
         } as unknown as TeamEvent);
       };
       const coderLifecycle = createCoderLifecycle({
         codex: projectWorkflow.codex,
         maxTurns: projectWorkflow.agent.maxTurns,
         threadName: threadNameFor,
-        onEvent: (type, data) =>
+        onEvent: (type, data, ctx) =>
           publishLifecycleEvent({
-            type: `codex_v46_coder_${type}`,
-            runId: "pipeline-coder",
+            role: "coder",
+            type,
             data,
+            workItem: ctx.workItem,
+            task: ctx.task,
           }),
       });
       const reviewerLifecycle = createReviewerLifecycle({
         codex: projectWorkflow.codex,
         maxTurns: projectWorkflow.agent.maxTurns,
         threadName: threadNameFor,
-        onEvent: (type, data) =>
+        onEvent: (type, data, ctx) =>
           publishLifecycleEvent({
-            type: `codex_v46_reviewer_${type}`,
-            runId: "pipeline-reviewer",
+            role: "reviewer",
+            type,
             data,
+            workItem: ctx.workItem,
+            task: ctx.task,
           }),
       });
       const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
       const reviewerAgent = createReviewerAgent({
         lifecycle: reviewerLifecycle,
       });
+      /**
+       * V4.6 follow-up Task 4c — test_evidence agent + 默认 scanner
+       * collector：与单 daemon 同款 evidenceDir layout，per-project
+       * 落到 `<project.workspace.root>/<projectSlug>/<issueIid>/
+       * .issuepilot/evidence/<taskId>`，严格不跨 project 漂移。共享
+       * V4.5 `scanRunEvidence` 的 `.issuepilot/evidence/` 父目录，但
+       * partition 方式不同：V4.5 按 runId 切，V4.6 按 taskId 切；细节
+       * 见 daemon.ts 的同款注释。
+       */
+      const testEvidenceAgent = createTestEvidenceAgent({});
+      const evidenceDirFor = (workItem: WorkItem, task: TaskNode): string =>
+        path.join(
+          projectWorkflow.workspace.root,
+          slugify(projectWorkflow.tracker.projectId),
+          String(workItem.sourceIssue.iid),
+          ".issuepilot",
+          "evidence",
+          task.taskId,
+        );
       /**
        * V4.6 follow-up Task 4b — reviewer publisher 故意不注入到
        * CoordinatorAgents：`publishReviewerToMr` 需要 `MrRef` 携带
@@ -463,15 +505,25 @@ export async function startTeamDaemon(
           },
         },
         testEvidence: {
-          // Task 4c 会接 test_evidence agent；本次仍保留 typed stub。
-          async run(): Promise<
+          async run(input): Promise<
             | { kind: "report"; report: TestEvidenceAgentReport }
             | { kind: "cancelled"; cancelledAt: string }
           > {
-            throw new CoordinatorError(
-              "V4.6 test_evidence agent runner is not wired on team-mode yet",
-              "agent_not_configured",
-            );
+            if (input.profile.role !== "test_evidence") {
+              throw new CoordinatorError(
+                `test_evidence agent received non-test_evidence profile: ${input.profile.role}`,
+                "role_profile_invalid",
+              );
+            }
+            const teProfile: TestEvidenceRoleProfile = input.profile;
+            return testEvidenceAgent.run({
+              workItem: input.workItem,
+              task: input.task,
+              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+              profile: teProfile,
+              evidenceDir: evidenceDirFor(input.workItem, input.task),
+              collectors: collectorsForTask(input.task),
+            });
           },
         },
       };

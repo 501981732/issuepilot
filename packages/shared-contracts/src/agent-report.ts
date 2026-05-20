@@ -9,8 +9,14 @@
  * round-trip JSON 必须保留 shape。lastError.code 是 V4.6 在 orchestrator /
  * dashboard / V4.4 quality / V4.5 improvement 之间共享的单一 truth source。
  *
+ * V4.7 在 AgentReport 上新增 `runnerId` / `runnerKind` / `runnerRunId` 三个
+ * runner trace 字段；具体语义见 runner 契约
+ * (`runner.ts`) 与 `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
+ *
  * Source: docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md
  */
+
+import { isRunnerKind, type RunnerKind } from "./runner.js";
 
 /** spec §8.2：三个 agent 角色，严格 snake_case。 */
 export const AGENT_ROLE_VALUES = ["coder", "reviewer", "test_evidence"] as const;
@@ -91,6 +97,15 @@ export interface AgentReportBase {
   role: AgentRole;
   /** workflow YAML `roles.<role>` 的稳定 ID。 */
   roleProfileId: string;
+  /**
+   * V4.7 runner trace：`runnerId` 是 workflow `runners:` 中声明的 id，
+   * `runnerKind` 是该 runner 的实现 kind，`runnerRunId` 是 runner adapter
+   * 返回的 `RunnerResult.runId`（registry 未命中或 runner 未启动时为
+   * null / undefined）。
+   */
+  runnerId: string;
+  runnerKind: RunnerKind;
+  runnerRunId?: string | null;
   status: AgentReportStatus;
   startedAt: string;
   completedAt?: string;
@@ -294,6 +309,11 @@ const hasCommonAgentReportFields = (
   typeof value.taskId === "string" &&
   isAgentRole(value.role) &&
   typeof value.roleProfileId === "string" &&
+  typeof value.runnerId === "string" &&
+  isRunnerKind(value.runnerKind) &&
+  (value.runnerRunId === undefined ||
+    value.runnerRunId === null ||
+    typeof value.runnerRunId === "string") &&
   isAgentReportStatus(value.status) &&
   typeof value.startedAt === "string" &&
   Array.isArray(value.evidenceLinks) &&

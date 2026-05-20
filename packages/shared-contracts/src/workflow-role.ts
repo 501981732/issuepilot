@@ -71,6 +71,12 @@ export const isReviewerSeverityThreshold = (
 /** spec §10：所有角色共用的 base config（YAML 已映射成 camelCase）。 */
 export interface WorkflowRoleConfigBase {
   role: AgentRole;
+  /**
+   * V4.7 runner contract：YAML `roles.<role>.runner` 必须引用顶层 `runners:`
+   * registry 中的一个 id。parser 缺省填 `codex_app_server`，resolver
+   * 再做 capability 校验。
+   */
+  runner: string;
   promptTemplate: string;
   /**
    * Resolve 阶段计算并填入的 prompt template sha256。orchestrator 在
@@ -281,8 +287,14 @@ export const parseRoleConfig = (input: {
     tokenScopeRequirements = [...raw.token_scope_requirements];
   }
 
+  const runner =
+    typeof raw.runner === "string" && raw.runner.length > 0
+      ? raw.runner
+      : "codex_app_server";
+
   const base: WorkflowRoleConfigBase = {
     role,
+    runner,
     promptTemplate: raw.prompt_template,
     sandbox: raw.sandbox,
     ...(tools ? { tools } : {}),

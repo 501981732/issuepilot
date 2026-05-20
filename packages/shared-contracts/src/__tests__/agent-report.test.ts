@@ -78,6 +78,9 @@ describe("agent-report contracts", () => {
       taskId: "t1",
       role: "coder",
       roleProfileId: "coder@v1",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: "turn-coder",
       status: "complete",
       startedAt: "2026-05-19T00:00:00.000Z",
       completedAt: "2026-05-19T00:00:05.000Z",
@@ -106,6 +109,9 @@ describe("agent-report contracts", () => {
       taskId: "t1",
       role: "reviewer",
       roleProfileId: "reviewer@v1",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: "turn-reviewer",
       status: "complete",
       startedAt: "2026-05-19T00:00:00.000Z",
       completedAt: "2026-05-19T00:00:10.000Z",
@@ -137,6 +143,9 @@ describe("agent-report contracts", () => {
       taskId: "t1",
       role: "test_evidence",
       roleProfileId: "test_evidence@v1",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: null,
       status: "incomplete",
       startedAt: "2026-05-19T00:00:00.000Z",
       runId: null,
@@ -172,6 +181,9 @@ describe("agent-report contracts", () => {
       taskId: "t1",
       role: "reviewer",
       roleProfileId: "reviewer@v1",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: null,
       status: "failed",
       startedAt: "2026-05-19T00:00:00.000Z",
       runId: null,
@@ -202,5 +214,43 @@ describe("agent-report contracts", () => {
     expect(isAgentReport({ role: "coder" })).toBe(false);
     expect(isAgentReport(null)).toBe(false);
     expect(isAgentReport(undefined)).toBe(false);
+  });
+
+  it("V4.7 requires runner trace fields", () => {
+    const base: CoderAgentReport = {
+      agentReportId: "ar_coder_runner",
+      pipelineRunId: "pr_1",
+      taskId: "t1",
+      role: "coder",
+      roleProfileId: "coder@v1",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: "turn-coder",
+      status: "complete",
+      startedAt: "2026-05-19T00:00:00.000Z",
+      completedAt: "2026-05-19T00:00:05.000Z",
+      runId: "run_a",
+      promptTemplateHash: "abc",
+      evidenceLinks: [],
+      redactedFields: [],
+      coder: {
+        diffSummary: "diff",
+        branch: "ai/42-task-1",
+      },
+    };
+
+    expect(isAgentReport(base)).toBe(true);
+
+    const withoutRunner: Record<string, unknown> = { ...base };
+    delete withoutRunner.runnerId;
+    expect(isAgentReport(withoutRunner)).toBe(false);
+
+    const withoutKind: Record<string, unknown> = { ...base };
+    delete withoutKind.runnerKind;
+    expect(isAgentReport(withoutKind)).toBe(false);
+
+    expect(
+      isAgentReport({ ...base, runnerKind: "claude_code" }),
+    ).toBe(false);
   });
 });

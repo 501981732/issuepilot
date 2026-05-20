@@ -175,4 +175,26 @@ describe("workflow-role contracts", () => {
       }),
     ).toThrow(WorkflowConfigError);
   });
+
+  it("V4.7: parseRoleConfig 默认 runner 为 codex_app_server，并保留显式 runner id", () => {
+    const baseRaw = {
+      prompt_template: "prompts/coder.md",
+      sandbox: "read_write_worktree" as const,
+    };
+    expect(parseRoleConfig({ role: "coder", raw: { ...baseRaw } }).runner).toBe(
+      "codex_app_server",
+    );
+    expect(
+      parseRoleConfig({
+        role: "coder",
+        raw: { ...baseRaw, runner: "codex-fast" },
+      }).runner,
+    ).toBe("codex-fast");
+    expect(
+      parseRoleConfig({
+        role: "coder",
+        raw: { ...baseRaw, runner: "" },
+      }).runner,
+    ).toBe("codex_app_server");
+  });
 });

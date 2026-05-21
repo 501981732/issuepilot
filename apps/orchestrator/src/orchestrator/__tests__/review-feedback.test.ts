@@ -529,4 +529,137 @@ describe("sweepReviewFeedbackOnce", () => {
       "2026-05-16T12:00:00.000Z",
     );
   });
+
+  // V4.9: once the sweep produces a ReviewFeedbackSummary, the
+  // ReviewFeedbackReviewWorkflowSlice receives the summary + the latest
+  // reviewer agent reports and produces a draft ReviewReworkPlan that
+  // is persisted onto RunReportArtifact.reviewReworkPlan.
+  it("V4.9: invokes reviewWorkflow.generate() with the summary + reviewer reports and writes the plan onto the report", async () => {
+    const ctx = createDeps({
+      notes: [
+        {
+          id: 600,
+          body: "Please add a test for the empty branch path.",
+          author: "alice",
+          createdAt: "2026-05-16T11:00:00.000Z",
+          system: false,
+          resolvable: true,
+          resolved: false,
+        },
+      ],
+    });
+    const runId = seedReviewRun(ctx.state);
+
+    const reports = new Map<string, RunReportArtifact>();
+    reports.set(
+      runId,
+      createInitialReport({
+        runId,
+        issue: {
+          iid: 1,
+          title: "Issue 1",
+          url: "https://gitlab.example.com/g/p/-/issues/1",
+          projectId: "g/p",
+          labels: ["human-review"],
+        },
+        status: "completed",
+        attempt: 1,
+        branch: "ai/1-fix",
+        workspacePath: "/tmp/run",
+        startedAt: "2026-05-15T00:00:00.000Z",
+      }),
+    );
+
+    const draftPlan = {
+      planId: "plan-1",
+      runId,
+      issueIid: 1,
+      projectId: "g/p",
+      status: "draft" as const,
+      generatedAt: "2026-05-16T12:00:00.000Z",
+      items: [],
+    };
+    const generate = vi.fn(async () => draftPlan);
+    const listLatestReviewerReports = vi.fn(async () => []);
+
+    await sweepReviewFeedbackOnce({
+      ...ctx.deps,
+      reports: {
+        save: vi.fn(async (r: RunReportArtifact) => {
+          reports.set(r.runId, r);
+        }),
+        get: vi.fn(async (id: string) => reports.get(id)),
+        summary: () => undefined,
+        allSummaries: () => [],
+        all: async () => [...reports.values()],
+        invalidReportCount: () => 0,
+      },
+      reviewWorkflow: { generate, listLatestReviewerReports },
+    });
+
+    expect(listLatestReviewerReports).toHaveBeenCalledWith({ runId });
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId,
+        issueIid: 1,
+        projectId: "g/p",
+        summary: expect.objectContaining({ mrIid: 42 }),
+        reviewerReports: [],
+      }),
+    );
+
+    const updated = reports.get(runId);
+    expect(updated?.reviewReworkPlan?.planId).toBe("plan-1");
+
+    const planEvent = ctx.events.find(
+      (e) => e.type === "review_rework_plan_generated",
+    );
+    expect(planEvent).toBeDefined();
+    expect(planEvent?.data).toMatchObject({
+      planId: "plan-1",
+      itemCount: 0,
+    });
+  });
+
+  // V4.9: planner failures must not blow up the sweep; the existing
+  // review_feedback_summary_generated event must still fire so the
+  // dashboard reflects the comment delta, and the new
+  // review_rework_plan_generation_failed event must record why.
+  it("V4.9: planner failure emits review_rework_plan_generation_failed and keeps sweep observable", async () => {
+    const ctx = createDeps({
+      notes: [
+        {
+          id: 700,
+          body: "Tighten the test.",
+          author: "alice",
+          createdAt: "2026-05-16T11:30:00.000Z",
+          system: false,
+          resolvable: true,
+          resolved: false,
+        },
+      ],
+    });
+    seedReviewRun(ctx.state);
+
+    const generate = vi.fn(async () => {
+      throw new Error("classifier_panicked");
+    });
+    const listLatestReviewerReports = vi.fn(async () => []);
+
+    await sweepReviewFeedbackOnce({
+      ...ctx.deps,
+      reviewWorkflow: { generate, listLatestReviewerReports },
+    });
+
+    const types = ctx.events.map((e) => e.type);
+    expect(types).toContain("review_feedback_summary_generated");
+    expect(types).toContain("review_rework_plan_generation_failed");
+    const failedEvt = ctx.events.find(
+      (e) => e.type === "review_rework_plan_generation_failed",
+    );
+    expect(failedEvt?.data).toMatchObject({
+      reason: "planner_failed",
+      message: "classifier_panicked",
+    });
+  });
 });

@@ -93,6 +93,7 @@ const failingCollector = (
 
 interface MkAgentOpts {
   runnerOutcome?: RunnerResult | Error;
+  descriptor?: RunnerDescriptor;
 }
 
 const mkAgent = (opts: MkAgentOpts = {}) => {
@@ -102,11 +103,13 @@ const mkAgent = (opts: MkAgentOpts = {}) => {
     return outcome;
   });
   const adapter: RunnerAdapter = {
-    descriptor: EVIDENCE_DESCRIPTOR,
+    descriptor: opts.descriptor ?? EVIDENCE_DESCRIPTOR,
     run: runFn,
   };
   const registry = createRunnerRegistry({
-    descriptors: { [EVIDENCE_DESCRIPTOR.runnerId]: EVIDENCE_DESCRIPTOR },
+    descriptors: {
+      [adapter.descriptor.runnerId]: adapter.descriptor,
+    },
     adapters: [adapter],
   });
   let i = 0;
@@ -148,6 +151,34 @@ describe("TestEvidenceAgent.run", () => {
     expect(res.report.status).toBe("complete");
     expect(res.report.runnerRunId).toBe("turn-evidence");
     expect(res.report.runnerKind).toBe("codex_app_server");
+  });
+
+  it("V4.8 preserves non-Codex runner kind on test_evidence report", async () => {
+    const { agent } = mkAgent({
+      descriptor: {
+        runnerId: "claude_evidence",
+        kind: "claude_code",
+        capabilities: ["roles.test_evidence", "filesystem.readonly"],
+      },
+      runnerOutcome: {
+        status: "completed",
+        runId: "claude-evidence-run",
+        finalMessage: "ok",
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: { ...PROFILE, runnerId: "claude_evidence" },
+      cwd: "/tmp/wt",
+      collectors: [],
+      evidenceDir: "/tmp/wt/.issuepilot/evidence/t_1",
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.runnerId).toBe("claude_evidence");
+    expect(res.report.runnerKind).toBe("claude_code");
+    expect(res.report.runnerRunId).toBe("claude-evidence-run");
   });
 
   it("V4.7 runner timeout → failed AgentReport, evidence_unavailable mapped, no collectors run", async () => {

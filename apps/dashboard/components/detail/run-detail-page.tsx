@@ -22,6 +22,7 @@ import { RUN_STATUS_TONES, StatusDot, StatusPill } from "../ui/status";
 import { EventTimeline } from "./event-timeline";
 import { LogTail } from "./log-tail";
 import { ReviewPacket } from "./review-packet";
+import { ReviewReworkPlanPanel } from "./review-rework-plan-panel";
 import { ToolCallList } from "./tool-call-list";
 
 const CI_TONES: Record<PipelineStatus, BadgeTone> = {
@@ -302,8 +303,115 @@ export function RunDetailPage({
       {run.latestReviewFeedback ? (
         <ReviewFeedbackPanel summary={run.latestReviewFeedback} />
       ) : null}
+
+      {report?.reviewReworkPlan ? (
+        <section className="flex flex-col gap-3">
+          <ReviewReworkPlanPanel
+            plan={report.reviewReworkPlan}
+            onAcceptPlan={(planId) =>
+              void acceptReworkPlan(planId, run.runId, setActionError)
+            }
+            onDismissPlan={(planId, reason) =>
+              void dismissReworkPlan(planId, reason, run.runId, setActionError)
+            }
+            onItemAction={(planId, itemId, next) =>
+              void updateReworkItem(
+                planId,
+                itemId,
+                next,
+                run.runId,
+                setActionError,
+              )
+            }
+          />
+        </section>
+      ) : null}
     </div>
   );
+}
+
+/**
+ * V4.9: thin POST wrappers that mirror the existing operator action
+ * helpers (`retryRun` / `stopRun` / `archiveRun`). The component-level
+ * `setActionError` consumes the result so the existing toast surface
+ * can show planner / route failures without owning network code.
+ */
+async function acceptReworkPlan(
+  planId: string,
+  runId: string,
+  setError: (msg: string) => void,
+): Promise<void> {
+  try {
+    const res = await fetch(`/api/review-workflow/plans/${planId}/accept`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      setError(`accept review rework plan failed for ${runId}: ${res.status}`);
+    }
+  } catch (err) {
+    setError(
+      `accept review rework plan failed for ${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+async function dismissReworkPlan(
+  planId: string,
+  reason: string,
+  runId: string,
+  setError: (msg: string) => void,
+): Promise<void> {
+  try {
+    const res = await fetch(`/api/review-workflow/plans/${planId}/dismiss`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    if (!res.ok) {
+      setError(`dismiss review rework plan failed for ${runId}: ${res.status}`);
+    }
+  } catch (err) {
+    setError(
+      `dismiss review rework plan failed for ${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+async function updateReworkItem(
+  planId: string,
+  itemId: string,
+  next: "accepted" | "dismissed" | "resolved" | "open",
+  runId: string,
+  setError: (msg: string) => void,
+): Promise<void> {
+  if (next === "open") return;
+  try {
+    const res = await fetch(
+      `/api/review-workflow/plans/${planId}/items/${itemId}/${next}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+    );
+    if (!res.ok) {
+      setError(
+        `update review rework item failed for ${runId}: ${res.status}`,
+      );
+    }
+  } catch (err) {
+    setError(
+      `update review rework item failed for ${runId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 function SectionHeader({ title, caption }: { title: string; caption: string }) {

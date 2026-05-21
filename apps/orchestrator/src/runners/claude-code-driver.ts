@@ -1,9 +1,9 @@
-import { execa } from "execa";
 import type {
   ClaudeCodeRunnerOptions,
   RunnerArtifact,
   RunnerRunInput,
 } from "@issuepilot/shared-contracts";
+import { execa } from "execa";
 
 export type ClaudeCodeDriverStatus = "completed" | "failed" | "cancelled";
 

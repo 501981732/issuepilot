@@ -1,5 +1,4 @@
 import type {
-  RunnerArtifact,
   RunnerDescriptor,
   RunnerEvent,
   RunnerRunInput,

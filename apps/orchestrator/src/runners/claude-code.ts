@@ -6,12 +6,12 @@ import type {
   RunnerResult,
 } from "@issuepilot/shared-contracts";
 
-import type { RunnerAdapter, RunnerRunContext } from "./types.js";
 import {
   createDefaultClaudeCodeDriver,
   type ClaudeCodeDriver,
   type ClaudeCodeDriverResult,
 } from "./claude-code-driver.js";
+import type { RunnerAdapter, RunnerRunContext } from "./types.js";
 
 type ClaudeCodeDescriptor = Extract<RunnerDescriptor, { kind: "claude_code" }>;
 
@@ -104,7 +104,7 @@ export function createClaudeCodeAdapter(
         runInput: input,
       });
 
-      let process = driver.start(input, options.descriptor.options ?? {});
+      const process = driver.start(input, options.descriptor.options ?? {});
       let driverResult: ClaudeCodeDriverResult;
       let timeout: ReturnType<typeof setTimeout> | undefined;
       const timeoutMs = Math.max(0, (input.timeoutSeconds ?? 0) * 1000);

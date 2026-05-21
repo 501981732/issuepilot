@@ -229,6 +229,11 @@ export const createCoderAgent = (deps: {
 
       if (result.status === "failed" || result.status === "timeout") {
         const errorCode = runnerErrorToLastErrorCode(result.error.code);
+        // V4.7 review follow-up:failed / timeout 路径下 adapter 现在也会
+        // 把已存在的 MR artifact 透出来,coder report 把它带进
+        // `coder.mergeRequest`,让 reviewer / dashboard 不会丢已经创建的
+        // MR(对应「pipeline 后期失败但 MR 已经创建」场景)。
+        const parsed = parseArtifacts(result.artifacts);
         const report: CoderAgentReport = {
           agentReportId: tickId(),
           workItemId: input.workItem.workItemId,
@@ -247,7 +252,13 @@ export const createCoderAgent = (deps: {
           lastError: { code: errorCode, message: result.error.message },
           evidenceLinks: [],
           redactedFields,
-          coder: { diffSummary: "", branch: "" },
+          coder: {
+            diffSummary: "",
+            branch: "",
+            ...(parsed.mergeRequest
+              ? { mergeRequest: parsed.mergeRequest }
+              : {}),
+          },
         };
         return { kind: "report", report };
       }

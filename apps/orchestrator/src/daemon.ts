@@ -9,9 +9,11 @@ import {
   type CredentialsStore,
 } from "@issuepilot/credentials";
 import {
+  createBatchedEventStore,
   createEventBus,
   createEventStore,
   redact,
+  type BatchedEventStore,
   type EventBus,
 } from "@issuepilot/observability";
 import {
@@ -465,8 +467,21 @@ export async function startDaemon(
   const state = deps.state ?? createRuntimeState();
   const slots = createConcurrencySlots(workflow.agent.maxConcurrentAgents);
   const eventBus = deps.eventBus ?? createEventBus<OrchestratorEvent>();
-  const eventStore = createEventStore(
-    path.join(workflow.workspace.root, ".issuepilot", "events"),
+  // V4.7 review N-2 修复:B1 修好之后 lifecycle 流式事件第一次真的能进
+  // event store,一次 Codex 多 turn run 可能在几秒内产生上百条 RunnerEvent。
+  // 用 `createBatchedEventStore` 包一层 in-memory 缓冲,把同一
+  // `(projectSlug, issueIid)` 的多次 append 在 250ms 内 / 50 条以内合并到
+  // 单次 fs.appendFile,减少 syscall amplification;read-after-write 语义
+  // 由包装层在 read 前 flush 匹配 key 保证。
+  const eventStoreDir = path.join(
+    workflow.workspace.root,
+    ".issuepilot",
+    "events",
+  );
+  const baseEventStore = createEventStore(eventStoreDir);
+  const eventStore: BatchedEventStore = createBatchedEventStore(
+    baseEventStore,
+    eventStoreDir,
   );
   // V2.5 Command Center: report artifacts live next to events under the
   // workspace's `.issuepilot/` so a single tarball captures both the audit
@@ -2639,6 +2654,10 @@ export async function startDaemon(
     await loop.stop();
     await watcher?.stop();
     await app.close();
+    // V4.7 review N-2:在退出前 drain batched event store,避免最后一批
+    // 缓冲事件因 setTimeout 还没触发而被丢弃(timer 在 dispose 里被显式
+    // 清掉,Node 进程才能干净退出)。
+    await eventStore.dispose();
     resolveStopped?.();
   }
 

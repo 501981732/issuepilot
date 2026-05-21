@@ -452,6 +452,137 @@ describe("CodexAppServerRunnerAdapter (V4.7)", () => {
     }
   });
 
+  it("V4.7 review N-3 regression: tool_call_failed surfaces as runner_message (not tool_call_completed)", async () => {
+    // adapter 不能把 tool_call_failed 静默映射到 tool_call_completed:
+    // 否则 dashboard / event store 拿不到失败信号。V4.8 给
+    // RUNNER_EVENT_TYPE_VALUES 加 tool_call_failed 之前,先用 runner_message
+    // 让下游可见。
+    vi.mocked(driveLifecycle).mockImplementation(async (driveInput: unknown) => {
+      const onEvent = (
+        driveInput as { onEvent: (type: string, data?: unknown) => void }
+      ).onEvent;
+      onEvent("turn_started", { turnId: "turn-n3" });
+      onEvent("tool_call_failed", {
+        tool: "broken",
+        error: "permission denied",
+      });
+      return {
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn-n3",
+      } as never;
+    });
+
+    const events: RunnerEvent[] = [];
+    const adapter = createCodexAppServerAdapter({
+      descriptor: codexDescriptor(),
+      codex: codexConfig(),
+    });
+    await adapter.run(baseInput(), {
+      events: { emit: (event) => events.push(event) },
+    });
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain("runner_message");
+    // 关键反例:不能伪装成 tool_call_completed,否则下游分不清成功/失败。
+    const completedStreaming = events.filter(
+      (e) =>
+        e.type === "tool_call_completed" &&
+        // 区分本测试 case:终态 runner_completed 不应被 tool_call_completed
+        // 计数,所以这里只数事件 type。
+        true,
+    );
+    expect(completedStreaming).toHaveLength(0);
+  });
+
+  it("V4.7 review N-4 regression: emits a single terminal event mapped from DriveResult.status", async () => {
+    vi.mocked(driveLifecycle).mockImplementation(async (driveInput: unknown) => {
+      const onEvent = (
+        driveInput as { onEvent: (type: string, data?: unknown) => void }
+      ).onEvent;
+      onEvent("turn_started", { turnId: "turn-n4" });
+      // 注意:lifecycle 的 turn_completed 不再 emit RunnerEvent
+      // (NOTIFICATION_EVENT_TYPE 已经去掉),所以 streaming 阶段不会冒出
+      // runner_message。
+      onEvent("turn_completed");
+      return {
+        status: "completed",
+        turnsUsed: 1,
+        lastTurnId: "turn-n4",
+      } as never;
+    });
+
+    const eventsCompleted: RunnerEvent[] = [];
+    await createCodexAppServerAdapter({
+      descriptor: codexDescriptor(),
+      codex: codexConfig(),
+    }).run(baseInput(), {
+      events: { emit: (event) => eventsCompleted.push(event) },
+    });
+
+    const terminalCompleted = eventsCompleted.filter(
+      (e) => e.type === "runner_completed",
+    );
+    expect(terminalCompleted).toHaveLength(1);
+    expect(terminalCompleted[0]?.runnerRunId).toBe("turn-n4");
+    // 关键反例:turn_completed 不应再被映射成 runner_message。
+    expect(eventsCompleted.some((e) => e.type === "runner_message")).toBe(
+      false,
+    );
+
+    // failed 路径:`runner_failed` 终态事件必须独立于 streaming 阶段被 emit。
+    vi.mocked(driveLifecycle).mockResolvedValue({
+      status: "failed",
+      turnsUsed: 1,
+      failureReason: "boom",
+    } as never);
+    const eventsFailed: RunnerEvent[] = [];
+    await createCodexAppServerAdapter({
+      descriptor: codexDescriptor(),
+      codex: codexConfig(),
+    }).run(baseInput(), {
+      events: { emit: (event) => eventsFailed.push(event) },
+    });
+    const terminalFailed = eventsFailed.filter(
+      (e) => e.type === "runner_failed",
+    );
+    expect(terminalFailed).toHaveLength(1);
+    expect(terminalFailed[0]?.message).toBe("boom");
+  });
+
+  it("V4.7 review follow-up regression: failed status still surfaces MR artifact", async () => {
+    // pipeline 后期失败但 coder 已经成功调过 gitlab_create_merge_request:
+    // adapter 必须把 MR artifact 透到 RunnerResult.artifacts,让下游
+    // (reviewer / handoff / dashboard) 不丢已存在的 MR。
+    vi.mocked(driveLifecycle).mockResolvedValue({
+      status: "failed",
+      turnsUsed: 2,
+      failureReason: "reviewer raised concerns",
+      completedToolCalls: [
+        {
+          tool: "gitlab_create_merge_request",
+          // extractMergeRequest 期望 `{ ok: true, data: { iid, webUrl } }`
+          // 的 wrapper(见 codex-app-server.ts:extractMergeRequest)。
+          result: {
+            ok: true,
+            data: { iid: 99, webUrl: "https://gitlab/mr/99", state: "opened" },
+          },
+        },
+      ],
+    } as never);
+
+    const adapter = createCodexAppServerAdapter({
+      descriptor: codexDescriptor(),
+      codex: codexConfig(),
+    });
+    const result = await adapter.run(baseInput());
+    if (result.status !== "failed") throw new Error("expected failed");
+    const mrArtifact = (result.artifacts ?? []).find(
+      (a) => a.kind === "tool_result",
+    );
+    expect(mrArtifact?.summary).toMatch(/merge_request:99:https:\/\/gitlab\/mr\/99/);
+  });
+
   it("closes the RPC client even when driveLifecycle throws", async () => {
     const close = vi.fn().mockResolvedValue(undefined);
     vi.mocked(spawnRpc).mockReturnValue({ close } as never);

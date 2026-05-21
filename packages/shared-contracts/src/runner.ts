@@ -161,12 +161,18 @@ export interface RunnerResultCancelled extends RunnerResultBase {
   status: "cancelled";
   cancelledAt: string;
   runId?: string;
+  // V4.7 review follow-up:即便 run 被 cancel,如果 coder 之前已经成功
+  // 调过 `gitlab_create_merge_request`,artifact 流仍然要把 MR 透给
+  // reviewer / handoff,避免"已建 MR 但 pipeline 中途取消"导致 MR 黑洞。
+  artifacts?: RunnerArtifact[];
 }
 
 export interface RunnerResultTimeout extends RunnerResultBase {
   status: "timeout";
   error: RunnerError;
   runId?: string;
+  // V4.7 review follow-up:见 `RunnerResultCancelled.artifacts` 注释。
+  artifacts?: RunnerArtifact[];
 }
 
 export type RunnerResult =

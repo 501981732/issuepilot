@@ -169,6 +169,40 @@ describe("CoderAgent.run completed", () => {
     expect(res.report.coder.branch).toBe("");
     expect(res.report.coder.diffSummary).toBe("");
   });
+
+  it("V4.7 review follow-up regression: failed status still carries mergeRequest from RunnerResult.artifacts", async () => {
+    // adapter 现在在 failure / timeout 路径下也会把已经创建的 MR artifact
+    // 透到 RunnerResult.artifacts。coder.ts 不能因为 status===failed 就
+    // 一刀切丢掉 — 否则 reviewer / dashboard 看不到「pipeline 失败但 MR
+    // 已经建好」的事实。
+    const { agent } = makeAgent({
+      outcome: {
+        status: "failed",
+        runId: "turn-failed-mr",
+        error: { code: "tool_denied", message: "reviewer raised concerns" },
+        artifacts: [
+          {
+            kind: "tool_result",
+            summary: "merge_request:99:https://gitlab/mr/99",
+          },
+        ],
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: PROFILE,
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.status).toBe("failed");
+    expect(res.report.coder.mergeRequest).toEqual({
+      iid: 99,
+      url: "https://gitlab/mr/99",
+      state: "opened",
+    });
+  });
 });
 
 describe("CoderAgent.run failure paths", () => {

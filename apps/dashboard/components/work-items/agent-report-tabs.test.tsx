@@ -212,6 +212,28 @@ describe("AgentReportTabs (V4.6)", () => {
     expect(within(trace).getByText("turn-coder")).toBeInTheDocument();
   });
 
+  it("V4.7 review N-5 regression: unknown runnerKind falls back to raw enum (no i18n throw)", () => {
+    // 模拟未来 V4.8 加了 second runner 但只更新 contract、暂时没补 i18n
+    // bundle 的过渡期。RunnerTrace 不应抛 next-intl 4.x 的 MISSING_MESSAGE,
+    // 而应直接渲染原 enum 值,等 i18n bundle 补齐再升级显示。
+    render(
+      <AgentReportTabs
+        reports={{
+          coder: coderReport({
+            runnerId: "claude_code_v1",
+            // 故意用一个不在 RUNNER_KIND_VALUES 的字符串走 fallback 路径。
+            runnerKind: "claude_code" as unknown as "codex_app_server",
+            runnerRunId: "turn-claude",
+          }),
+        }}
+      />,
+    );
+    const trace = screen.getByTestId("agent-runner-trace-coder");
+    // Kind 字段应渲染未翻译的 "claude_code" 而不是 "kinds.claude_code"。
+    expect(within(trace).getByText("claude_code")).toBeInTheDocument();
+    expect(within(trace).queryByText("kinds.claude_code")).not.toBeInTheDocument();
+  });
+
   it("V4.7 does not render an empty runnerRunId slot when missing", () => {
     render(
       <AgentReportTabs

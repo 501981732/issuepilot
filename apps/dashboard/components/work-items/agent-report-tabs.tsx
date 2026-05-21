@@ -1,11 +1,13 @@
 "use client";
 
-import type {
-  AgentReport,
-  AgentRole,
-  CoderAgentReport,
-  ReviewerAgentReport,
-  TestEvidenceAgentReport,
+import {
+  RUNNER_KIND_VALUES,
+  type AgentReport,
+  type AgentRole,
+  type CoderAgentReport,
+  type ReviewerAgentReport,
+  type RunnerKind,
+  type TestEvidenceAgentReport,
 } from "@issuepilot/shared-contracts";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
@@ -72,18 +74,46 @@ function severityTone(sev: string): BadgeTone {
  * - 所有可读 label 与 runner kind display name 走 i18n
  *   (`workItem.agentReportTab.runnerTrace.*`)，保持与同面板其他文案一致。
  */
-// 已知 runner kind 的可读 display name 映射，i18n key 是
-// `workItem.agentReportTab.runnerTrace.kinds.<kind>`。未列入此白名单的
-// runner kind 直接回退到原 enum 值，避免 next-intl 4.x 在 missing key 时
-// 抛 `MISSING_MESSAGE`（4.x 没有 `t.has()` API，回退必须显式处理）。
-const KNOWN_RUNNER_KINDS = new Set<string>(["codex_app_server"]);
+/**
+ * 已知 runner kind 的可读 display name 映射，i18n key 是
+ * `workItem.agentReportTab.runnerTrace.kinds.<kind>`。未列入此白名单的
+ * runner kind 直接回退到原 enum 值，避免 next-intl 4.x 在 missing key 时
+ * 抛 `MISSING_MESSAGE`（4.x 没有 `t.has()` API，回退必须显式处理）。
+ *
+ * V4.7 review N-5 修复：白名单复用 `RUNNER_KIND_VALUES`（contract 单源），
+ * 避免与 `packages/shared-contracts/src/runner.ts` 的双源漂移；V4.8 新增
+ * runner kind 时只需要在 contract 和 i18n bundle 同步加，无需再回这里
+ * 改硬编码 set。
+ */
+const KNOWN_RUNNER_KINDS: ReadonlySet<RunnerKind> = new Set(RUNNER_KIND_VALUES);
+
+/**
+ * V4.7 review N-6 修复：把 `t("kinds.<kind>")` 的 string cast 改成 switch
+ * exhaustive；TypeScript 在 `RUNNER_KIND_VALUES` 扩容时会要求补 case，
+ * 顺手把"加 runner 漏更新 i18n"这条变成编译期错误。
+ */
+function runnerKindLabel(
+  kind: AgentReport["runnerKind"],
+  t: ReturnType<typeof useTranslations<"workItem.agentReportTab.runnerTrace">>,
+): string {
+  if (!KNOWN_RUNNER_KINDS.has(kind as RunnerKind)) {
+    return kind;
+  }
+  switch (kind as RunnerKind) {
+    case "codex_app_server":
+      return t("kinds.codex_app_server");
+    default: {
+      const _exhaustive: never = kind as never;
+      void _exhaustive;
+      return kind;
+    }
+  }
+}
 
 function RunnerTrace({ report }: { report: AgentReport }) {
   const t = useTranslations("workItem.agentReportTab.runnerTrace");
   const runId = report.runnerRunId ?? null;
-  const kindLabel = KNOWN_RUNNER_KINDS.has(report.runnerKind)
-    ? t(`kinds.${report.runnerKind}` as "kinds.codex_app_server")
-    : report.runnerKind;
+  const kindLabel = runnerKindLabel(report.runnerKind, t);
   return (
     <dl
       data-testid={`agent-runner-trace-${report.role}`}

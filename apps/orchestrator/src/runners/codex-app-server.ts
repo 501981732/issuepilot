@@ -53,44 +53,69 @@ import type { RunnerAdapter, RunnerRunContext } from "./types.js";
  * 返回 undefined,让下游决定 fallback,从而避免空字符串 / `final_message:`
  * 前缀污染 `CoderAgentReport.coder.{branch, diffSummary}`。
  *
- * `execa` 在 cwd 外不会有任何 side effect;失败原因(无 git / detached
- * HEAD / 临时 fs 错误)都被吞掉,因为对 runner 抽象层而言这只是 best-effort
- * 元数据采集,不能让 git 状态读不到反向阻塞 runner 完成。
+ * V4.7 review N-1 修复:rev-parse 与 diff 拆开不同 timeout;失败时打
+ * sanitized warn 让操作员能区分"没 branch"vs"git 读失败"。`execa` 在
+ * `reject: false` 下仍把 ENOENT / 非零退出当成 promise resolve(注:在
+ * timeout / signal abort 时 execa 会 reject),所以两条命令都包 try/catch
+ * 兜底,不让 git 错反向阻塞 runner 完成。
  */
 async function readWorkspaceGitSummary(cwd: string): Promise<{
   branch?: string;
   diffStat?: string;
 }> {
   const summary: { branch?: string; diffStat?: string } = {};
+  // 把 cwd 截短给日志用,避免在 stderr 把 worktree 绝对路径全 leak 出来。
+  const cwdLabel = cwd.length > 64 ? `…${cwd.slice(-60)}` : cwd;
   try {
-    const { stdout } = await execa(
+    const result = await execa(
       "git",
       ["rev-parse", "--abbrev-ref", "HEAD"],
       {
         cwd,
         reject: false,
-        timeout: 5_000,
+        // rev-parse 在大仓库也是亚秒级,2s 足够;延长只会拖慢 happy path。
+        timeout: 2_000,
       },
     );
-    const trimmed = stdout.trim();
-    if (trimmed.length > 0 && trimmed !== "HEAD") {
-      summary.branch = trimmed;
+    if (result.exitCode === 0) {
+      const trimmed = result.stdout.trim();
+      if (trimmed.length > 0 && trimmed !== "HEAD") {
+        summary.branch = trimmed;
+      }
+    } else if (result.exitCode !== undefined) {
+      console.warn(
+        `[runner] git rev-parse degraded (exit=${result.exitCode}) cwd=${cwdLabel}`,
+      );
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code ?? "unknown";
+    console.warn(`[runner] git rev-parse failed (${code}) cwd=${cwdLabel}`);
   }
   try {
-    const { stdout } = await execa(
+    const result = await execa(
       "git",
       ["diff", "--stat", "HEAD"],
-      { cwd, reject: false, timeout: 5_000 },
+      {
+        cwd,
+        reject: false,
+        // diff --stat 在大量改动 + 大文件场景容易 >5s,把 timeout 拉到
+        // 15s 与 codex turnTimeoutMs 数量级对齐,避免静默退回到空 diff。
+        timeout: 15_000,
+      },
     );
-    const trimmed = stdout.trim();
-    if (trimmed.length > 0) {
-      summary.diffStat = trimmed;
+    if (result.exitCode === 0) {
+      const trimmed = result.stdout.trim();
+      if (trimmed.length > 0) {
+        summary.diffStat = trimmed;
+      }
+    } else if (result.exitCode !== undefined) {
+      console.warn(
+        `[runner] git diff degraded (exit=${result.exitCode}) cwd=${cwdLabel}`,
+      );
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code ?? "unknown";
+    console.warn(`[runner] git diff failed (${code}) cwd=${cwdLabel}`);
   }
   return summary;
 }
@@ -123,18 +148,49 @@ export interface CreateCodexAppServerAdapterOptions {
  * `approval_required` / `turn_input_required` / `unsupported_tool_call`
  * is logged inside the Codex lifecycle but does not turn into a
  * `RunnerEvent` because it has no stable cross-runner meaning.
+ *
+ * V4.7 review N-3 / N-4 修复:
+ * - `tool_call_failed` 改映射到 `runner_message`(不再借用
+ *   `tool_call_completed`),让 dashboard 至少能从事件 type 区分成功 /
+ *   失败的工具调用。后续在 V4.8 给 `RUNNER_EVENT_TYPE_VALUES` 增补
+ *   `tool_call_failed` 后,这里再换回独立 enum。
+ * - `turn_completed` 不再映射到 `runner_message`:多 turn 场景里
+ *   `turn_completed` 会出现多次,emit `runner_message` 会让 dashboard
+ *   误以为 LLM 又输出了一段消息。真正的"runner 终态"由 `run()` 在
+ *   `mapDriveResultToRunnerResult` 之前显式 emit 一次
+ *   `runner_completed` / `runner_failed` / `runner_cancelled` 终态事件。
+ *
+ * 注意:lifecycle.ts:176-177 的 fallback 会把任何未识别 RPC notification
+ * 也 emit 成 `notification`,我们映射到 `runner_message` 让这部分流量
+ * 仍可见但不带特殊语义。
  */
 const NOTIFICATION_EVENT_TYPE: Record<string, RunnerEventType> = {
   session_started: "runner_started",
   turn_started: "turn_started",
-  turn_completed: "runner_message",
   tool_call_started: "tool_call_started",
   tool_call_completed: "tool_call_completed",
-  tool_call_failed: "tool_call_completed",
+  tool_call_failed: "runner_message",
   notification: "runner_message",
   turn_failed: "runner_failed",
   turn_cancelled: "runner_cancelled",
   turn_timeout: "runner_failed",
+};
+
+/**
+ * `DriveResult.status` → V4.7 `RunnerEventType` 终态映射。
+ * V4.7 review N-4:adapter 在 return RunnerResult 之前必须 emit 一次
+ * 终态事件,让监控有「一次 run = 一个终态事件」的不变量,也让 V4.7
+ * contract 里 `runner_completed` 不再是 dead value。
+ */
+const TERMINAL_EVENT_TYPE_BY_STATUS: Record<
+  DriveResult["status"],
+  RunnerEventType
+> = {
+  completed: "runner_completed",
+  failed: "runner_failed",
+  blocked: "runner_failed",
+  timeout: "runner_failed",
+  cancelled: "runner_cancelled",
 };
 
 const DEFAULT_MAX_TURNS = 20;
@@ -288,6 +344,33 @@ function buildArtifacts(
     if (wasRedacted) scope.redacted.add(`artifacts[${artifacts.length}].summary`);
     artifacts.push({ kind: "text", summary });
   }
+  // V4.7 review follow-up:即便 driveLifecycle 走的是 failed / cancelled /
+  // timeout / blocked 路径,只要 `gitlab_create_merge_request` 工具已经
+  // 成功跑过,`completedToolCalls` 就含 MR 数据。把 MR artifact 抽取放在
+  // `buildArtifacts` 公共部分,让 failure 路径也能把已经创建的 MR 传给
+  // reviewer / handoff,避免「pipeline 后期失败但 MR 真实存在」的视觉黑洞。
+  const mr = extractMergeRequest(result);
+  if (mr) {
+    const [summary, wasRedacted] = redactStringField(
+      `merge_request:${mr.iid}:${mr.url}`,
+    );
+    if (wasRedacted) scope.redacted.add(`artifacts[${artifacts.length}].summary`);
+    artifacts.push({ kind: "tool_result", summary });
+  }
+  return artifacts;
+}
+
+/**
+ * V4.7 review follow-up:failure / cancelled / timeout 路径下也允许 adapter
+ * emit 一个 `kind: "tool_result"` MR artifact,内容来自 `completedToolCalls`。
+ * 不调 `buildArtifacts` 是因为 failure 路径没必要再读 worktree git 状态,
+ * 也不想顺带带出 `final_message` text artifact。
+ */
+function buildFailureArtifacts(
+  result: DriveResult,
+  scope: RedactionScope,
+): RunnerArtifact[] {
+  const artifacts: RunnerArtifact[] = [];
   const mr = extractMergeRequest(result);
   if (mr) {
     const [summary, wasRedacted] = redactStringField(
@@ -346,10 +429,12 @@ async function mapDriveResultToRunnerResult(
     case "blocked": {
       const code = classifyFailure(result.failureReason ?? "");
       const error = buildRunnerError(code, result.failureReason, scope);
+      const artifacts = buildFailureArtifacts(result, scope);
       const out: RunnerResult = {
         status: "failed",
         ...(runId ? { runId } : {}),
         error,
+        ...(artifacts.length > 0 ? { artifacts } : {}),
       };
       if (scope.redacted.size > 0) {
         return { ...out, redactedFields: [...scope.redacted] };
@@ -362,10 +447,12 @@ async function mapDriveResultToRunnerResult(
         result.failureReason ?? "runner timed out",
         scope,
       );
+      const artifacts = buildFailureArtifacts(result, scope);
       const out: RunnerResult = {
         status: "timeout",
         ...(runId ? { runId } : {}),
         error,
+        ...(artifacts.length > 0 ? { artifacts } : {}),
       };
       if (scope.redacted.size > 0) {
         return { ...out, redactedFields: [...scope.redacted] };
@@ -374,10 +461,12 @@ async function mapDriveResultToRunnerResult(
     }
     case "cancelled": {
       const cancelledAt = now();
+      const artifacts = buildFailureArtifacts(result, scope);
       const out: RunnerResult = {
         status: "cancelled",
         cancelledAt,
         ...(runId ? { runId } : {}),
+        ...(artifacts.length > 0 ? { artifacts } : {}),
       };
       if (scope.redacted.size > 0) {
         return { ...out, redactedFields: [...scope.redacted] };
@@ -496,6 +585,39 @@ export function createCodexAppServerAdapter(
         // happy path 下一致;这里再赋一次只是为了 cancelled / failed 路径
         // 也能在 mapDriveResultToRunnerResult 里看到 runId.
         if (result.lastTurnId) lastTurnId = result.lastTurnId;
+        // V4.7 review N-4:在 return RunnerResult 之前主动 emit 一次终态
+        // 事件,让监控/dashboard 有「一次 run 一个终态事件」的不变量。
+        // 这里直接构造 sanitized RunnerEvent,不走 NOTIFICATION_EVENT_TYPE
+        // 表(因为 lifecycle 不发对应的 _ 命名事件)。
+        if (ctx.events) {
+          const terminalType = TERMINAL_EVENT_TYPE_BY_STATUS[result.status];
+          const terminalScope: RedactionScope = { redacted: new Set() };
+          let terminalMessage: string | undefined;
+          if (result.failureReason) {
+            const [redactedMsg, wasRedacted] = redactStringField(
+              result.failureReason,
+            );
+            if (wasRedacted) terminalScope.redacted.add("message");
+            terminalMessage = redactedMsg;
+          }
+          const terminalEvent: RunnerEvent = {
+            type: terminalType,
+            at: now(),
+            runnerId: opts.descriptor.runnerId,
+            ...(lastTurnId !== undefined
+              ? { runnerRunId: lastTurnId }
+              : {}),
+            pipelineRunId: input.pipelineRunId,
+            workItemId: input.workItemId,
+            taskId: input.taskId,
+            role: input.role,
+            ...(terminalMessage !== undefined
+              ? { message: terminalMessage }
+              : {}),
+            redactedFields: [...terminalScope.redacted],
+          };
+          void ctx.events.emit(terminalEvent);
+        }
         return mapDriveResultToRunnerResult(
           result,
           now,

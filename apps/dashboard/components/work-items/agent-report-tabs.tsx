@@ -102,6 +102,8 @@ function runnerKindLabel(
   switch (kind as RunnerKind) {
     case "codex_app_server":
       return t("kinds.codex_app_server");
+    case "claude_code":
+      return t("kinds.claude_code");
     default: {
       const _exhaustive: never = kind as never;
       void _exhaustive;

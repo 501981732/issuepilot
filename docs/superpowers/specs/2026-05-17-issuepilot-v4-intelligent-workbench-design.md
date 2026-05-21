@@ -373,7 +373,7 @@ contract，而不是提前建设 V3 runner 平台。
 验收记录：
 `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`。
 
-### V4.9：智能 Review 工作流（设计待评审）
+### V4.9：智能 Review 工作流（实施完成，待用户验收）
 
 目标：把 V2 Review Feedback Sweep 收集到的人工 MR 评论、V4.6 reviewer agent
 产出的 `ReviewerAgentReport.findings`、CI / evidence 状态和 task context 合并为
@@ -398,6 +398,12 @@ contract，而不是提前建设 V3 runner 平台。
 
 设计 spec：
 `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`。
+
+实施计划：
+`docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`。
+
+验收记录：
+`docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
 
 ## 8. 架构
 

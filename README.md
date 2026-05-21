@@ -719,11 +719,15 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
     `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`；
     验收记录：
     `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`。
-- **智能 review 工作流**（V4.9 设计待评审）：把 V2 review feedback sweep
+- **智能 review 工作流**（V4.9 实施完成，待用户验收）：把 V2 review feedback sweep
   收集的人工 MR 评论、V4.6 reviewer findings、CI / evidence 状态和 task context
   合并为可审计 `ReviewReworkPlan`；operator 确认后，accepted plan 会作为下一轮
   `ai-rework` agent 的结构化输入。设计 spec：
-  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`。
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`；
+  实施计划：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`；
+  验收记录：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、
   测试证据、风险清单和可直接贴到 MR / Issue 的验收报告。
 - **质量与过程分析**：分析成功率、返工率、CI 通过率、review 命中率、耗时

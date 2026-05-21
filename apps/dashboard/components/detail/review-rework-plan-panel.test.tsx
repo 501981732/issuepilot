@@ -102,7 +102,31 @@ describe("ReviewReworkPlanPanel", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(onItemAction).toHaveBeenCalledWith("p1", "i1", "accepted");
+    expect(onItemAction).toHaveBeenCalledWith(
+      "p1",
+      "i1",
+      "accepted",
+      undefined,
+    );
+  });
+
+  it("supplies a default reason when the operator clicks Dismiss on a rework item", () => {
+    const onItemAction = vi.fn();
+    render(
+      <ReviewReworkPlanPanel
+        plan={makePlan()}
+        onAcceptPlan={vi.fn()}
+        onDismissPlan={vi.fn()}
+        onItemAction={onItemAction}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onItemAction).toHaveBeenCalledWith(
+      "p1",
+      "i1",
+      "dismissed",
+      "operator dismissed via dashboard",
+    );
   });
 
   it("shows the empty-state copy when the plan has no items", () => {

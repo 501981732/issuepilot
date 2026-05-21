@@ -12,7 +12,15 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 
-import { ApiError, archiveRun, retryRun, stopRun } from "../../lib/api";
+import {
+  acceptReviewReworkPlan,
+  ApiError,
+  archiveRun,
+  dismissReviewReworkPlan,
+  retryRun,
+  stopRun,
+  updateReviewReworkItem,
+} from "../../lib/api";
 import { useEventStream } from "../../lib/use-event-stream";
 import { RunActions } from "../overview/run-actions";
 import { Badge, type BadgeTone } from "../ui/badge";
@@ -308,21 +316,44 @@ export function RunDetailPage({
         <section className="flex flex-col gap-3">
           <ReviewReworkPlanPanel
             plan={report.reviewReworkPlan}
-            onAcceptPlan={(planId) =>
-              void acceptReworkPlan(planId, run.runId, setActionError)
-            }
-            onDismissPlan={(planId, reason) =>
-              void dismissReworkPlan(planId, reason, run.runId, setActionError)
-            }
-            onItemAction={(planId, itemId, next) =>
-              void updateReworkItem(
-                planId,
-                itemId,
-                next,
-                run.runId,
-                setActionError,
-              )
-            }
+            onAcceptPlan={(planId) => {
+              startAction(async () => {
+                try {
+                  await acceptReviewReworkPlan(planId);
+                  setActionError(null);
+                  router.refresh();
+                } catch (err) {
+                  setActionError(reviewReworkActionErrorMessage(err, "accept"));
+                }
+              });
+            }}
+            onDismissPlan={(planId, reason) => {
+              startAction(async () => {
+                try {
+                  await dismissReviewReworkPlan(planId, reason);
+                  setActionError(null);
+                  router.refresh();
+                } catch (err) {
+                  setActionError(
+                    reviewReworkActionErrorMessage(err, "dismiss"),
+                  );
+                }
+              });
+            }}
+            onItemAction={(planId, itemId, next, reason) => {
+              if (next === "open") return;
+              startAction(async () => {
+                try {
+                  await updateReviewReworkItem(planId, itemId, next, reason);
+                  setActionError(null);
+                  router.refresh();
+                } catch (err) {
+                  setActionError(
+                    reviewReworkActionErrorMessage(err, `item-${next}`),
+                  );
+                }
+              });
+            }}
           />
         </section>
       ) : null}
@@ -331,87 +362,19 @@ export function RunDetailPage({
 }
 
 /**
- * V4.9: thin POST wrappers that mirror the existing operator action
- * helpers (`retryRun` / `stopRun` / `archiveRun`). The component-level
- * `setActionError` consumes the result so the existing toast surface
- * can show planner / route failures without owning network code.
+ * V4.9: shared error formatter for review rework operator actions.
+ * Mirrors {@link performAction} above — surfaces `ApiError.reason` when
+ * the orchestrator returned a structured `{ code }` body and falls back
+ * to the message for transport-level failures.
  */
-async function acceptReworkPlan(
-  planId: string,
-  runId: string,
-  setError: (msg: string) => void,
-): Promise<void> {
-  try {
-    const res = await fetch(`/api/review-workflow/plans/${planId}/accept`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    if (!res.ok) {
-      setError(`accept review rework plan failed for ${runId}: ${res.status}`);
-    }
-  } catch (err) {
-    setError(
-      `accept review rework plan failed for ${runId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+function reviewReworkActionErrorMessage(err: unknown, action: string): string {
+  if (err instanceof ApiError) {
+    return `review rework ${action} failed: ${
+      err.reason ?? `HTTP ${err.status ?? "?"}`
+    }`;
   }
-}
-
-async function dismissReworkPlan(
-  planId: string,
-  reason: string,
-  runId: string,
-  setError: (msg: string) => void,
-): Promise<void> {
-  try {
-    const res = await fetch(`/api/review-workflow/plans/${planId}/dismiss`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ reason }),
-    });
-    if (!res.ok) {
-      setError(`dismiss review rework plan failed for ${runId}: ${res.status}`);
-    }
-  } catch (err) {
-    setError(
-      `dismiss review rework plan failed for ${runId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-}
-
-async function updateReworkItem(
-  planId: string,
-  itemId: string,
-  next: "accepted" | "dismissed" | "resolved" | "open",
-  runId: string,
-  setError: (msg: string) => void,
-): Promise<void> {
-  if (next === "open") return;
-  try {
-    const res = await fetch(
-      `/api/review-workflow/plans/${planId}/items/${itemId}/${next}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-      },
-    );
-    if (!res.ok) {
-      setError(
-        `update review rework item failed for ${runId}: ${res.status}`,
-      );
-    }
-  } catch (err) {
-    setError(
-      `update review rework item failed for ${runId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
+  if (err instanceof Error) return `review rework ${action} failed: ${err.message}`;
+  return `review rework ${action} failed: unknown error`;
 }
 
 function SectionHeader({ title, caption }: { title: string; caption: string }) {

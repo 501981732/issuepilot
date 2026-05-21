@@ -925,3 +925,56 @@ export function validateWorkflowRoles(
     opts,
   );
 }
+
+/**
+ * V4.9 Intelligent Review Workflow — operator actions on
+ * `ReviewReworkPlan`. All POSTs route through {@link postWorkItemAction}
+ * so they pick up `resolveApiBase()`, `x-issuepilot-operator` and
+ * `x-issuepilot-project` automatically, matching every other dashboard
+ * operator action. Without that plumbing the panel hits the dashboard
+ * origin (Next.js) instead of the orchestrator and 404s.
+ */
+export function acceptReviewReworkPlan(
+  planId: string,
+  opts: OperatorActionOptions = {},
+): Promise<{ plan: unknown }> {
+  return postWorkItemAction<{ plan: unknown }>(
+    `/api/review-workflow/plans/${encodeURIComponent(planId)}/accept`,
+    {},
+    opts,
+  );
+}
+
+export function dismissReviewReworkPlan(
+  planId: string,
+  reason: string,
+  opts: OperatorActionOptions = {},
+): Promise<{ plan: unknown }> {
+  return postWorkItemAction<{ plan: unknown }>(
+    `/api/review-workflow/plans/${encodeURIComponent(planId)}/dismiss`,
+    { reason },
+    opts,
+  );
+}
+
+export function updateReviewReworkItem(
+  planId: string,
+  itemId: string,
+  next: "accepted" | "dismissed" | "resolved",
+  reason: string | undefined,
+  opts: OperatorActionOptions = {},
+): Promise<{ plan: unknown }> {
+  const verb =
+    next === "accepted"
+      ? "accept"
+      : next === "dismissed"
+        ? "dismiss"
+        : "resolve";
+  return postWorkItemAction<{ plan: unknown }>(
+    `/api/review-workflow/plans/${encodeURIComponent(
+      planId,
+    )}/items/${encodeURIComponent(itemId)}/${verb}`,
+    reason ? { reason } : {},
+    opts,
+  );
+}

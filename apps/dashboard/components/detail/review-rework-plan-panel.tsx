@@ -31,10 +31,18 @@ export interface ReviewReworkPlanPanelProps {
   plan: ReviewReworkPlan;
   onAcceptPlan: (planId: string) => void;
   onDismissPlan: (planId: string, reason: string) => void;
+  /**
+   * V4.9: `reason` is required by the orchestrator dismiss-item route
+   * (`apps/orchestrator/src/review-workflow/routes.ts` §dismissItem).
+   * The dashboard provides a default when the operator clicks the
+   * Dismiss button so the call doesn't 400; accept/resolve treat it
+   * as optional and forward `undefined`.
+   */
   onItemAction: (
     planId: string,
     itemId: string,
     next: ReviewReworkItemStatus,
+    reason?: string,
   ) => void;
 }
 
@@ -99,14 +107,14 @@ export function ReviewReworkPlanPanel({
         ) : (
           <ul role="list" className="flex flex-col gap-3">
             {plan.items.map((item) => (
-              <ReworkItemRow
-                key={item.itemId}
-                item={item}
-                planStatus={plan.status}
-                onItemAction={(next) =>
-                  onItemAction(plan.planId, item.itemId, next)
-                }
-              />
+          <ReworkItemRow
+                    key={item.itemId}
+                    item={item}
+                    planStatus={plan.status}
+                    onItemAction={(next, reason) =>
+                      onItemAction(plan.planId, item.itemId, next, reason)
+                    }
+                  />
             ))}
           </ul>
         )}
@@ -173,7 +181,7 @@ function ReworkItemRow({
 }: {
   item: ReviewReworkItem;
   planStatus: ReviewReworkPlan["status"];
-  onItemAction: (next: ReviewReworkItemStatus) => void;
+  onItemAction: (next: ReviewReworkItemStatus, reason?: string) => void;
 }) {
   const t = useTranslations("reviewRework");
   const disabled = planStatus === "dismissed" || planStatus === "superseded";
@@ -225,7 +233,9 @@ function ReworkItemRow({
           label={t("dismiss")}
           tone="warning"
           disabled={disabled || item.status === "dismissed"}
-          onClick={() => onItemAction("dismissed")}
+          onClick={() =>
+            onItemAction("dismissed", "operator dismissed via dashboard")
+          }
         />
         <ItemButton
           label={t("resolve")}

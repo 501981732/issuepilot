@@ -1,8 +1,16 @@
 import { Liquid } from "liquidjs";
 
-import type { PromptContext, ReviewFeedbackSummary } from "./types.js";
+import type {
+  PromptContext,
+  ReviewFeedbackSummary,
+  ReviewReworkPlan,
+} from "./types.js";
 
-export type { PromptContext, ReviewFeedbackSummary } from "./types.js";
+export type {
+  PromptContext,
+  ReviewFeedbackSummary,
+  ReviewReworkPlan,
+} from "./types.js";
 
 export interface PromptRenderLogger {
   warn(message: string, meta?: Record<string, unknown>): void;
@@ -114,7 +122,43 @@ function toPromptRenderContext(
   if (context.reviewFeedback) {
     out["review_feedback"] = cloneReviewFeedback(context.reviewFeedback);
   }
+  if (context.reviewReworkPlan) {
+    out["review_rework_plan"] = cloneReviewReworkPlan(context.reviewReworkPlan);
+  }
   return out;
+}
+
+function cloneReviewReworkPlan(
+  plan: ReviewReworkPlan,
+): Record<string, unknown> {
+  return {
+    planId: plan.planId,
+    runId: plan.runId,
+    issueIid: plan.issueIid,
+    projectId: plan.projectId,
+    workItemId: plan.workItemId,
+    taskId: plan.taskId,
+    status: plan.status,
+    generatedAt: plan.generatedAt,
+    acceptedAt: plan.acceptedAt,
+    supersedesPlanId: plan.supersedesPlanId,
+    supersededByPlanId: plan.supersededByPlanId,
+    sourceSummaryId: plan.sourceSummaryId,
+    dismissedReason: plan.dismissedReason,
+    items: plan.items.map((item) => ({
+      itemId: item.itemId,
+      status: item.status,
+      category: item.category,
+      priority: item.priority,
+      title: item.title,
+      summary: item.summary,
+      targetFiles: [...item.targetFiles],
+      taskId: item.taskId,
+      suggestedValidation: [...item.suggestedValidation],
+      sourceRefs: item.sourceRefs.map((ref) => ({ ...ref })),
+      confidence: item.confidence,
+    })),
+  };
 }
 
 function cloneReviewFeedback(

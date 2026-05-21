@@ -163,6 +163,7 @@ export interface IssuePromptInfo {
 import type {
   RetentionConfig,
   ReviewFeedbackSummary,
+  ReviewReworkPlan,
   RunnerDescriptor,
   WorkflowRecipe,
   WorkflowRolesConfig,
@@ -171,6 +172,7 @@ import type {
 export type {
   RetentionConfig,
   ReviewFeedbackSummary,
+  ReviewReworkPlan,
   RunnerDescriptor,
   WorkflowRecipe,
   WorkflowRolesConfig,
@@ -189,4 +191,11 @@ export interface PromptContext {
    * has been observed yet.
    */
   reviewFeedback?: ReviewFeedbackSummary;
+  /**
+   * V4.9 review rework plan context. When supplied, the renderer also
+   * exposes it as `review_rework_plan` (snake_case) so Liquid templates
+   * can iterate `{% for it in review_rework_plan.items %}`. Absent when
+   * the planner has not yet generated an accepted plan for this run.
+   */
+  reviewReworkPlan?: ReviewReworkPlan;
 }

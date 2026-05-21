@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { renderPrompt } from "../render.js";
-import type { PromptContext, PromptRenderLogger } from "../render.js";
+import type {
+  PromptContext,
+  PromptRenderLogger,
+  ReviewReworkPlan,
+} from "../render.js";
 
 function ctx(overrides: Partial<PromptContext> = {}): PromptContext {
   const base: PromptContext = {
@@ -204,5 +208,68 @@ describe("renderPrompt", () => {
       "prompt variable not found",
       expect.objectContaining({ path: "review_feedback.comments" }),
     );
+  });
+
+  it("V4.9: exposes reviewReworkPlan as snake_case review_rework_plan alias", async () => {
+    const plan: ReviewReworkPlan = {
+      planId: "plan-1",
+      runId: "run-1",
+      issueIid: 1,
+      status: "accepted",
+      generatedAt: "2026-05-21T00:00:00.000Z",
+      items: [
+        {
+          itemId: "item-1",
+          status: "accepted",
+          category: "correctness",
+          priority: "blocking",
+          title: "Fix null branch",
+          summary: "reviewer flagged null",
+          targetFiles: ["src/foo.ts"],
+          suggestedValidation: ["pnpm test"],
+          sourceRefs: [{ kind: "human_review_comment", id: "note-1" }],
+          confidence: 0.9,
+        },
+      ],
+    };
+
+    const rendered = await renderPrompt(
+      "{% for it in review_rework_plan.items %}{{ it.title }} ({{ it.priority }}){% endfor %}",
+      { ...ctx(), reviewReworkPlan: plan },
+    );
+
+    expect(rendered).toBe("Fix null branch (blocking)");
+  });
+
+  it("V4.9: deep-clones review_rework_plan so filters cannot mutate the run record", async () => {
+    const plan: ReviewReworkPlan = {
+      planId: "plan-2",
+      runId: "run-2",
+      issueIid: 2,
+      status: "accepted",
+      generatedAt: "2026-05-21T00:00:00.000Z",
+      items: [
+        {
+          itemId: "item-2",
+          status: "accepted",
+          category: "test_gap",
+          priority: "high",
+          title: "Add tests",
+          summary: "",
+          targetFiles: [],
+          suggestedValidation: [],
+          sourceRefs: [],
+          confidence: 0.5,
+        },
+      ],
+    };
+
+    await renderPrompt(
+      "{{ review_rework_plan.items | size }}",
+      { ...ctx(), reviewReworkPlan: plan },
+    );
+
+    expect(plan.items[0]!.title).toBe("Add tests");
+    expect(plan.items[0]!.sourceRefs).toEqual([]);
   });
 });

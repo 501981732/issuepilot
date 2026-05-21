@@ -411,6 +411,192 @@ describe("dispatch", () => {
     expect(finalPrompt).toContain("please add a unit test");
   });
 
+  it("V4.9: prepends `## Review rework plan` and exposes reviewReworkPlan when reviewWorkflow returns an accepted plan", async () => {
+    const renderPrompt = vi.fn(
+      (opts: { template: string; vars: Record<string, unknown> }) => {
+        (renderPrompt as unknown as {
+          lastVars?: Record<string, unknown>;
+        }).lastVars = opts.vars;
+        return "AGENT PROMPT BODY";
+      },
+    );
+    const runAgent = vi.fn(async (opts: { prompt: string }) => {
+      (runAgent as unknown as { lastPrompt?: string }).lastPrompt = opts.prompt;
+      return { status: "completed", summary: "ok" };
+    });
+    const acceptedPlan = {
+      planId: "plan-99",
+      runId: "run-1",
+      issueIid: 1,
+      projectId: "group/project",
+      status: "accepted" as const,
+      generatedAt: "2026-05-21T00:00:00.000Z",
+      acceptedAt: "2026-05-21T00:05:00.000Z",
+      items: [
+        {
+          itemId: "item-1",
+          title: "Fix null handling",
+          summary: "reviewer flagged null branch",
+          category: "correctness" as const,
+          priority: "blocking" as const,
+          status: "accepted" as const,
+          targetFiles: ["packages/core/src/foo.ts"],
+          suggestedValidation: ["pnpm --filter @issuepilot/foo test"],
+          sourceRefs: [
+            {
+              kind: "human_review_comment" as const,
+              id: "note-42",
+              url: "https://gitlab.example.com/p/-/merge_requests/1#note_42",
+            },
+          ],
+          confidence: 0.9,
+        },
+      ],
+    };
+    const getLatestAccepted = vi.fn(async () => acceptedPlan);
+    const deps = createFakeDeps({
+      renderPrompt,
+      runAgent,
+      reviewWorkflow: { getLatestAccepted },
+    });
+
+    await dispatch(baseInput, deps);
+
+    expect(getLatestAccepted).toHaveBeenCalledWith({ runId: "run-1" });
+    const lastVars = (renderPrompt as unknown as {
+      lastVars?: Record<string, unknown>;
+    }).lastVars;
+    expect(lastVars).toMatchObject({
+      reviewReworkPlan: { planId: "plan-99" },
+    });
+    const finalPrompt =
+      (runAgent as unknown as { lastPrompt?: string }).lastPrompt ?? "";
+    expect(finalPrompt).toContain("## Review rework plan");
+    expect(finalPrompt).toContain("plan-99");
+    expect(finalPrompt).toContain("[blocking][correctness] Fix null handling");
+    expect(finalPrompt).toContain("Target files: packages/core/src/foo.ts");
+    expect(finalPrompt).toContain("AGENT PROMPT BODY");
+
+    const injectedEvent = deps.events.find(
+      (e) => e.type === "review_rework_plan_injected",
+    );
+    expect(injectedEvent).toMatchObject({
+      detail: { planId: "plan-99", itemCount: 1 },
+    });
+  });
+
+  it("V4.9: skips the rework plan block but keeps `## Review feedback` fallback when no plan exists", async () => {
+    const renderPrompt = vi.fn(() => "AGENT PROMPT BODY");
+    const runAgent = vi.fn(async (opts: { prompt: string }) => {
+      (runAgent as unknown as { lastPrompt?: string }).lastPrompt = opts.prompt;
+      return { status: "completed", summary: "ok" };
+    });
+    const getLatestAccepted = vi.fn(async () => undefined);
+    const deps = createFakeDeps({
+      renderPrompt,
+      runAgent,
+      reviewWorkflow: { getLatestAccepted },
+    });
+    deps.state.setRun("run-1", {
+      runId: "run-1",
+      status: "claimed",
+      attempt: 1,
+      branch: "ai/1-fix",
+      latestReviewFeedback: {
+        mrIid: 1,
+        mrUrl: "https://gitlab.example.com/x",
+        generatedAt: "2026-05-21T00:00:00.000Z",
+        cursor: "2026-05-21T00:00:00.000Z",
+        comments: [
+          {
+            noteId: 1,
+            author: "alice",
+            body: "please tighten the test",
+            url: "https://gitlab.example.com/x#note_1",
+            createdAt: "2026-05-21T00:00:00.000Z",
+            resolved: false,
+          },
+        ],
+      },
+    });
+
+    await dispatch(baseInput, deps);
+
+    expect(getLatestAccepted).toHaveBeenCalled();
+    const finalPrompt =
+      (runAgent as unknown as { lastPrompt?: string }).lastPrompt ?? "";
+    expect(finalPrompt).not.toContain("## Review rework plan");
+    expect(finalPrompt).toContain("## Review feedback");
+    expect(finalPrompt).toContain("please tighten the test");
+  });
+
+  it("V4.9: forwards taskId to the review workflow lookup when DispatchInput.taskId is set", async () => {
+    const getLatestAccepted = vi.fn(async () => undefined);
+    const deps = createFakeDeps({
+      reviewWorkflow: { getLatestAccepted },
+    });
+    await dispatch({ ...baseInput, taskId: "wi-1::task-7" }, deps);
+
+    expect(getLatestAccepted).toHaveBeenCalledWith({
+      runId: "run-1",
+      taskId: "wi-1::task-7",
+    });
+  });
+
+  it("V4.9: when the reviewWorkflow slice throws, dispatch logs review_rework_plan_lookup_failed and falls back to review_feedback", async () => {
+    const renderPrompt = vi.fn(() => "AGENT PROMPT BODY");
+    const runAgent = vi.fn(async (opts: { prompt: string }) => {
+      (runAgent as unknown as { lastPrompt?: string }).lastPrompt = opts.prompt;
+      return { status: "completed", summary: "ok" };
+    });
+    const getLatestAccepted = vi.fn(async () => {
+      throw new Error("store offline");
+    });
+    const deps = createFakeDeps({
+      renderPrompt,
+      runAgent,
+      reviewWorkflow: { getLatestAccepted },
+    });
+    deps.state.setRun("run-1", {
+      runId: "run-1",
+      status: "claimed",
+      attempt: 1,
+      branch: "ai/1-fix",
+      latestReviewFeedback: {
+        mrIid: 1,
+        mrUrl: "https://gitlab.example.com/x",
+        generatedAt: "2026-05-21T00:00:00.000Z",
+        cursor: "2026-05-21T00:00:00.000Z",
+        comments: [
+          {
+            noteId: 1,
+            author: "alice",
+            body: "tighten the test",
+            url: "https://gitlab.example.com/x#note_1",
+            createdAt: "2026-05-21T00:00:00.000Z",
+            resolved: false,
+          },
+        ],
+      },
+    });
+
+    await dispatch(baseInput, deps);
+
+    const failedEvt = deps.events.find(
+      (e) => e.type === "review_rework_plan_generation_failed",
+    );
+    expect(failedEvt).toBeDefined();
+    expect(failedEvt).toMatchObject({
+      detail: { reason: "lookup_failed", message: "store offline" },
+    });
+
+    const finalPrompt =
+      (runAgent as unknown as { lastPrompt?: string }).lastPrompt ?? "";
+    expect(finalPrompt).not.toContain("## Review rework plan");
+    expect(finalPrompt).toContain("## Review feedback");
+    expect(finalPrompt).toContain("tighten the test");
+  });
+
   it("still runs afterRun hook even if agent fails but does not retry", async () => {
     const deps = createFakeDeps({
       runAgent: vi.fn(async () => ({ status: "failed", reason: "bad" })),

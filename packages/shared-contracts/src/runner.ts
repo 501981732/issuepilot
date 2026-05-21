@@ -10,7 +10,9 @@
  * 本文件只定义契约：枚举、形态、type guard。不 import workflow loader、
  * orchestrator、Codex RPC 或 filesystem store。
  *
- * Source: docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md
+ * Source:
+ * - docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md
+ * - docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md
  */
 
 import { type AgentRole, isAgentRole } from "./agent-report.js";
@@ -20,8 +22,8 @@ import {
   isWorkflowSandbox,
 } from "./workflow-role.js";
 
-/** V4.7 仅支持单一 runner kind：`codex_app_server`。 */
-export const RUNNER_KIND_VALUES = ["codex_app_server"] as const;
+/** V4.8 增加 `claude_code` 作为第二个本地 runner kind。 */
+export const RUNNER_KIND_VALUES = ["codex_app_server", "claude_code"] as const;
 export type RunnerKind = (typeof RUNNER_KIND_VALUES)[number];
 
 const includesString = <T extends readonly string[]>(
@@ -66,7 +68,7 @@ export const runnerCapabilityForRole = (role: AgentRole): RunnerCapability => {
 };
 
 /**
- * `codex_app_server` adapter 接受的选项 allowlist。
+ * `codex_app_server` adapter 接受的 options allowlist。
  * - 不允许 env / token / secret / credential / cwd / workspaceRoot 等敏感或
  *   会破坏 worktree 限定的字段；workflow parser 在加载阶段拒绝它们。
  * - V4.7 之后扩展第二 runner 时再为新 kind 单独定义 options 类型。
@@ -79,14 +81,35 @@ export interface CodexAppServerRunnerOptions {
   threadSandbox?: "workspace-write";
 }
 
-export interface RunnerDescriptor {
+/** `claude_code` adapter 接受的 options allowlist。 */
+export interface ClaudeCodeRunnerOptions {
+  command?: string;
+  model?: string;
+  maxTurns?: number;
+  turnTimeoutMs?: number;
+}
+
+export type RunnerOptionsByKind = {
+  codex_app_server: CodexAppServerRunnerOptions;
+  claude_code: ClaudeCodeRunnerOptions;
+};
+
+interface RunnerDescriptorBase {
   runnerId: string;
-  kind: RunnerKind;
   displayName?: string;
   capabilities: RunnerCapability[];
   defaultTimeoutSeconds?: number;
-  options?: CodexAppServerRunnerOptions;
 }
+
+export type RunnerDescriptor =
+  | (RunnerDescriptorBase & {
+      kind: "codex_app_server";
+      options?: CodexAppServerRunnerOptions;
+    })
+  | (RunnerDescriptorBase & {
+      kind: "claude_code";
+      options?: ClaudeCodeRunnerOptions;
+    });
 
 export interface RunnerRunInput {
   runnerId: string;
@@ -186,6 +209,7 @@ export const RUNNER_EVENT_TYPE_VALUES = [
   "turn_started",
   "tool_call_started",
   "tool_call_completed",
+  "tool_call_failed",
   "runner_message",
   "runner_completed",
   "runner_failed",
@@ -252,6 +276,33 @@ const isCodexAppServerOptions = (
   return true;
 };
 
+const isClaudeCodeOptions = (
+  value: unknown,
+): value is ClaudeCodeRunnerOptions => {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  if (obj.command !== undefined && typeof obj.command !== "string") return false;
+  if (obj.model !== undefined && typeof obj.model !== "string") return false;
+  if (obj.maxTurns !== undefined && typeof obj.maxTurns !== "number")
+    return false;
+  if (obj.turnTimeoutMs !== undefined && typeof obj.turnTimeoutMs !== "number")
+    return false;
+  return true;
+};
+
+const isRunnerOptionsForKind = (
+  kind: RunnerKind,
+  options: unknown,
+): boolean => {
+  switch (kind) {
+    case "codex_app_server":
+      return isCodexAppServerOptions(options);
+    case "claude_code":
+      return isClaudeCodeOptions(options);
+  }
+};
+
 export const isRunnerDescriptor = (value: unknown): value is RunnerDescriptor => {
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
@@ -266,7 +317,7 @@ export const isRunnerDescriptor = (value: unknown): value is RunnerDescriptor =>
     typeof obj.defaultTimeoutSeconds !== "number"
   )
     return false;
-  if (!isCodexAppServerOptions(obj.options)) return false;
+  if (!isRunnerOptionsForKind(obj.kind, obj.options)) return false;
   return true;
 };
 

@@ -30,6 +30,7 @@ import {
   type ReviewerInlineComment,
   type ReviewerRisk,
   type ReviewerSeverityThreshold,
+  type RunnerKind,
   type RunnerResult,
   type TaskNode,
   type WorkItem,
@@ -405,7 +406,7 @@ export interface ReviewerAgent {
   run(input: ReviewerAgentRunInput): Promise<ReviewerAgentResult>;
 }
 
-const RUNNER_KIND_CODEX = "codex_app_server" as const;
+const RUNNER_KIND_CODEX: RunnerKind = "codex_app_server";
 
 const runnerRedactedFieldsToReport = (result: RunnerResult): string[] => {
   if (!result.redactedFields || result.redactedFields.length === 0) return [];
@@ -427,6 +428,7 @@ export const createReviewerAgent = (deps: {
       const tickId = input.newId ?? newId;
       const startedAt = tickNow();
       const runnerId = input.profile.runnerId;
+      let runnerKind: RunnerKind = RUNNER_KIND_CODEX;
 
       let result: RunnerResult;
       try {
@@ -434,6 +436,7 @@ export const createReviewerAgent = (deps: {
           role: "reviewer",
           runnerId,
         });
+        runnerKind = adapter.descriptor.kind;
         result = await adapter.run(
           {
             runnerId,
@@ -463,7 +466,7 @@ export const createReviewerAgent = (deps: {
           role: "reviewer",
           roleProfileId: input.profile.roleProfileId,
           runnerId,
-          runnerKind: RUNNER_KIND_CODEX,
+          runnerKind,
           runnerRunId: null,
           status: "failed",
           startedAt,
@@ -497,7 +500,7 @@ export const createReviewerAgent = (deps: {
           role: "reviewer",
           roleProfileId: input.profile.roleProfileId,
           runnerId,
-          runnerKind: RUNNER_KIND_CODEX,
+          runnerKind,
           runnerRunId,
           status: "failed",
           startedAt,
@@ -527,7 +530,7 @@ export const createReviewerAgent = (deps: {
           role: "reviewer",
           roleProfileId: input.profile.roleProfileId,
           runnerId,
-          runnerKind: RUNNER_KIND_CODEX,
+          runnerKind,
           runnerRunId,
           status: "failed",
           startedAt,
@@ -563,7 +566,7 @@ export const createReviewerAgent = (deps: {
         role: "reviewer",
         roleProfileId: input.profile.roleProfileId,
         runnerId,
-        runnerKind: RUNNER_KIND_CODEX,
+        runnerKind,
         runnerRunId,
         status: "complete",
         startedAt,

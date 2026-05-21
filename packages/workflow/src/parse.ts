@@ -10,10 +10,12 @@ import {
   isRunnerKind,
   parseRoleConfig,
   type AgentRole,
+  type ClaudeCodeRunnerOptions,
   type CodexAppServerRunnerOptions,
   type RetentionConfig,
   type RunnerCapability,
   type RunnerDescriptor,
+  type RunnerKind,
   type WorkflowRecipe,
   type WorkflowRoleConfig,
   type WorkflowRolesConfig,
@@ -129,7 +131,7 @@ const LEGACY_RUNNER_KEYS = new Set([
   "turn_timeout_ms",
 ]);
 
-/** V4.7：codex_app_server.options 中明确禁止的 key（敏感或破坏 worktree 边界）。 */
+/** V4.8：runner.options 中明确禁止的 key（敏感或破坏 worktree 边界）。 */
 const FORBIDDEN_RUNNER_OPTION_KEYS = new Set([
   "env",
   "token",
@@ -138,6 +140,13 @@ const FORBIDDEN_RUNNER_OPTION_KEYS = new Set([
   "cwd",
   "workspace_root",
   "workspaceRoot",
+  "repo_root",
+  "repoRoot",
+  "shell",
+  "args",
+  "script",
+  "stdin_template",
+  "stdinTemplate",
 ]);
 
 const ENV_VAR_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -531,9 +540,13 @@ function parseRunnerDescriptorFromYaml(
     capabilities.push(cap);
   }
 
-  const descriptor: RunnerDescriptor = {
+  const common: {
+    runnerId: string;
+    capabilities: RunnerCapability[];
+    displayName?: string;
+    defaultTimeoutSeconds?: number;
+  } = {
     runnerId,
-    kind: kindRaw,
     capabilities,
   };
 
@@ -544,7 +557,7 @@ function parseRunnerDescriptorFromYaml(
         `runners.${runnerId}.display_name`,
       );
     }
-    descriptor.displayName = obj.display_name;
+    common.displayName = obj.display_name;
   }
 
   if (obj.timeout_seconds !== undefined) {
@@ -558,11 +571,7 @@ function parseRunnerDescriptorFromYaml(
         `runners.${runnerId}.timeout_seconds`,
       );
     }
-    descriptor.defaultTimeoutSeconds = obj.timeout_seconds;
-  }
-
-  if (obj.options !== undefined) {
-    descriptor.options = parseCodexAppServerOptions(runnerId, obj.options);
+    common.defaultTimeoutSeconds = obj.timeout_seconds;
   }
 
   for (const key of Object.keys(obj)) {
@@ -580,7 +589,36 @@ function parseRunnerDescriptorFromYaml(
     }
   }
 
-  return descriptor;
+  if (kindRaw === "codex_app_server") {
+    const options =
+      obj.options === undefined
+        ? undefined
+        : parseRunnerOptionsByKind(runnerId, kindRaw, obj.options);
+    return options === undefined
+      ? { ...common, kind: "codex_app_server" }
+      : { ...common, kind: "codex_app_server", options };
+  }
+
+  const options =
+    obj.options === undefined
+      ? undefined
+      : parseRunnerOptionsByKind(runnerId, kindRaw, obj.options);
+  return options === undefined
+    ? { ...common, kind: "claude_code" }
+    : { ...common, kind: "claude_code", options };
+}
+
+function parseRunnerOptionsByKind(
+  runnerId: string,
+  kind: RunnerKind,
+  raw: unknown,
+): CodexAppServerRunnerOptions | ClaudeCodeRunnerOptions {
+  switch (kind) {
+    case "codex_app_server":
+      return parseCodexAppServerOptions(runnerId, raw);
+    case "claude_code":
+      return parseClaudeCodeOptions(runnerId, raw);
+  }
 }
 
 function parseCodexAppServerOptions(
@@ -655,6 +693,67 @@ function parseCodexAppServerOptions(
           );
         }
         out.threadSandbox = "workspace-write";
+        break;
+      default:
+        throw new WorkflowConfigError(
+          `runners.${runnerId}.options unknown option: ${key}`,
+          `runners.${runnerId}.options`,
+        );
+    }
+  }
+  return out;
+}
+
+function parseClaudeCodeOptions(
+  runnerId: string,
+  raw: unknown,
+): ClaudeCodeRunnerOptions {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new WorkflowConfigError(
+      `runners.${runnerId}.options must be an object`,
+      `runners.${runnerId}.options`,
+    );
+  }
+  const obj = raw as Record<string, unknown>;
+  const out: ClaudeCodeRunnerOptions = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (FORBIDDEN_RUNNER_OPTION_KEYS.has(key)) {
+      throw new WorkflowConfigError(
+        `runners.${runnerId}.options.${key} is not allowed (secret-like or sandbox escalation)`,
+        `runners.${runnerId}.options`,
+      );
+    }
+    switch (key) {
+      case "command":
+        if (typeof value !== "string" || value.length === 0) {
+          throw new WorkflowConfigError(
+            `runners.${runnerId}.options.command must be a non-empty string`,
+            `runners.${runnerId}.options.command`,
+          );
+        }
+        out.command = value;
+        break;
+      case "model":
+        if (typeof value !== "string" || value.length === 0) {
+          throw new WorkflowConfigError(
+            `runners.${runnerId}.options.model must be a non-empty string`,
+            `runners.${runnerId}.options.model`,
+          );
+        }
+        out.model = value;
+        break;
+      case "turn_timeout_ms":
+        if (
+          typeof value !== "number" ||
+          !Number.isInteger(value) ||
+          value < 1000
+        ) {
+          throw new WorkflowConfigError(
+            `runners.${runnerId}.options.turn_timeout_ms must be an integer >= 1000`,
+            `runners.${runnerId}.options.turn_timeout_ms`,
+          );
+        }
+        out.turnTimeoutMs = value;
         break;
       default:
         throw new WorkflowConfigError(

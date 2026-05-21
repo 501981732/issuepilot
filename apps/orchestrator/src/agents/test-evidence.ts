@@ -96,6 +96,7 @@ const buildReport = (input: {
   taskId: string;
   roleProfileId: string;
   runnerId: string;
+  runnerKind: RunnerKind;
   runnerRunId: string | null;
   promptTemplateHash: string;
   startedAt: string;
@@ -114,7 +115,7 @@ const buildReport = (input: {
   role: "test_evidence",
   roleProfileId: input.roleProfileId,
   runnerId: input.runnerId,
-  runnerKind: RUNNER_KIND_CODEX,
+  runnerKind: input.runnerKind,
   runnerRunId: input.runnerRunId,
   status: input.status,
   startedAt: input.startedAt,
@@ -160,6 +161,7 @@ export const createTestEvidenceAgent = (deps: {
       const items: TestEvidenceItem[] = [];
       let baseline: TestEvidenceBaseline | null = null;
       const runnerId = input.profile.runnerId;
+      let runnerKind: RunnerKind = RUNNER_KIND_CODEX;
 
       let runnerResult: RunnerResult;
       try {
@@ -167,6 +169,7 @@ export const createTestEvidenceAgent = (deps: {
           role: "test_evidence",
           runnerId,
         });
+        runnerKind = adapter.descriptor.kind;
         runnerResult = await adapter.run(
           {
             runnerId,
@@ -197,6 +200,7 @@ export const createTestEvidenceAgent = (deps: {
             taskId: input.task.taskId,
             roleProfileId: input.profile.roleProfileId,
             runnerId,
+            runnerKind,
             runnerRunId: null,
             promptTemplateHash: input.profile.promptTemplateHash,
             startedAt,
@@ -239,6 +243,7 @@ export const createTestEvidenceAgent = (deps: {
             taskId: input.task.taskId,
             roleProfileId: input.profile.roleProfileId,
             runnerId,
+            runnerKind,
             runnerRunId,
             promptTemplateHash: input.profile.promptTemplateHash,
             startedAt,
@@ -286,6 +291,7 @@ export const createTestEvidenceAgent = (deps: {
                 taskId: input.task.taskId,
                 roleProfileId: input.profile.roleProfileId,
                 runnerId,
+                runnerKind,
                 runnerRunId,
                 promptTemplateHash: input.profile.promptTemplateHash,
                 startedAt,
@@ -308,6 +314,7 @@ export const createTestEvidenceAgent = (deps: {
               taskId: input.task.taskId,
               roleProfileId: input.profile.roleProfileId,
               runnerId,
+              runnerKind,
               runnerRunId,
               promptTemplateHash: input.profile.promptTemplateHash,
               startedAt,
@@ -355,6 +362,7 @@ export const createTestEvidenceAgent = (deps: {
           taskId: input.task.taskId,
           roleProfileId: input.profile.roleProfileId,
           runnerId,
+          runnerKind,
           runnerRunId,
           promptTemplateHash: input.profile.promptTemplateHash,
           startedAt,

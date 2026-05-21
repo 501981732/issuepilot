@@ -216,7 +216,7 @@ describe("agent-report contracts", () => {
     expect(isAgentReport(undefined)).toBe(false);
   });
 
-  it("V4.7 requires runner trace fields", () => {
+  it("V4.8 requires runner trace fields and accepts known runner kinds", () => {
     const base: CoderAgentReport = {
       agentReportId: "ar_coder_runner",
       pipelineRunId: "pr_1",
@@ -249,8 +249,7 @@ describe("agent-report contracts", () => {
     delete withoutKind.runnerKind;
     expect(isAgentReport(withoutKind)).toBe(false);
 
-    expect(
-      isAgentReport({ ...base, runnerKind: "claude_code" }),
-    ).toBe(false);
+    expect(isAgentReport({ ...base, runnerKind: "claude_code" })).toBe(true);
+    expect(isAgentReport({ ...base, runnerKind: "local_command" })).toBe(false);
   });
 });

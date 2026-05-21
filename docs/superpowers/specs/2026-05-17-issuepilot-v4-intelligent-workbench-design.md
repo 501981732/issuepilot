@@ -34,9 +34,18 @@
   验收清单见 `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`）。
 - V4.7 Runner Adapter Contract：
   `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`
-  （设计已批准，实施计划待写；覆盖 runner contract、本地静态 runner registry、
+  （**实施已完成**；覆盖 runner contract、本地静态 runner registry、
   `codex_app_server` adapter 迁移、capability fail-closed 和 AgentReport
-  runner 追溯字段）。
+  runner 追溯字段；实施计划见
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`，
+  验收清单见
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`）。
+- V4.8 第二 Runner 自用验证：
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`
+  （实施计划已写，目标是在 V4.7 contract 上接入 `claude_code` 第二本地
+  runner，先自用验证 reviewer role，不提前进入 V3 worker / discovery /
+  remote runner service；实施计划见
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`）。
 
 ## 1. Roadmap 决策
 
@@ -171,7 +180,8 @@ V4 不做：
 ## 7. 阶段结构
 
 V4 原按 6 个中阶段设计；V4.6 落地后新增 V4.7 作为 runner adapter
-contract 收口阶段。V4.1 必须先做；V4.2-V4.7 可根据 dog-food 反馈调整顺序。
+contract 收口阶段，V4.8 用第二本地 runner 自用验证该 contract。
+V4.1 必须先做；V4.2-V4.8 可根据自用验证反馈调整顺序。
 
 ### V4.1：Workflow Spine
 
@@ -190,7 +200,7 @@ contract 收口阶段。V4.1 必须先做；V4.2-V4.7 可根据 dog-food 反馈�
 
 - 一个复杂 Issue 能从“未拆解”走到“多个子任务 run + 汇总报告”。
 - 不要求拆解算法很强，但要求流程完整、状态可追踪、报告能看懂。
-- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.7 的深度图形视图、
+- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.8 的深度图形视图、
   长期质量趋势、自动改进建议、多 agent 分工和 runner contract 均在后续阶段展开。
 
 #### V4.1 Task execution contract
@@ -296,12 +306,13 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
   `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
   / `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`
   / `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
-### V4.7：Runner Adapter Contract（设计已批准）
+
+### V4.7：Runner Adapter Contract（实施已完成）
 
 目标：把 V4.6 中写死的 Codex app-server lifecycle 抽成稳定 runner adapter
 contract，但不接入第二个真实 runner，也不做生产 worker 平台。
 
-能力（待实施）：
+能力（已落地）：
 
 - `packages/shared-contracts` 新增 `RunnerDescriptor`、`RunnerCapability`、
   `RunnerRunInput`、`RunnerResult`、`RunnerError` 和 runner artifact contract。
@@ -318,6 +329,35 @@ contract，但不接入第二个真实 runner，也不做生产 worker 平台。
 
 设计 spec：
 `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
+实施计划：
+`docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`。
+验收清单：
+`docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
+
+### V4.8：第二 Runner 自用验证（实施计划已写，待实施）
+
+目标：在 V4.7 Runner Adapter Contract 上接入第二个真实本地 runner，先验证
+contract，而不是提前建设 V3 runner 平台。
+
+能力（设计中）：
+
+- `RunnerKind` 扩展 `claude_code`，同步 shared contracts、workflow parser /
+  resolver、dashboard i18n 和 `AgentReport.runnerKind` 展示。
+- 新增 `claude_code` adapter，adapter 只输出标准 `RunnerResult` /
+  `RunnerEvent`，不直接写 `AgentReport`、GitLab note 或 pipeline store。
+- workflow 仍用静态 `runners:` registry；最小自用验证是
+  `coder=codex_app_server`、`reviewer=claude_code`、
+  `test_evidence=codex_app_server`。
+- `claude_code` 默认只用于 reviewer read-only role；coder role 需要证明
+  workspace write sandbox 可控后才能显式 opt-in。
+- 不做 dynamic discovery、worker pool、remote runner service、SDK、自动 runner
+  selection 或 production sandbox。
+
+设计 spec：
+`docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`。
+
+实施计划：
+`docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`。
 
 ## 8. 架构
 

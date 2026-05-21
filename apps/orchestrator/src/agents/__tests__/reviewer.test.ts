@@ -274,9 +274,12 @@ type ReviewerOutcome =
   | (() => RunnerResult | Promise<RunnerResult>)
   | Error;
 
-const mkAgent = (outcome: ReviewerOutcome) => {
+const mkAgent = (
+  outcome: ReviewerOutcome,
+  descriptor: RunnerDescriptor = REVIEWER_DESCRIPTOR,
+) => {
   const adapter: RunnerAdapter = {
-    descriptor: REVIEWER_DESCRIPTOR,
+    descriptor,
     run: vi.fn(async () => {
       if (outcome instanceof Error) throw outcome;
       if (typeof outcome === "function") return outcome();
@@ -284,7 +287,7 @@ const mkAgent = (outcome: ReviewerOutcome) => {
     }),
   };
   const registry = createRunnerRegistry({
-    descriptors: { [REVIEWER_DESCRIPTOR.runnerId]: REVIEWER_DESCRIPTOR },
+    descriptors: { [descriptor.runnerId]: descriptor },
     adapters: [adapter],
   });
   let i = 0;
@@ -325,6 +328,40 @@ describe("ReviewerAgent.run", () => {
     expect(res.report.reviewer.decision).toBe("approve_with_comments");
     expect(res.report.reviewer.confidence).toBe(0.91);
     expect(res.report.reviewer.mrPublication.status).toBe("pending");
+  });
+
+  it("V4.8 preserves claude_code runner kind on reviewer report", async () => {
+    const agent = mkAgent(
+      {
+        status: "completed",
+        runId: "claude-run-1",
+        finalMessage: wrap({
+          summary: "LGTM",
+          decision: "approve_with_comments",
+          confidence: 0.8,
+          risks: [],
+          evidenceRequest: [],
+          findings: [],
+          inlineComments: [],
+        }),
+      },
+      {
+        runnerId: "claude_reviewer",
+        kind: "claude_code",
+        capabilities: ["roles.reviewer", "filesystem.readonly"],
+      },
+    );
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: { ...PROFILE, runnerId: "claude_reviewer" },
+      cwd: "/tmp/wt",
+    });
+    if (res.kind !== "report") throw new Error("not report");
+    expect(res.report.runnerId).toBe("claude_reviewer");
+    expect(res.report.runnerKind).toBe("claude_code");
+    expect(res.report.runnerRunId).toBe("claude-run-1");
   });
 
   it("publishToMr=false → mrPublication.skipped_by_config", async () => {

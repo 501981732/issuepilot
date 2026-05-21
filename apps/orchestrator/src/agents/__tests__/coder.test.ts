@@ -139,6 +139,33 @@ describe("CoderAgent.run completed", () => {
     });
   });
 
+  it("V4.8 preserves non-Codex runner kind on completed coder report", async () => {
+    const { agent } = makeAgent({
+      descriptor: {
+        runnerId: "claude_coder",
+        kind: "claude_code",
+        capabilities: ["roles.coder", "filesystem.worktree_write"],
+      },
+      outcome: {
+        status: "completed",
+        runId: "claude-coder-run",
+        artifacts: [{ kind: "diff", summary: "branch:feature/v48\nx.ts | 1 +" }],
+      },
+    });
+    const res = await agent.run({
+      workItem: WORKITEM,
+      task: TASK,
+      pipelineRun: { pipelineRunId: "pr_1" },
+      profile: { ...PROFILE, runnerId: "claude_coder" },
+      cwd: "/tmp/wt",
+    });
+    expect(res.kind).toBe("report");
+    if (res.kind !== "report") throw new Error("not a report");
+    expect(res.report.runnerId).toBe("claude_coder");
+    expect(res.report.runnerKind).toBe("claude_code");
+    expect(res.report.runnerRunId).toBe("claude-coder-run");
+  });
+
   it("V4.7 review H2 regression: text artifact (final_message) does not pollute diffSummary", async () => {
     // 当 adapter 拿不到 git 状态(空 worktree / detached HEAD)时,只
     // emit `text` artifact 的 `final_message:` 前缀串。V4.7 之前 agent

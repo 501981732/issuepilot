@@ -2,6 +2,19 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.8 Second Runner Dog-food（计划阶段）
+
+### Plan
+
+- 2026-05-21 — 新增 V4.8 第二 Runner 自用验证实施计划：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`。
+  该计划把
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`
+  拆成 11 个执行任务，覆盖 `claude_code` runner kind、kind-specific
+  options、`tool_call_failed` 标准事件、`claude_code` adapter、daemon /
+  team daemon wiring、agent report runner trace、dashboard i18n、mixed-runner
+  fixture、真实 CLI opt-in smoke 和 acceptance 记录。
+
 ## [Unreleased] V4.7 Runner Adapter Contract（实施阶段）
 
 ### Plan & Acceptance

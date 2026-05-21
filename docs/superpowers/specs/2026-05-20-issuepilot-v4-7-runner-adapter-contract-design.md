@@ -1,7 +1,7 @@
 # IssuePilot V4.7 Runner Adapter Contract 设计
 
 日期：2026-05-20
-状态：待 spec review
+状态：已落地，验收通过
 
 关联文档：
 
@@ -9,6 +9,7 @@
 - `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
 - `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`
 - `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`
+- `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`
 
 ## 实施计划
 

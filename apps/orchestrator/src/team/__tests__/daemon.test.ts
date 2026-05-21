@@ -1,10 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LeaseStore } from "../../runtime/leases.js";
+import { createClaudeCodeAdapter } from "../../runners/claude-code.js";
 import type { ServerDeps } from "../../server/index.js";
 import type { TeamConfig } from "../config.js";
 import { startTeamDaemon } from "../daemon.js";
 import type { ProjectRegistry } from "../registry.js";
+
+vi.mock("../../runners/claude-code.js", () => ({
+  createClaudeCodeAdapter: vi.fn(({ descriptor }) => ({
+    descriptor,
+    run: vi.fn(async () => ({
+      status: "completed",
+      finalMessage: "{}",
+      artifacts: [],
+      redactedFields: [],
+    })),
+  })),
+}));
 
 interface FakeServer {
   listening: boolean;
@@ -92,6 +105,15 @@ const summaries = [
 beforeEach(() => {
   createdDeps = null;
   createdApp = null;
+  vi.mocked(createClaudeCodeAdapter).mockImplementation(({ descriptor }) => ({
+    descriptor,
+    run: vi.fn(async () => ({
+      status: "completed",
+      finalMessage: "{}",
+      artifacts: [],
+      redactedFields: [],
+    })),
+  }));
 });
 
 afterEach(() => {
@@ -414,6 +436,30 @@ describe("startTeamDaemon", () => {
           retry: { maxAttempts: 1, backoffMs: 1000 },
           workspace: { root: "/tmp/issuepilot-test-a" },
           defaultRecipe: "full_pipeline",
+          runners: {
+            codex_app_server: {
+              runnerId: "codex_app_server",
+              kind: "codex_app_server",
+              capabilities: [
+                "roles.coder",
+                "roles.test_evidence",
+                "filesystem.worktree_write",
+                "artifacts",
+              ],
+            },
+            claude_reviewer: {
+              runnerId: "claude_reviewer",
+              kind: "claude_code",
+              capabilities: [
+                "roles.reviewer",
+                "events.streaming",
+                "cancel",
+                "artifacts",
+                "filesystem.readonly",
+              ],
+              options: { command: "claude", turnTimeoutMs: 600_000 },
+            },
+          },
           roles: {
             coder: {
               role: "coder",
@@ -426,6 +472,7 @@ describe("startTeamDaemon", () => {
               promptTemplate: "/tmp/r.md",
               promptTemplateHash: "deadbeef",
               sandbox: "read_only_worktree",
+              runner: "claude_reviewer",
             },
             test_evidence: {
               role: "test_evidence",
@@ -504,6 +551,8 @@ describe("startTeamDaemon", () => {
     });
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const createClaudeAdapterMock = vi.mocked(createClaudeCodeAdapter);
+    createClaudeAdapterMock.mockClear();
     let handle: Awaited<ReturnType<typeof startTeamDaemon>> | undefined;
     try {
       handle = await startTeamDaemon(
@@ -523,6 +572,20 @@ describe("startTeamDaemon", () => {
       expect(createdDeps?.pipelinesByProject?.has("project-legacy")).toBe(
         false,
       );
+      expect(createClaudeAdapterMock).toHaveBeenCalledWith({
+        descriptor: {
+          runnerId: "claude_reviewer",
+          kind: "claude_code",
+          capabilities: [
+            "roles.reviewer",
+            "events.streaming",
+            "cancel",
+            "artifacts",
+            "filesystem.readonly",
+          ],
+          options: { command: "claude", turnTimeoutMs: 600_000 },
+        },
+      });
 
       const pipelineA = createdDeps?.pipelinesByProject?.get("project-a");
       expect(pipelineA).toBeDefined();

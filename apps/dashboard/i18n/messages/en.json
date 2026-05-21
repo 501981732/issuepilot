@@ -260,7 +260,8 @@
         "kind": "Kind",
         "run": "Run",
         "kinds": {
-          "codex_app_server": "Codex App Server"
+          "codex_app_server": "Codex App Server",
+          "claude_code": "Claude Code"
         }
       }
     },

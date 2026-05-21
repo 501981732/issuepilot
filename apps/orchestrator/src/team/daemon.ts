@@ -65,9 +65,10 @@ import { createPipelineStore, type PipelineStore } from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { createPipelineQualitySummaryCallback } from "../quality/pipeline-summary.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
+import { createClaudeCodeAdapter } from "../runners/claude-code.js";
 import { createCodexAppServerAdapter } from "../runners/codex-app-server.js";
 import { createRunnerRegistry } from "../runners/registry.js";
-import type { RunnerEventSink } from "../runners/types.js";
+import type { RunnerAdapter, RunnerEventSink } from "../runners/types.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
@@ -649,17 +650,23 @@ export async function startTeamDaemon(
       };
 
       const projectRunners = projectWorkflow.runners ?? {};
+      const adapters: RunnerAdapter[] = Object.values(projectRunners).map(
+        (descriptor) => {
+          switch (descriptor.kind) {
+            case "codex_app_server":
+              return createCodexAppServerAdapter({
+                descriptor,
+                codex: projectWorkflow.codex,
+                tools: codexAdapterTools,
+              });
+            case "claude_code":
+              return createClaudeCodeAdapter({ descriptor });
+          }
+        },
+      );
       const runnerRegistry = createRunnerRegistry({
         descriptors: projectRunners,
-        adapters: Object.values(projectRunners)
-          .filter((descriptor) => descriptor.kind === "codex_app_server")
-          .map((descriptor) =>
-            createCodexAppServerAdapter({
-              descriptor,
-              codex: projectWorkflow.codex,
-              tools: codexAdapterTools,
-            }),
-          ),
+        adapters,
       });
 
       const withRunnerCallContext = async <T,>(

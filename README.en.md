@@ -734,7 +734,7 @@ productionizes the capabilities that prove valuable here.
     branch; GitLab MR `diff_refs` publisher, team revoke, AgentReport failure
     drilldown, and dashboard 500 / 503 visibility are wired. Acceptance plan:
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`.
-- **Runner Adapter Contract** (V4.7 in progress): extract the V4.6 three-role
+- **Runner Adapter Contract** (V4.7 landed): extract the V4.6 three-role
   pipeline out of the Codex-specific lifecycle and onto a stable local Runner
   Adapter Contract.
   - `packages/shared-contracts/src/runner.ts` defines `RunnerDescriptor`,
@@ -758,6 +758,24 @@ productionizes the capabilities that prove valuable here.
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`.
     Acceptance checklist:
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`.
+- **Second Runner Dog-food** (V4.8 plan written, pending implementation): attach a second real local runner
+  to the V4.7 Runner Adapter Contract to validate the contract before building
+  any V3 runner platform.
+  - `RunnerKind` expands with `claude_code`, with shared contracts, workflow
+    parser / resolver, dashboard i18n, and `AgentReport.runnerKind` display kept
+    in sync.
+  - Add a `claude_code` adapter. The adapter returns standard `RunnerResult` /
+    `RunnerEvent` payloads only; it does not write `AgentReport`, GitLab notes,
+    or pipeline store state directly.
+  - The minimum dog-food path is `coder=codex_app_server`,
+    `reviewer=claude_code`, and `test_evidence=codex_app_server`;
+    `claude_code` starts with the reviewer read-only role by default.
+  - No dynamic discovery, worker pool, remote runner service, SDK, automatic
+    runner selection, or production sandbox in this slice.
+  - Design spec:
+    `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`.
+    Implementation plan:
+    `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

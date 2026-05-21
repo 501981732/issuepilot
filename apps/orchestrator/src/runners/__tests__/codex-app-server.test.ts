@@ -452,11 +452,9 @@ describe("CodexAppServerRunnerAdapter (V4.7)", () => {
     }
   });
 
-  it("V4.7 review N-3 regression: tool_call_failed surfaces as runner_message (not tool_call_completed)", async () => {
+  it("V4.8: tool_call_failed surfaces as standard runner event", async () => {
     // adapter 不能把 tool_call_failed 静默映射到 tool_call_completed:
-    // 否则 dashboard / event store 拿不到失败信号。V4.8 给
-    // RUNNER_EVENT_TYPE_VALUES 加 tool_call_failed 之前,先用 runner_message
-    // 让下游可见。
+    // 否则 dashboard / event store 拿不到失败信号。
     vi.mocked(driveLifecycle).mockImplementation(async (driveInput: unknown) => {
       const onEvent = (
         driveInput as { onEvent: (type: string, data?: unknown) => void }
@@ -483,7 +481,7 @@ describe("CodexAppServerRunnerAdapter (V4.7)", () => {
     });
 
     const types = events.map((e) => e.type);
-    expect(types).toContain("runner_message");
+    expect(types).toContain("tool_call_failed");
     // 关键反例:不能伪装成 tool_call_completed,否则下游分不清成功/失败。
     const completedStreaming = events.filter(
       (e) =>

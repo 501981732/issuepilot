@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type {
   CoderAgentReport,
   RunnerArtifact,
+  RunnerKind,
   RunnerResult,
   TaskNode,
   WorkItem,
@@ -77,7 +78,7 @@ export interface CoderAgent {
   run(input: CoderAgentRunInput): Promise<CoderAgentResult>;
 }
 
-const RUNNER_KIND_CODEX = "codex_app_server" as const;
+const RUNNER_KIND_CODEX: RunnerKind = "codex_app_server";
 
 const buildRunnerInput = (
   input: CoderAgentRunInput,
@@ -179,6 +180,7 @@ export const createCoderAgent = (deps: {
       const tickId = input.newId ?? newId;
       const startedAt = tickNow();
       const runnerId = input.profile.runnerId;
+      let runnerKind: RunnerKind = RUNNER_KIND_CODEX;
 
       let result: RunnerResult;
       try {
@@ -186,6 +188,7 @@ export const createCoderAgent = (deps: {
           role: "coder",
           runnerId,
         });
+        runnerKind = adapter.descriptor.kind;
         const runnerInput = buildRunnerInput(input, input.profile.toolAllow);
         result = await adapter.run(
           runnerInput,
@@ -203,7 +206,7 @@ export const createCoderAgent = (deps: {
           role: "coder",
           roleProfileId: input.profile.roleProfileId,
           runnerId,
-          runnerKind: RUNNER_KIND_CODEX,
+          runnerKind,
           runnerRunId: null,
           status: "failed",
           startedAt,
@@ -242,7 +245,7 @@ export const createCoderAgent = (deps: {
           role: "coder",
           roleProfileId: input.profile.roleProfileId,
           runnerId,
-          runnerKind: RUNNER_KIND_CODEX,
+          runnerKind,
           runnerRunId,
           status: "failed",
           startedAt,
@@ -279,7 +282,7 @@ export const createCoderAgent = (deps: {
         role: "coder",
         roleProfileId: input.profile.roleProfileId,
         runnerId,
-        runnerKind: RUNNER_KIND_CODEX,
+        runnerKind,
         runnerRunId,
         status: "complete",
         startedAt,

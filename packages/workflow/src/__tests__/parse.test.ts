@@ -523,6 +523,51 @@ hi
     expect(cfg.roles.test_evidence?.runner).toBe("codex_app_server");
   });
 
+  it("V4.8: 解析 claude_code runner options 并按 kind-specific allowlist 转换", () => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  claude_reviewer:
+    kind: claude_code
+    display_name: "Claude Code Reviewer"
+    capabilities:
+      - roles.reviewer
+      - events.streaming
+      - cancel
+      - artifacts
+      - filesystem.readonly
+    options:
+      command: "claude"
+      model: "sonnet"
+      turn_timeout_ms: 600000
+roles:
+  reviewer:
+    runner: claude_reviewer
+    prompt_template: "prompts/reviewer.md"
+    sandbox: read_only_worktree
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, "/tmp/wf.md");
+    const descriptor = cfg.runners.claude_reviewer;
+    expect(descriptor?.kind).toBe("claude_code");
+    if (descriptor?.kind !== "claude_code") {
+      expect.fail("expected claude_code descriptor");
+    }
+    expect(descriptor.displayName).toBe("Claude Code Reviewer");
+    expect(descriptor.options).toEqual({
+      command: "claude",
+      model: "sonnet",
+      turnTimeoutMs: 600_000,
+    });
+    expect(cfg.roles.reviewer?.runner).toBe("claude_reviewer");
+  });
+
   it("V4.7: 缺 runners 时 fallback 到内置 codex_app_server 并 emit warning", () => {
     const raw = `---
 tracker:
@@ -572,6 +617,40 @@ hi
       );
     },
   );
+
+  it.each([
+    "env",
+    "token",
+    "secret",
+    "credential",
+    "cwd",
+    "workspace_root",
+    "shell",
+    "args",
+    "script",
+    "stdin_template",
+    "max_turns",
+  ])("V4.8: 拒绝 claude_code.options 中的敏感或越界字段 %s", (field) => {
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  claude_reviewer:
+    kind: claude_code
+    capabilities: [roles.reviewer, filesystem.readonly]
+    options:
+      ${field}: nope
+---
+hi
+`;
+    expect(() => parseWorkflowString(raw, "/tmp/wf.md")).toThrow(
+      /runners\.claude_reviewer\.options/,
+    );
+  });
 
   it("V4.7: 拒绝 codex_app_server.options 中未知字段", () => {
     const raw = `---

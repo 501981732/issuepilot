@@ -55,6 +55,18 @@ vi.mock("@issuepilot/runner-codex-app-server", () => ({
   createGitLabTools: vi.fn(() => []),
 }));
 
+vi.mock("../runners/claude-code.js", () => ({
+  createClaudeCodeAdapter: vi.fn(({ descriptor }) => ({
+    descriptor,
+    run: vi.fn(async () => ({
+      status: "completed",
+      finalMessage: "{}",
+      artifacts: [],
+      redactedFields: [],
+    })),
+  })),
+}));
+
 import { driveLifecycle, spawnRpc } from "@issuepilot/runner-codex-app-server";
 
 import { startDaemon } from "../daemon.js";
@@ -64,6 +76,7 @@ import {
   createPipelineStore,
   type PipelineStore,
 } from "../pipelines/store.js";
+import { createClaudeCodeAdapter } from "../runners/claude-code.js";
 
 const isoNow = "2026-05-20T01:00:00.000Z";
 
@@ -802,6 +815,75 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3)", () => {
   afterEach(() => {
     driveMock.mockReset();
     spawnMock.mockReset();
+  });
+
+  it("V4.8 registers claude_code adapter when single workflow declares it", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ip-daemon-v48-"));
+    try {
+      const workflow = buildV46Workflow(root);
+      const claudeDescriptor = {
+        runnerId: "claude_reviewer",
+        kind: "claude_code" as const,
+        capabilities: [
+          "roles.reviewer" as const,
+          "events.streaming" as const,
+          "cancel" as const,
+          "artifacts" as const,
+          "filesystem.readonly" as const,
+        ],
+        options: { command: "claude", turnTimeoutMs: 600_000 },
+      };
+      const mixedWorkflow: WorkflowConfig = {
+        ...workflow,
+        runners: {
+          ...workflow.runners,
+          claude_reviewer: claudeDescriptor,
+        },
+        roles: {
+          ...workflow.roles,
+          reviewer: {
+            ...workflow.roles!.reviewer!,
+            runner: "claude_reviewer",
+          },
+        },
+      };
+      const { adapter: fakeGitLab } = buildFakeGitLabWithDeleteSpy();
+      const createClaudeAdapterMock = vi.mocked(createClaudeCodeAdapter);
+      createClaudeAdapterMock.mockClear();
+      let captured: ServerDeps | undefined;
+
+      const daemon = await startDaemon(
+        { workflowPath: mixedWorkflow.source.path },
+        {
+          workflowLoader: {
+            loadOnce: vi.fn(async () => mixedWorkflow),
+            start: vi.fn(async () => ({ stop: vi.fn(async () => {}) })),
+            render: vi.fn(() => "prompt"),
+          },
+          createGitLab: vi.fn(async () => fakeGitLab),
+          createServer: vi.fn(async (deps: ServerDeps) => {
+            captured = deps;
+            return createFakeServer();
+          }),
+          startLoop: vi.fn(() => ({
+            tick: vi.fn(async () => {}),
+            stop: vi.fn(async () => {}),
+          })),
+          state: createRuntimeState(),
+        },
+      );
+
+      try {
+        expect(captured?.pipelines).toBeDefined();
+        expect(createClaudeAdapterMock).toHaveBeenCalledWith({
+          descriptor: claudeDescriptor,
+        });
+      } finally {
+        await daemon.stop();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it("retryAgentReport(reviewer) drives the lifecycle adapter and persists a new AgentReport (no more 503)", async () => {

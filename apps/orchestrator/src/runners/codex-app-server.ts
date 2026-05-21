@@ -123,7 +123,7 @@ async function readWorkspaceGitSummary(cwd: string): Promise<{
 type DriveResult = Awaited<ReturnType<typeof driveLifecycle>>;
 
 export interface CreateCodexAppServerAdapterOptions {
-  descriptor: RunnerDescriptor;
+  descriptor: Extract<RunnerDescriptor, { kind: "codex_app_server" }>;
   /** workflow.codex (turnSandboxPolicy / fallback command / turn timeout). */
   codex: WorkflowConfig["codex"];
   tools?: (input: RunnerRunInput) => ToolSchema[];
@@ -149,11 +149,10 @@ export interface CreateCodexAppServerAdapterOptions {
  * is logged inside the Codex lifecycle but does not turn into a
  * `RunnerEvent` because it has no stable cross-runner meaning.
  *
- * V4.7 review N-3 / N-4 修复:
- * - `tool_call_failed` 改映射到 `runner_message`(不再借用
- *   `tool_call_completed`),让 dashboard 至少能从事件 type 区分成功 /
- *   失败的工具调用。后续在 V4.8 给 `RUNNER_EVENT_TYPE_VALUES` 增补
- *   `tool_call_failed` 后,这里再换回独立 enum。
+ * V4.8: `tool_call_failed` 已是标准 `RunnerEventType`,不能再降级为
+ * `runner_message`,否则 dashboard / event store 无法区分工具成功与失败。
+ *
+ * V4.7 review N-4 修复:
  * - `turn_completed` 不再映射到 `runner_message`:多 turn 场景里
  *   `turn_completed` 会出现多次,emit `runner_message` 会让 dashboard
  *   误以为 LLM 又输出了一段消息。真正的"runner 终态"由 `run()` 在
@@ -169,7 +168,7 @@ const NOTIFICATION_EVENT_TYPE: Record<string, RunnerEventType> = {
   turn_started: "turn_started",
   tool_call_started: "tool_call_started",
   tool_call_completed: "tool_call_completed",
-  tool_call_failed: "runner_message",
+  tool_call_failed: "tool_call_failed",
   notification: "runner_message",
   turn_failed: "runner_failed",
   turn_cancelled: "runner_cancelled",

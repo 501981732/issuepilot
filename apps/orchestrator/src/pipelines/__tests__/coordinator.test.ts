@@ -450,6 +450,54 @@ describe("coordinator full_pipeline", () => {
     expect(res.pipelineRun.agentReportIds.test_evidence).toBe("ar_te");
   });
 
+  it("V4.8 mixed-runner reports preserve per-role runner trace", async () => {
+    const h = await harness({
+      coder: {
+        kind: "report",
+        report: fakeCoderReport({
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: "codex-coder-run",
+        }),
+      },
+      reviewer: {
+        kind: "report",
+        report: fakeReviewerReport({
+          runnerId: "claude_reviewer",
+          runnerKind: "claude_code",
+          runnerRunId: "claude-reviewer-run",
+        }),
+      },
+      testEvidence: {
+        kind: "report",
+        report: fakeTeReport({
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: "codex-evidence-run",
+        }),
+      },
+    });
+
+    const res = await h.coordinator.startPipeline({
+      workItem: WORKITEM,
+      task: TASK,
+      workflowDefault: "full_pipeline",
+    });
+
+    expect(res.reports.map((report) => [report.role, report.runnerKind])).toEqual(
+      [
+        ["coder", "codex_app_server"],
+        ["reviewer", "claude_code"],
+        ["test_evidence", "codex_app_server"],
+      ],
+    );
+    expect(res.reports.map((report) => report.runnerRunId)).toEqual([
+      "codex-coder-run",
+      "claude-reviewer-run",
+      "codex-evidence-run",
+    ]);
+  });
+
   it("test_evidence incomplete → PipelineRun partial, TaskNode awaiting_human_review reason=evidence_partial", async () => {
     const h = await harness({
       testEvidence: {

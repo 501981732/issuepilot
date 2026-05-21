@@ -16,12 +16,15 @@ import {
   type RunnerResult,
 } from "../runner.js";
 
-describe("runner contract (V4.7)", () => {
-  it("accepts only codex_app_server as V4.7 runner kind", () => {
+describe("runner contract (V4.8)", () => {
+  it("accepts codex_app_server and claude_code as runner kinds", () => {
     expect(isRunnerKind("codex_app_server")).toBe(true);
+    expect(isRunnerKind("claude_code")).toBe(true);
     expect(isRunnerKind("local_command")).toBe(false);
-    expect(isRunnerKind("claude_code")).toBe(false);
-    expect([...RUNNER_KIND_VALUES]).toEqual(["codex_app_server"]);
+    expect([...RUNNER_KIND_VALUES]).toEqual([
+      "codex_app_server",
+      "claude_code",
+    ]);
   });
 
   it("RUNNER_CAPABILITY_VALUES covers role / streaming / fs / tool capabilities", () => {
@@ -73,6 +76,53 @@ describe("runner contract (V4.7)", () => {
     expect(runnerCapabilityForRole("test_evidence")).toBe(
       "roles.test_evidence",
     );
+  });
+
+  it("validates claude_code RunnerDescriptor with kind-specific options", () => {
+    const descriptor: RunnerDescriptor = {
+      runnerId: "claude_reviewer",
+      kind: "claude_code",
+      displayName: "Claude Code Reviewer",
+      capabilities: [
+        "roles.reviewer",
+        "events.streaming",
+        "cancel",
+        "artifacts",
+        "filesystem.readonly",
+      ],
+      defaultTimeoutSeconds: 600,
+      options: {
+        command: "claude",
+        model: "sonnet",
+        turnTimeoutMs: 600_000,
+      },
+    };
+
+    expect(isRunnerDescriptor(descriptor)).toBe(true);
+  });
+
+  it("rejects unknown or unsafe kind-specific runner options", () => {
+    const claudeDescriptor = {
+      runnerId: "claude_reviewer",
+      kind: "claude_code",
+      capabilities: ["roles.reviewer", "filesystem.readonly"],
+      options: { command: "claude", args: ["--dangerous"] },
+    };
+    const codexDescriptor = {
+      runnerId: "codex_app_server",
+      kind: "codex_app_server",
+      capabilities: ["roles.coder", "filesystem.worktree_write"],
+      options: { command: "codex app-server", env: { TOKEN: "secret" } },
+    };
+
+    expect(isRunnerDescriptor(claudeDescriptor)).toBe(false);
+    expect(isRunnerDescriptor(codexDescriptor)).toBe(false);
+    expect(
+      isRunnerDescriptor({
+        ...claudeDescriptor,
+        options: { command: "claude", maxTurns: 3 },
+      }),
+    ).toBe(false);
   });
 
   it("rejects invalid runner descriptor", () => {
@@ -141,6 +191,7 @@ describe("runner contract (V4.7)", () => {
         "turn_started",
         "tool_call_started",
         "tool_call_completed",
+        "tool_call_failed",
         "runner_message",
         "runner_completed",
         "runner_failed",
@@ -170,5 +221,22 @@ describe("runner contract (V4.7)", () => {
       isRunnerEvent({ ...event, type: "totally_unknown" }),
     ).toBe(false);
     expect(isRunnerEvent({ ...event, role: "planner" })).toBe(false);
+  });
+
+  it("accepts tool_call_failed as a standard runner event", () => {
+    const event: RunnerEvent = {
+      type: "tool_call_failed",
+      at: "2026-05-21T00:00:00.000Z",
+      runnerId: "claude_reviewer",
+      runnerRunId: "claude-run-1",
+      pipelineRunId: "pipe-1",
+      workItemId: "wi-1",
+      taskId: "task-1",
+      role: "reviewer",
+      message: "tool failed",
+      redactedFields: [],
+    };
+
+    expect(isRunnerEvent(event)).toBe(true);
   });
 });

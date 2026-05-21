@@ -389,6 +389,88 @@ hi
     expect(resolved.roles.reviewer?.runner).toBe("codex_app_server");
   });
 
+  it("V4.8: resolveWorkflow 允许 reviewer 使用 claude_code runner", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "issuepilot-resolve-"));
+    await writeFile(path.join(dir, "coder.md"), "coder prompt", "utf8");
+    await writeFile(path.join(dir, "reviewer.md"), "reviewer prompt", "utf8");
+    await writeFile(path.join(dir, "evidence.md"), "evidence", "utf8");
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder, roles.test_evidence, filesystem.worktree_write, artifacts]
+  claude_reviewer:
+    kind: claude_code
+    capabilities: [roles.reviewer, events.streaming, cancel, artifacts, filesystem.readonly]
+roles:
+  coder:
+    runner: codex_app_server
+    prompt_template: "coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    runner: claude_reviewer
+    prompt_template: "reviewer.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    runner: codex_app_server
+    prompt_template: "evidence.md"
+    sandbox: read_only_source_write_evidence
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, path.join(dir, "WORKFLOW.md"));
+    const resolved = await resolveWorkflow(cfg, dir);
+    expect(resolved.runners.claude_reviewer?.kind).toBe("claude_code");
+    expect(resolved.roles.reviewer?.runner).toBe("claude_reviewer");
+  });
+
+  it("V4.8: resolveWorkflow 对缺 filesystem.readonly 的 claude_code reviewer fail closed", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "issuepilot-resolve-"));
+    await writeFile(path.join(dir, "coder.md"), "coder prompt", "utf8");
+    await writeFile(path.join(dir, "reviewer.md"), "reviewer prompt", "utf8");
+    await writeFile(path.join(dir, "evidence.md"), "evidence", "utf8");
+    const raw = `---
+tracker:
+  kind: gitlab
+  base_url: "https://gitlab.example.com"
+  project_id: "group/project"
+git:
+  repo_url: "git@gitlab.example.com:group/project.git"
+runners:
+  codex_app_server:
+    kind: codex_app_server
+    capabilities: [roles.coder, roles.test_evidence, filesystem.worktree_write, artifacts]
+  claude_reviewer:
+    kind: claude_code
+    capabilities: [roles.reviewer, events.streaming, cancel, artifacts]
+roles:
+  coder:
+    runner: codex_app_server
+    prompt_template: "coder.md"
+    sandbox: read_write_worktree
+  reviewer:
+    runner: claude_reviewer
+    prompt_template: "reviewer.md"
+    sandbox: read_only_worktree
+  test_evidence:
+    runner: codex_app_server
+    prompt_template: "evidence.md"
+    sandbox: read_only_source_write_evidence
+---
+hi
+`;
+    const cfg = parseWorkflowString(raw, path.join(dir, "WORKFLOW.md"));
+    await expect(resolveWorkflow(cfg, dir)).rejects.toMatchObject({
+      code: "capability_missing",
+    });
+  });
+
   it("resolveWorkflow 一次返回带 promptTemplateHash 与展开路径的 cfg", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "issuepilot-resolve-"));
     await writeFile(path.join(dir, "coder.md"), "coder prompt", "utf8");

@@ -112,9 +112,10 @@ import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
+import { createClaudeCodeAdapter } from "./runners/claude-code.js";
 import { createCodexAppServerAdapter } from "./runners/codex-app-server.js";
 import { createRunnerRegistry } from "./runners/registry.js";
-import type { RunnerEventSink } from "./runners/types.js";
+import type { RunnerAdapter, RunnerEventSink } from "./runners/types.js";
 import { createRunCancelRegistry } from "./runtime/run-cancel-registry.js";
 import { createConcurrencySlots } from "./runtime/slots.js";
 import { createRuntimeState, type RuntimeState } from "./runtime/state.js";
@@ -758,17 +759,23 @@ export async function startDaemon(
     };
 
     const workflowRunners = workflow.runners ?? {};
+    const adapters: RunnerAdapter[] = Object.values(workflowRunners).map(
+      (descriptor) => {
+        switch (descriptor.kind) {
+          case "codex_app_server":
+            return createCodexAppServerAdapter({
+              descriptor,
+              codex: workflow.codex,
+              tools: codexAdapterTools,
+            });
+          case "claude_code":
+            return createClaudeCodeAdapter({ descriptor });
+        }
+      },
+    );
     const runnerRegistry = createRunnerRegistry({
       descriptors: workflowRunners,
-      adapters: Object.values(workflowRunners)
-        .filter((descriptor) => descriptor.kind === "codex_app_server")
-        .map((descriptor) =>
-          createCodexAppServerAdapter({
-            descriptor,
-            codex: workflow.codex,
-            tools: codexAdapterTools,
-          }),
-        ),
+      adapters,
     });
 
     const coderAgent = createCoderAgent({

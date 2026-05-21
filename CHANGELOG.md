@@ -2,7 +2,19 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased] V4.8 Second Runner Dog-food（计划阶段）
+## [Unreleased] V4.9 Intelligent Review Workflow（设计阶段）
+
+### Design
+
+- 2026-05-21 — 新增 V4.9 智能 Review 工作流设计：
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`。
+  该设计把 V2 review feedback sweep 收集的人工 MR 评论、V4.6 reviewer findings、
+  CI / evidence 状态和 task context 合并为可审计 `ReviewReworkPlan`；operator
+  确认后，accepted plan 会作为下一轮 `ai-rework` agent 的结构化输入。V4.9
+  不做自动 merge、GitLab webhook 实时回流、自动改代码、discussion resolve
+  双向同步或 V3 runner platform。
+
+## [Unreleased] V4.8 Second Runner Dog-food（已实现；真实 CLI dog-food 待确认）
 
 ### Plan
 
@@ -14,6 +26,19 @@
   options、`tool_call_failed` 标准事件、`claude_code` adapter、daemon /
   team daemon wiring、agent report runner trace、dashboard i18n、mixed-runner
   fixture、真实 CLI opt-in smoke 和 acceptance 记录。
+
+### Added
+
+- 2026-05-21 — V4.8 implementation 已合入 `main`：`RunnerKind` 支持
+  `claude_code`，workflow parser / resolver 支持 kind-specific options，
+  orchestrator 增加 `claude_code` adapter，single daemon / team daemon 可按
+  workflow runner descriptor 注册第二 runner，dashboard runner trace 增加
+  `claude_code` i18n 展示，mixed-runner pipeline fixture 覆盖
+  `coder=codex_app_server`、`reviewer=claude_code`、`test_evidence=codex_app_server`。
+  验收记录：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`。
+  默认 gate 和 code review follow-up gate 已通过；真实 Claude Code CLI smoke
+  仍需本机 CLI / 登录态确认。
 
 ## [Unreleased] V4.7 Runner Adapter Contract（实施阶段）
 

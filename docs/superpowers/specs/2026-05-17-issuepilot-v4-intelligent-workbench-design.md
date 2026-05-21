@@ -42,10 +42,18 @@
   `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`）。
 - V4.8 第二 Runner 自用验证：
   `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`
-  （实施计划已写，目标是在 V4.7 contract 上接入 `claude_code` 第二本地
-  runner，先自用验证 reviewer role，不提前进入 V3 worker / discovery /
-  remote runner service；实施计划见
-  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`）。
+  （**实施已完成**，覆盖 `claude_code` 第二本地 runner、kind-specific
+  options、mixed-runner pipeline、daemon / team daemon wiring、dashboard runner
+  trace 和 acceptance 记录；真实 Claude Code CLI 自用验证仍需本机 CLI / 登录态确认；
+  实施计划见
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`，
+  验收记录见
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`）。
+- V4.9 智能 Review 工作流：
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`
+  （设计待评审，目标是把 V2 review feedback sweep 和 V4.6 reviewer findings
+  升级为可审计的 `ReviewReworkPlan`，由 operator 确认后注入下一轮 `ai-rework`
+  agent 输入）。
 
 ## 1. Roadmap 决策
 
@@ -180,8 +188,9 @@ V4 不做：
 ## 7. 阶段结构
 
 V4 原按 6 个中阶段设计；V4.6 落地后新增 V4.7 作为 runner adapter
-contract 收口阶段，V4.8 用第二本地 runner 自用验证该 contract。
-V4.1 必须先做；V4.2-V4.8 可根据自用验证反馈调整顺序。
+contract 收口阶段，V4.8 用第二本地 runner 自用验证该 contract；V4.9 把 review
+feedback 升级成可审计返工计划。
+V4.1 必须先做；V4.2-V4.9 可根据自用验证反馈调整顺序。
 
 ### V4.1：Workflow Spine
 
@@ -200,7 +209,7 @@ V4.1 必须先做；V4.2-V4.8 可根据自用验证反馈调整顺序。
 
 - 一个复杂 Issue 能从“未拆解”走到“多个子任务 run + 汇总报告”。
 - 不要求拆解算法很强，但要求流程完整、状态可追踪、报告能看懂。
-- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.8 的深度图形视图、
+- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.9 的深度图形视图、
   长期质量趋势、自动改进建议、多 agent 分工和 runner contract 均在后续阶段展开。
 
 #### V4.1 Task execution contract
@@ -334,12 +343,12 @@ contract，但不接入第二个真实 runner，也不做生产 worker 平台。
 验收清单：
 `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
 
-### V4.8：第二 Runner 自用验证（实施计划已写，待实施）
+### V4.8：第二 Runner 自用验证（已实现，真实 CLI dog-food 待确认）
 
 目标：在 V4.7 Runner Adapter Contract 上接入第二个真实本地 runner，先验证
 contract，而不是提前建设 V3 runner 平台。
 
-能力（设计中）：
+能力（已实现）：
 
 - `RunnerKind` 扩展 `claude_code`，同步 shared contracts、workflow parser /
   resolver、dashboard i18n 和 `AgentReport.runnerKind` 展示。
@@ -352,12 +361,43 @@ contract，而不是提前建设 V3 runner 平台。
   workspace write sandbox 可控后才能显式 opt-in。
 - 不做 dynamic discovery、worker pool、remote runner service、SDK、自动 runner
   selection 或 production sandbox。
+- 默认 gate 和 code review follow-up gate 已通过；真实 Claude Code CLI 自用验证
+  仍待本机 CLI / 登录态确认，因此作为 dog-food follow-up 保留。
 
 设计 spec：
 `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`。
 
 实施计划：
 `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`。
+
+验收记录：
+`docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`。
+
+### V4.9：智能 Review 工作流（设计待评审）
+
+目标：把 V2 Review Feedback Sweep 收集到的人工 MR 评论、V4.6 reviewer agent
+产出的 `ReviewerAgentReport.findings`、CI / evidence 状态和 task context 合并为
+可审计的 `ReviewReworkPlan`，由 operator 确认后作为下一轮 `ai-rework` agent
+输入。
+
+能力（设计中）：
+
+- 新增 `ReviewReworkPlan` / `ReviewReworkItem` shared contract，记录分类、
+  优先级、目标文件、source refs、建议验证和状态。
+- planner 从 `ReviewFeedbackSummary`、`ReviewerAgentReport.findings`、CI /
+  evidence gaps 生成 draft plan，并按目标文件 / normalized title 去重。
+- dashboard 在 Run Detail / Work Item Review Packet 展示返工计划，支持
+  accept / dismiss / mark resolved。
+- dispatch 在 accepted plan 存在时 prepend `## Review rework plan`；planner
+  失败或未 accept 时保留 V2 `## Review feedback` fallback。
+- `RunReportArtifact` / `WorkItemReport` / Quality Analytics 消费同一个
+  review rework facts；V4.8 mixed runner reviewer report 的 source refs 保留
+  `runnerKind`。
+- 不做自动 merge、GitLab webhook 实时回流、自动改代码、discussion resolve
+  双向同步或 V3 runner platform。
+
+设计 spec：
+`docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`。
 
 ## 8. 架构
 

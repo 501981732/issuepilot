@@ -758,7 +758,7 @@ productionizes the capabilities that prove valuable here.
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`.
     Acceptance checklist:
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`.
-- **Second Runner Dog-food** (V4.8 plan written, pending implementation): attach a second real local runner
+- **Second Runner Dog-food** (V4.8 implemented; real CLI dog-food pending): attach a second real local runner
   to the V4.7 Runner Adapter Contract to validate the contract before building
   any V3 runner platform.
   - `RunnerKind` expands with `claude_code`, with shared contracts, workflow
@@ -776,9 +776,14 @@ productionizes the capabilities that prove valuable here.
     `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`.
     Implementation plan:
     `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`.
-- **Intelligent review workflow**: summarize MR risks, classify review
-  comments, generate rework plans, and turn review feedback into structured
-  input for the next run.
+    Acceptance record:
+    `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`.
+- **Intelligent review workflow** (V4.9 design pending review): merge human MR
+  comments from the V2 review feedback sweep, V4.6 reviewer findings, CI /
+  evidence state, and task context into an auditable `ReviewReworkPlan`.
+  Once an operator accepts the plan, it becomes structured input for the next
+  `ai-rework` agent run. Design spec:
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`.
 - **Acceptance evidence generation**: screenshots, recordings, Playwright
   walkthrough videos, test evidence, risk lists, and MR / Issue-ready
   acceptance reports.

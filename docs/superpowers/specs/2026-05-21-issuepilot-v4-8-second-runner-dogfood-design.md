@@ -1,7 +1,7 @@
 # IssuePilot V4.8 第二 Runner 自用验证设计
 
 日期：2026-05-21
-状态：待用户评审
+状态：已实现；真实 Claude Code CLI 自用验证待本机 CLI / 登录态确认
 
 关联文档：
 
@@ -16,9 +16,12 @@
 
 - V4.8 第二 Runner 自用验证（Second Runner Dog-food）：
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`
-  （实施计划已写，覆盖 shared runner contract、workflow parser / resolver、
+  （实施已完成，覆盖 shared runner contract、workflow parser / resolver、
   `claude_code` adapter、daemon / team daemon wiring、agent report runner trace、
   dashboard i18n、mixed-runner fixture 和 acceptance 记录）。
+- V4.8 验收记录：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`
+  （默认 gate 与 code review follow-up gate 已通过；真实 CLI smoke 仍待本机环境确认）。
 
 ## 1. 背景
 

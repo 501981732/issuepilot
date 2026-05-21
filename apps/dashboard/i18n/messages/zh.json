@@ -254,7 +254,15 @@
         "title": "证据条目",
         "empty": "无证据条目。"
       },
-      "lastError": "最近错误"
+      "lastError": "最近错误",
+      "runnerTrace": {
+        "runner": "Runner",
+        "kind": "类型",
+        "run": "运行",
+        "kinds": {
+          "codex_app_server": "Codex App Server"
+        }
+      }
     },
     "reviewer": {
       "decision": {

@@ -129,6 +129,12 @@ export interface WorkflowConfig {
    */
   roles: WorkflowRolesConfig;
   /**
+   * V4.7 spec §3：workflow 顶层 `runners:` registry。Key 是 runner id，
+   * value 是 `RunnerDescriptor`。缺省时由 parser 注入内置 `codex_app_server`
+   * descriptor，并 emit warning。
+   */
+  runners: Record<string, RunnerDescriptor>;
+  /**
    * Parser-emit 的可见警告（V4.6 default_recipe / roles 升级提示等）。
    * 主流程不消费此字段；dashboard / CLI 用于提示运维者升级配置。
    */
@@ -157,6 +163,7 @@ export interface IssuePromptInfo {
 import type {
   RetentionConfig,
   ReviewFeedbackSummary,
+  RunnerDescriptor,
   WorkflowRecipe,
   WorkflowRolesConfig,
 } from "@issuepilot/shared-contracts";
@@ -164,6 +171,7 @@ import type {
 export type {
   RetentionConfig,
   ReviewFeedbackSummary,
+  RunnerDescriptor,
   WorkflowRecipe,
   WorkflowRolesConfig,
 };

@@ -254,7 +254,15 @@
         "title": "Evidence items",
         "empty": "No evidence items."
       },
-      "lastError": "Last error"
+      "lastError": "Last error",
+      "runnerTrace": {
+        "runner": "Runner",
+        "kind": "Kind",
+        "run": "Run",
+        "kinds": {
+          "codex_app_server": "Codex App Server"
+        }
+      }
     },
     "reviewer": {
       "decision": {

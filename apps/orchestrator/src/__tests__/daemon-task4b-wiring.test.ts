@@ -214,21 +214,39 @@ async function buildWorkflowWithTemplates(
     roles: {
       coder: {
         role: "coder",
+        runner: "codex_app_server",
         promptTemplate: coderTpl,
         promptTemplateHash: "abcdef0123",
         sandbox: "read_write_worktree",
       },
       reviewer: {
         role: "reviewer",
+        runner: "codex_app_server",
         promptTemplate: reviewerTpl,
         promptTemplateHash: "abcdef0123",
         sandbox: "read_only_worktree",
       },
       test_evidence: {
         role: "test_evidence",
+        runner: "codex_app_server",
         promptTemplate: teTpl,
         promptTemplateHash: "abcdef0123",
         sandbox: "read_only_source_write_evidence",
+      },
+    },
+    runners: {
+      codex_app_server: {
+        runnerId: "codex_app_server",
+        kind: "codex_app_server",
+        capabilities: [
+          "roles.coder",
+          "roles.reviewer",
+          "roles.test_evidence",
+          "filesystem.worktree_write",
+          "filesystem.readonly",
+          "artifacts",
+          "gitlab.tools",
+        ],
       },
     },
   } satisfies WorkflowConfig;
@@ -356,6 +374,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — single daemon", () =>
           profile: {
             role: "test_evidence",
             roleProfileId: "test_evidence@abcdef0",
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: null,
             prompt: "te",
             promptTemplateHash: "abcdef0123",
             sandbox: "read_only_source_write_evidence",
@@ -497,6 +518,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
           profile: {
             role: "test_evidence",
             roleProfileId: "test_evidence@abcdef0",
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: null,
             prompt: "te",
             promptTemplateHash: "abcdef0123",
             sandbox: "read_only_source_write_evidence",
@@ -605,6 +629,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
           taskId: sampleTask.taskId,
           role: "coder",
           roleProfileId: "coder@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -625,6 +652,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
           taskId: sampleTask.taskId,
           role: "coder",
           roleProfileId: "coder@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -645,6 +675,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3) — team daemon", () => {
           taskId: sampleTask.taskId,
           role: "reviewer",
           roleProfileId: "reviewer@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           completedAt: isoNow,
@@ -754,7 +787,16 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
       // 会把 ctx 透到 daemon，daemon publishLifecycleEvent 调
       // publishEvent，期望 eventStore 真的 append。
       mockedDriveLifecycle.mockImplementation(async (input) => {
-        input.onEvent("task_started", { hint: "regression" });
+        // V4.7 review B1 修复后:adapter NOTIFICATION_EVENT_TYPE 真实对齐
+        // 到 lifecycle 的 `_`-separated 内部事件名。`turn_started` 是
+        // packages/runner-codex-app-server/src/lifecycle.ts:362 实际
+        // emit 的名字,映射到 RunnerEvent.type = "turn_started",再被
+        // daemon 的 runnerEventSink 升级成 `codex_v46_coder_turn_started`
+        // lifecycle event。
+        input.onEvent("turn_started", {
+          turnId: "turn_regression",
+          hint: "regression",
+        });
         return {
           status: "completed",
           turnsUsed: 1,
@@ -792,6 +834,9 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
           profile: {
             role: "coder",
             roleProfileId: "coder@abcdef0",
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: null,
             prompt: "do",
             promptTemplateHash: "abcdef0123",
             sandbox: "read_write_worktree",
@@ -813,13 +858,13 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
         for (let i = 0; i < 40; i += 1) {
           try {
             content = await fs.readFile(eventFile, "utf8");
-            if (content.includes("codex_v46_coder_task_started")) break;
+            if (content.includes("codex_v46_coder_turn_started")) break;
           } catch (cause) {
             if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
           }
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        expect(content).toContain("codex_v46_coder_task_started");
+        expect(content).toContain("codex_v46_coder_turn_started");
         const lines = content
           .split("\n")
           .filter((l) => l.trim().length > 0)
@@ -831,7 +876,7 @@ describe("Task 4c review — publishEvent gate accepts detail.issueIid", () => {
         );
         expect(v46Lines.length).toBeGreaterThan(0);
         const startedLine = v46Lines.find(
-          (l) => l["type"] === "codex_v46_coder_task_started",
+          (l) => l["type"] === "codex_v46_coder_turn_started",
         );
         expect(startedLine).toBeDefined();
         expect(startedLine?.["runId"]).toBe(
@@ -933,6 +978,9 @@ describe("Task 4c — V4.6 daemon testEvidence wiring (C1 part 3/3)", () => {
             profile: {
               role: "test_evidence",
               roleProfileId: "test_evidence@abcdef0",
+              runnerId: "codex_app_server",
+              runnerKind: "codex_app_server",
+              runnerRunId: null,
               prompt: "te",
               promptTemplateHash: "abcdef0123",
               sandbox: "read_only_source_write_evidence",
@@ -1008,6 +1056,9 @@ describe("Task 4c — V4.6 daemon testEvidence wiring (C1 part 3/3)", () => {
             profile: {
               role: "coder" as never,
               roleProfileId: "coder@abcdef0",
+              runnerId: "codex_app_server",
+              runnerKind: "codex_app_server",
+              runnerRunId: null,
               prompt: "do",
               promptTemplateHash: "abcdef0123",
               sandbox: "read_write_worktree",
@@ -1067,6 +1118,9 @@ function makeCoderInput() {
     profile: {
       role: "coder" as const,
       roleProfileId: "coder@abcdef0",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: null,
       prompt: "do",
       promptTemplateHash: "abcdef0123",
       sandbox: "read_write_worktree" as const,
@@ -1085,6 +1139,9 @@ function makeReviewerInput() {
     profile: {
       role: "reviewer" as const,
       roleProfileId: "reviewer@abcdef0",
+      runnerId: "codex_app_server",
+      runnerKind: "codex_app_server",
+      runnerRunId: null,
       prompt: "review",
       promptTemplateHash: "abcdef0123",
       sandbox: "read_only_worktree" as const,

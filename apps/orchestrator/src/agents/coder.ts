@@ -1,32 +1,47 @@
 /**
- * V4.6 spec §8.2 / §10 / §16.2：Coder Agent。
+ * V4.6 spec §8.2 / §10 / §16.2 + V4.7 runner adapter contract：Coder Agent。
  *
- * 负责一件事：把一份已经渲染好的 `CoderRoleProfile` + workItem/task 上下文
- * 交给 Codex lifecycle 跑一遍，最后写一份 `CoderAgentReport`。
+ * 接受一个 `RunnerRegistry`，从 profile.runnerId 取出 adapter，运行一次
+ * runner，把 `RunnerResult` 翻译成 `CoderAgentReport`。运行 / 输出错误
+ * 通过 `runnerErrorToLastErrorCode()` 收敛到统一的 `lastError.code` truth
+ * source（spec §16.2）。runner trace（runnerId / runnerKind / runnerRunId）
+ * 写入 `AgentReport` 用于 V4.7 追溯。
  *
  * 设计要点：
- * - lifecycle 通过 DI 传入（`CoderLifecycleRunner`），便于 daemon wiring
- *   时复用既有 `@issuepilot/runner-codex-app-server`，而测试只需 mock。
- * - lifecycle 抛 `RunnerUnavailableError` / `SandboxViolationError` 时
- *   coder 仍会尝试落 AgentReport（`status = "failed"`，对应 `lastError.code`），
- *   spec §16.2 表 row 4 / row 7。
- * - lifecycle 返回 cancellation → `AgentRunResult.kind = "cancelled"`，
+ * - 业务报告由本模块构造；runner adapter 不直接写 AgentReport
+ *   (spec §3 / Task 4 边界)。
+ * - runner 抛 / registry fail closed → coder 仍然落 AgentReport
+ *   (`status = "failed"`, `lastError.code = "runner_unavailable"`)，
+ *   保留 runner trace 但 runnerRunId 可以为 null。
+ * - runner result 是 `cancelled` → 返回 `{ kind: "cancelled" }`，
  *   coordinator 据此把 PipelineRun 整体 cancel。
- * - 不在本模块自动 write AgentReport 到 PipelineStore；persist 由
- *   coordinator 在 happy path 上完成。
+ * - runner result 的 `redactedFields[]` 被映射到 AgentReport 的
+ *   `redactedFields[]`（前缀 `runner.`）以保留 redaction audit。
  */
 
 import { randomUUID } from "node:crypto";
 
 import type {
   CoderAgentReport,
-  LastErrorCode,
+  RunnerArtifact,
+  RunnerResult,
   TaskNode,
   WorkItem,
+  WorkflowToolGrant,
 } from "@issuepilot/shared-contracts";
 
 import type { CoderRoleProfile } from "../pipelines/role-profile.js";
+import { runnerErrorToLastErrorCode } from "../runners/failure-mapping.js";
+import { RunnerRegistryError } from "../runners/registry.js";
+import type { RunnerRegistry } from "../runners/types.js";
+import type { RunnerEventSink } from "../runners/types.js";
 
+/**
+ * V4.6 legacy export：daemon / other modules may still throw these as
+ * defensive shorthand. With V4.7 the agent factory primarily maps
+ * `RunnerError.code` directly, but the symbols are kept exported so
+ * downstream catch-clauses do not break.
+ */
 export class RunnerUnavailableError extends Error {
   override readonly name = "RunnerUnavailableError";
 
@@ -41,54 +56,6 @@ export class SandboxViolationError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
   }
-}
-
-export interface CoderLifecycleRunInput {
-  profile: CoderRoleProfile;
-  prompt: string;
-  cwd: string;
-  workItem: WorkItem;
-  task: TaskNode;
-}
-
-export type CoderLifecycleStatus =
-  | "passed"
-  | "failed"
-  | "skipped"
-  | "unknown";
-
-export interface CoderLifecycleRunResult {
-  runId: string;
-  /** Codex agent 在 cwd 下产生的最终 diff/summary（已过 redact）。 */
-  diffSummary: string;
-  /** 落到本地 worktree 的 branch 名。 */
-  branch: string;
-  /** 可选：V4.3 RunReportArtifact id，dashboard 链接到它。 */
-  runReportArtifactId?: string | undefined;
-  buildStatus?: CoderLifecycleStatus;
-  testStatus?: CoderLifecycleStatus;
-  lintStatus?: CoderLifecycleStatus;
-  mergeRequest?: {
-    iid: number;
-    url: string;
-    state: "opened" | "merged" | "closed";
-  };
-}
-
-export type CoderLifecycleOutcome =
-  | { kind: "completed"; result: CoderLifecycleRunResult }
-  /** 整体 lifecycle 跑完但 agent 自己声明 failed（例如 CI fail）。 */
-  | {
-      kind: "failed";
-      reason: LastErrorCode;
-      message: string;
-      runId?: string | undefined;
-      partial?: Partial<CoderLifecycleRunResult>;
-    }
-  | { kind: "cancelled"; cancelledAt: string };
-
-export interface CoderLifecycleRunner {
-  run(input: CoderLifecycleRunInput): Promise<CoderLifecycleOutcome>;
 }
 
 export interface CoderAgentRunInput {
@@ -110,37 +77,124 @@ export interface CoderAgent {
   run(input: CoderAgentRunInput): Promise<CoderAgentResult>;
 }
 
-const codeToBranch = (lastErr: unknown): LastErrorCode => {
-  if (lastErr instanceof RunnerUnavailableError) return "runner_unavailable";
-  if (lastErr instanceof SandboxViolationError) return "sandbox_violation";
-  return "coding_failed";
+const RUNNER_KIND_CODEX = "codex_app_server" as const;
+
+const buildRunnerInput = (
+  input: CoderAgentRunInput,
+  toolAllow: WorkflowToolGrant[],
+) => ({
+  runnerId: input.profile.runnerId,
+  role: "coder" as const,
+  prompt: input.profile.prompt,
+  cwd: input.cwd,
+  workItemId: input.workItem.workItemId,
+  taskId: input.task.taskId,
+  pipelineRunId: input.pipelineRun.pipelineRunId,
+  roleProfileId: input.profile.roleProfileId,
+  toolAllow,
+  sandbox: input.profile.sandbox,
+  metadata: { agentReportRole: "coder" as const },
+  ...(input.profile.timeoutSeconds !== undefined
+    ? { timeoutSeconds: input.profile.timeoutSeconds }
+    : {}),
+});
+
+interface ParsedArtifacts {
+  diffSummary: string;
+  branch: string;
+  mergeRequest?: { iid: number; url: string; state: "opened" | "merged" | "closed" };
+  runReportArtifactId?: string;
+}
+
+const isMrState = (v: unknown): v is "opened" | "merged" | "closed" =>
+  v === "opened" || v === "merged" || v === "closed";
+
+const MR_SUMMARY_RE = /^merge_request:(\d+):(.+)$/;
+// adapter 在 `kind: "diff"` artifact 的 summary 头部插入 `branch:<name>\n`
+// (见 apps/orchestrator/src/runners/codex-app-server.ts:buildArtifacts).
+// 这里只提取 branch,剩余文本继续作为 `diffSummary` 给 dashboard / run
+// report 渲染。读不到时让 branch 留空,由 report-artifact 决定 fallback。
+const DIFF_BRANCH_HEADER_RE = /^branch:([^\n]+)\n?/;
+
+const parseArtifacts = (
+  artifacts: RunnerArtifact[] | undefined,
+): ParsedArtifacts => {
+  let diffSummary = "";
+  let branch = "";
+  let mergeRequest: ParsedArtifacts["mergeRequest"];
+  if (artifacts) {
+    for (const a of artifacts) {
+      if (a.kind === "diff" && typeof a.summary === "string") {
+        let body = a.summary;
+        const m = DIFF_BRANCH_HEADER_RE.exec(body);
+        if (m) {
+          branch = m[1]!.trim();
+          body = body.slice(m[0].length);
+        }
+        diffSummary = body.trim();
+      }
+      // 注意:`kind: "text"` artifact 故意不再 fallback 进 `diffSummary`。
+      // 之前的实现会让 Codex 的 final_message 散文污染 dashboard 的
+      // "diff" 显示 (V4.7 review H2)。Codex 散文应该走 `finalMessage`
+      // 链路(reviewer JSON 等)或者由调用方显式消费 `text` artifact。
+      if (a.kind === "tool_result" && typeof a.summary === "string") {
+        const match = MR_SUMMARY_RE.exec(a.summary);
+        if (match) {
+          const iid = Number(match[1]);
+          const url = match[2]!;
+          mergeRequest = {
+            iid,
+            url,
+            state: "opened",
+          };
+        }
+      }
+    }
+  }
+  void isMrState;
+  return mergeRequest
+    ? { diffSummary, branch, mergeRequest }
+    : { diffSummary, branch };
+};
+
+const runnerRedactedFieldsToReport = (
+  result: RunnerResult,
+): string[] => {
+  if (!result.redactedFields || result.redactedFields.length === 0) return [];
+  return result.redactedFields.map((field) => `runner.${field}`);
 };
 
 export const createCoderAgent = (deps: {
-  lifecycle: CoderLifecycleRunner;
-  /** clock injection；默认 Date.now()。 */
+  runnerRegistry: RunnerRegistry;
+  events?: RunnerEventSink;
   now?: () => string;
   newId?: () => string;
 }): CoderAgent => {
-  const now = deps.now ?? (() => new Date().toISOString());
-  const newId = deps.newId ?? (() => randomUUID());
+  const now = deps.now ?? ((): string => new Date().toISOString());
+  const newId = deps.newId ?? ((): string => randomUUID());
 
   return {
     async run(input) {
       const tickNow = input.now ?? now;
       const tickId = input.newId ?? newId;
       const startedAt = tickNow();
-      let outcome: CoderLifecycleOutcome;
+      const runnerId = input.profile.runnerId;
+
+      let result: RunnerResult;
       try {
-        outcome = await deps.lifecycle.run({
-          profile: input.profile,
-          prompt: input.profile.prompt,
-          cwd: input.cwd,
-          workItem: input.workItem,
-          task: input.task,
+        const adapter = deps.runnerRegistry.getForRole({
+          role: "coder",
+          runnerId,
         });
+        const runnerInput = buildRunnerInput(input, input.profile.toolAllow);
+        result = await adapter.run(
+          runnerInput,
+          deps.events ? { events: deps.events } : undefined,
+        );
       } catch (cause) {
-        const code = codeToBranch(cause);
+        const isRegistryError = cause instanceof RunnerRegistryError;
+        const message =
+          cause instanceof Error ? cause.message : String(cause);
         const report: CoderAgentReport = {
           agentReportId: tickId(),
           workItemId: input.workItem.workItemId,
@@ -148,13 +202,16 @@ export const createCoderAgent = (deps: {
           taskId: input.task.taskId,
           role: "coder",
           roleProfileId: input.profile.roleProfileId,
+          runnerId,
+          runnerKind: RUNNER_KIND_CODEX,
+          runnerRunId: null,
           status: "failed",
           startedAt,
           completedAt: tickNow(),
           promptTemplateHash: input.profile.promptTemplateHash,
           lastError: {
-            code,
-            message: cause instanceof Error ? cause.message : String(cause),
+            code: isRegistryError ? "runner_unavailable" : "coding_failed",
+            message,
           },
           evidenceLinks: [],
           redactedFields: [],
@@ -163,11 +220,20 @@ export const createCoderAgent = (deps: {
         return { kind: "report", report };
       }
 
-      if (outcome.kind === "cancelled") {
-        return { kind: "cancelled", cancelledAt: outcome.cancelledAt };
+      if (result.status === "cancelled") {
+        return { kind: "cancelled", cancelledAt: result.cancelledAt };
       }
 
-      if (outcome.kind === "failed") {
+      const runnerRunId = result.runId ?? null;
+      const redactedFields = runnerRedactedFieldsToReport(result);
+
+      if (result.status === "failed" || result.status === "timeout") {
+        const errorCode = runnerErrorToLastErrorCode(result.error.code);
+        // V4.7 review follow-up:failed / timeout 路径下 adapter 现在也会
+        // 把已存在的 MR artifact 透出来,coder report 把它带进
+        // `coder.mergeRequest`,让 reviewer / dashboard 不会丢已经创建的
+        // MR(对应「pipeline 后期失败但 MR 已经创建」场景)。
+        const parsed = parseArtifacts(result.artifacts);
         const report: CoderAgentReport = {
           agentReportId: tickId(),
           workItemId: input.workItem.workItemId,
@@ -175,36 +241,36 @@ export const createCoderAgent = (deps: {
           taskId: input.task.taskId,
           role: "coder",
           roleProfileId: input.profile.roleProfileId,
+          runnerId,
+          runnerKind: RUNNER_KIND_CODEX,
+          runnerRunId,
           status: "failed",
           startedAt,
           completedAt: tickNow(),
-          ...(outcome.runId ? { runId: outcome.runId } : {}),
+          ...(result.runId ? { runId: result.runId } : {}),
           promptTemplateHash: input.profile.promptTemplateHash,
-          lastError: { code: outcome.reason, message: outcome.message },
+          lastError: { code: errorCode, message: result.error.message },
           evidenceLinks: [],
-          redactedFields: [],
+          redactedFields,
           coder: {
-            diffSummary: outcome.partial?.diffSummary ?? "",
-            branch: outcome.partial?.branch ?? "",
-            ...(outcome.partial?.runReportArtifactId
-              ? { runReportArtifactId: outcome.partial.runReportArtifactId }
-              : {}),
-            ...(outcome.partial?.buildStatus
-              ? { buildStatus: outcome.partial.buildStatus }
-              : {}),
-            ...(outcome.partial?.testStatus
-              ? { testStatus: outcome.partial.testStatus }
-              : {}),
-            ...(outcome.partial?.lintStatus
-              ? { lintStatus: outcome.partial.lintStatus }
+            diffSummary: "",
+            branch: "",
+            ...(parsed.mergeRequest
+              ? { mergeRequest: parsed.mergeRequest }
               : {}),
           },
         };
         return { kind: "report", report };
       }
 
-      // completed
-      const r = outcome.result;
+      // status === "completed"
+      const parsed = parseArtifacts(result.artifacts);
+      const evidenceLinks: string[] = [];
+      if (parsed.runReportArtifactId) {
+        evidenceLinks.push(
+          `run-report-artifact://${parsed.runReportArtifactId}`,
+        );
+      }
       const report: CoderAgentReport = {
         agentReportId: tickId(),
         workItemId: input.workItem.workItemId,
@@ -212,25 +278,23 @@ export const createCoderAgent = (deps: {
         taskId: input.task.taskId,
         role: "coder",
         roleProfileId: input.profile.roleProfileId,
+        runnerId,
+        runnerKind: RUNNER_KIND_CODEX,
+        runnerRunId,
         status: "complete",
         startedAt,
         completedAt: tickNow(),
-        runId: r.runId,
+        ...(result.runId ? { runId: result.runId } : {}),
         promptTemplateHash: input.profile.promptTemplateHash,
-        evidenceLinks: r.runReportArtifactId
-          ? [`run-report-artifact://${r.runReportArtifactId}`]
-          : [],
-        redactedFields: [],
+        evidenceLinks,
+        redactedFields,
         coder: {
-          diffSummary: r.diffSummary,
-          branch: r.branch,
-          ...(r.runReportArtifactId
-            ? { runReportArtifactId: r.runReportArtifactId }
+          diffSummary: parsed.diffSummary,
+          branch: parsed.branch,
+          ...(parsed.runReportArtifactId
+            ? { runReportArtifactId: parsed.runReportArtifactId }
             : {}),
-          ...(r.buildStatus ? { buildStatus: r.buildStatus } : {}),
-          ...(r.testStatus ? { testStatus: r.testStatus } : {}),
-          ...(r.lintStatus ? { lintStatus: r.lintStatus } : {}),
-          ...(r.mergeRequest ? { mergeRequest: r.mergeRequest } : {}),
+          ...(parsed.mergeRequest ? { mergeRequest: parsed.mergeRequest } : {}),
         },
       };
       return { kind: "report", report };

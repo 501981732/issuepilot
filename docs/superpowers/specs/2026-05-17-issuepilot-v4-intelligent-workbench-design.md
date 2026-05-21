@@ -32,6 +32,11 @@
   / V4.5 role_configuration 改进目标 / dashboard pipeline & recipe & revoke
   UI；实施计划见 `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`，
   验收清单见 `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`）。
+- V4.7 Runner Adapter Contract：
+  `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`
+  （设计已批准，实施计划待写；覆盖 runner contract、本地静态 runner registry、
+  `codex_app_server` adapter 迁移、capability fail-closed 和 AgentReport
+  runner 追溯字段）。
 
 ## 1. Roadmap 决策
 
@@ -165,7 +170,8 @@ V4 不做：
 
 ## 7. 阶段结构
 
-V4 按 6 个中阶段设计。V4.1 必须先做；V4.2-V4.6 可根据 dog-food 反馈调整顺序。
+V4 原按 6 个中阶段设计；V4.6 落地后新增 V4.7 作为 runner adapter
+contract 收口阶段。V4.1 必须先做；V4.2-V4.7 可根据 dog-food 反馈调整顺序。
 
 ### V4.1：Workflow Spine
 
@@ -184,8 +190,8 @@ V4 按 6 个中阶段设计。V4.1 必须先做；V4.2-V4.6 可根据 dog-food �
 
 - 一个复杂 Issue 能从“未拆解”走到“多个子任务 run + 汇总报告”。
 - 不要求拆解算法很强，但要求流程完整、状态可追踪、报告能看懂。
-- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.6 的深度图形视图、
-  长期质量趋势、自动改进建议和多 agent 分工均在后续阶段展开。
+- V4.1 只实现 workflow spine 所需的最小能力；V4.2-V4.7 的深度图形视图、
+  长期质量趋势、自动改进建议、多 agent 分工和 runner contract 均在后续阶段展开。
 
 #### V4.1 Task execution contract
 
@@ -290,7 +296,28 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
   `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
   / `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration.md`
   / `docs/superpowers/plans/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-acceptance.md`。
-- 未实现项（仍属于 V3）：Claude Code 等 runner adapter、生产级 worker 平台。
+### V4.7：Runner Adapter Contract（设计已批准）
+
+目标：把 V4.6 中写死的 Codex app-server lifecycle 抽成稳定 runner adapter
+contract，但不接入第二个真实 runner，也不做生产 worker 平台。
+
+能力（待实施）：
+
+- `packages/shared-contracts` 新增 `RunnerDescriptor`、`RunnerCapability`、
+  `RunnerRunInput`、`RunnerResult`、`RunnerError` 和 runner artifact contract。
+- `packages/workflow` 支持本地静态 `runners:` registry 与
+  `roles.<role>.runner` 引用；开发期默认 runner 是 `codex_app_server`。
+- `apps/orchestrator` 新增 runner registry / resolver，并把现有 Codex
+  lifecycle 迁移为 `codex_app_server` adapter。
+- adapter 只输出标准 `RunnerResult`；Coder / Reviewer / TestEvidence agent
+  factory 继续负责生成 role-specific `AgentReport`。
+- capability missing / unknown runner fail closed；`AgentReport` 新增
+  `runnerId`、`runnerKind`、`runnerRunId?` 追溯字段。
+- 不做动态 discovery、Claude Code / 内部 agent adapter、多 worker 调度、
+  fan-out 并发或生产 sandbox。
+
+设计 spec：
+`docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
 
 ## 8. 架构
 

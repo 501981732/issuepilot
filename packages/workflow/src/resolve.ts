@@ -3,10 +3,13 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type {
-  AgentRole,
-  WorkflowRoleConfig,
-  WorkflowRolesConfig,
+import {
+  filesystemCapabilitiesForSandbox,
+  runnerCapabilityForRole,
+  type AgentRole,
+  type RunnerCapability,
+  type WorkflowRoleConfig,
+  type WorkflowRolesConfig,
 } from "@issuepilot/shared-contracts";
 
 import { WorkflowConfigError } from "./parse.js";
@@ -194,6 +197,85 @@ export async function resolveRolePromptHashes(
 }
 
 /**
+ * V4.7：runner 选择失败 / capability 缺失时抛出。`code` 让上层把校验
+ * 错误暴露成 dashboard 与 routes 的统一形态。
+ */
+export class RunnerConfigInvalidError extends Error {
+  override readonly name = "RunnerConfigInvalidError";
+
+  constructor(
+    message: string,
+    public readonly path: string,
+    public readonly code:
+      | "runner_missing"
+      | "unsupported_runner_kind"
+      | "capability_missing",
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
+
+/**
+ * V4.7：检查每个声明的 role 引用的 runner 在 registry 中存在、kind 受支持、
+ * 并且 capability 覆盖 role + sandbox + tool 需求。fail closed —— 任意校验失败
+ * 立刻抛出，runner 不会启动。
+ */
+export function assertRunnerCapabilities(cfg: WorkflowConfig): void {
+  const order: AgentRole[] = ["coder", "reviewer", "test_evidence"];
+  for (const role of order) {
+    const profile = cfg.roles[role];
+    if (!profile) continue;
+    const runnerId = profile.runner;
+    const runner = cfg.runners[runnerId];
+    if (!runner) {
+      throw new RunnerConfigInvalidError(
+        `roles.${role}.runner references unknown runner id: ${runnerId}`,
+        `roles.${role}.runner`,
+        "runner_missing",
+      );
+    }
+    if (runner.kind !== "codex_app_server") {
+      throw new RunnerConfigInvalidError(
+        `unsupported runner kind: ${runner.kind} (runners.${runnerId})`,
+        `runners.${runnerId}.kind`,
+        "unsupported_runner_kind",
+      );
+    }
+    const required: RunnerCapability[] = [runnerCapabilityForRole(role)];
+    if (role === "test_evidence") required.push("artifacts");
+    if (needsGitlabTools(profile)) required.push("gitlab.tools");
+    for (const capability of required) {
+      if (!runner.capabilities.includes(capability)) {
+        throw new RunnerConfigInvalidError(
+          `capability_missing: runners.${runnerId} lacks ${capability} required by roles.${role}`,
+          `runners.${runnerId}.capabilities`,
+          "capability_missing",
+        );
+      }
+    }
+    const filesystemOptions = filesystemCapabilitiesForSandbox(profile.sandbox);
+    const hasAnyFilesystem = filesystemOptions.some((cap) =>
+      runner.capabilities.includes(cap),
+    );
+    if (!hasAnyFilesystem) {
+      throw new RunnerConfigInvalidError(
+        `capability_missing: runners.${runnerId} lacks any of [${filesystemOptions.join(
+          ", ",
+        )}] required by roles.${role}.sandbox=${profile.sandbox}`,
+        `runners.${runnerId}.capabilities`,
+        "capability_missing",
+      );
+    }
+  }
+}
+
+function needsGitlabTools(profile: WorkflowRoleConfig): boolean {
+  if (!profile.tools) return false;
+  return profile.tools.some((tool) => tool.name.startsWith("gitlab."));
+}
+
+/**
  * 一次性 resolve：把路径展开 + role prompt hash 都填好的 WorkflowConfig
  * 返回。`configRoot` 留给上层自行决定（central / single 模式各取一处）。
  */
@@ -203,5 +285,7 @@ export async function resolveWorkflow(
 ): Promise<WorkflowConfig> {
   const expanded = expandWorkflowPaths(cfg);
   const roles = await resolveRolePromptHashes(expanded, configRoot);
-  return { ...expanded, roles };
+  const resolved: WorkflowConfig = { ...expanded, roles };
+  assertRunnerCapabilities(resolved);
+  return resolved;
 }

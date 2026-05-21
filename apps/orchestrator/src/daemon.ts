@@ -9,9 +9,11 @@ import {
   type CredentialsStore,
 } from "@issuepilot/credentials";
 import {
+  createBatchedEventStore,
   createEventBus,
   createEventStore,
   redact,
+  type BatchedEventStore,
   type EventBus,
 } from "@issuepilot/observability";
 import {
@@ -24,6 +26,8 @@ import type {
   IssuePilotInternalEvent,
   ReviewerAgentReport,
   RunReportArtifact,
+  RunnerEvent,
+  RunnerRunInput,
   TaskNode,
   TestEvidenceAgentReport,
   WorkItem,
@@ -53,10 +57,6 @@ import {
 import { execa } from "execa";
 
 import { createCoderAgent } from "./agents/coder.js";
-import {
-  createCoderLifecycle,
-  createReviewerLifecycle,
-} from "./agents/codex-lifecycle.js";
 import { collectorsForTask } from "./agents/evidence-collectors.js";
 import { createReviewerAgent } from "./agents/reviewer.js";
 import { createTestEvidenceAgent } from "./agents/test-evidence.js";
@@ -112,6 +112,9 @@ import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
+import { createCodexAppServerAdapter } from "./runners/codex-app-server.js";
+import { createRunnerRegistry } from "./runners/registry.js";
+import type { RunnerEventSink } from "./runners/types.js";
 import { createRunCancelRegistry } from "./runtime/run-cancel-registry.js";
 import { createConcurrencySlots } from "./runtime/slots.js";
 import { createRuntimeState, type RuntimeState } from "./runtime/state.js";
@@ -464,8 +467,21 @@ export async function startDaemon(
   const state = deps.state ?? createRuntimeState();
   const slots = createConcurrencySlots(workflow.agent.maxConcurrentAgents);
   const eventBus = deps.eventBus ?? createEventBus<OrchestratorEvent>();
-  const eventStore = createEventStore(
-    path.join(workflow.workspace.root, ".issuepilot", "events"),
+  // V4.7 review N-2 修复:B1 修好之后 lifecycle 流式事件第一次真的能进
+  // event store,一次 Codex 多 turn run 可能在几秒内产生上百条 RunnerEvent。
+  // 用 `createBatchedEventStore` 包一层 in-memory 缓冲,把同一
+  // `(projectSlug, issueIid)` 的多次 append 在 250ms 内 / 50 条以内合并到
+  // 单次 fs.appendFile,减少 syscall amplification;read-after-write 语义
+  // 由包装层在 read 前 flush 匹配 key 保证。
+  const eventStoreDir = path.join(
+    workflow.workspace.root,
+    ".issuepilot",
+    "events",
+  );
+  const baseEventStore = createEventStore(eventStoreDir);
+  const eventStore: BatchedEventStore = createBatchedEventStore(
+    baseEventStore,
+    eventStoreDir,
   );
   // V2.5 Command Center: report artifacts live next to events under the
   // workspace's `.issuepilot/` so a single tarball captures both the audit
@@ -625,17 +641,6 @@ export async function startDaemon(
         String(workItem.sourceIssue.iid),
       );
 
-    const threadNameFor = ({
-      workItem,
-      task,
-      role,
-    }: {
-      workItem: WorkItem;
-      task: TaskNode;
-      role: "coder" | "reviewer" | "test_evidence";
-    }): string =>
-      `${workflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
-
     /**
      * V4.6 follow-up Task 4c — `publishLifecycleEvent` 接受 lifecycle
      * adapter 透回来的 ctx，把 `issueIid` + `taskId` + `role` 写进
@@ -683,62 +688,107 @@ export async function startDaemon(
       listMergeRequestNotes: gitlab.listMergeRequestNotes,
       getPipelineStatus: gitlab.getPipelineStatus,
     };
-    const coderLifecycle = createCoderLifecycle({
-      codex: workflow.codex,
-      maxTurns: workflow.agent.maxTurns,
-      threadName: threadNameFor,
-      tools: (ctx) =>
-        createGitLabTools(gitlabToolsAdapter, {
-          id: String(ctx.workItem.sourceIssue.iid),
-          iid: ctx.workItem.sourceIssue.iid,
-          title: ctx.workItem.sourceIssue.title,
-          url: ctx.workItem.sourceIssue.url,
-          projectId: ctx.workItem.sourceIssue.projectId,
-          labels: [],
-        }),
-      onEvent: (type, data, ctx) =>
-        publishLifecycleEvent({
-          role: "coder",
-          type,
-          data,
-          workItem: ctx.workItem,
-          task: ctx.task,
-        }),
-    });
-
-    const reviewerLifecycle = createReviewerLifecycle({
-      codex: workflow.codex,
-      maxTurns: workflow.agent.maxTurns,
-      threadName: threadNameFor,
-      onEvent: (type, data, ctx) =>
-        publishLifecycleEvent({
-          role: "reviewer",
-          type,
-          data,
-          workItem: ctx.workItem,
-          task: ctx.task,
-        }),
-    });
-
-    const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
-    const reviewerAgent = createReviewerAgent({ lifecycle: reviewerLifecycle });
     /**
-     * V4.6 follow-up Task 4c — test_evidence agent 接入真实
-     * collectors。`createTestEvidenceAgent` 自身不挂 Codex（spec §8.2 /
-     * §16.1：test_evidence 用 evidence collectors 路径，不必再起一次
-     * lifecycle），所以这里直接 new agent + 在 pipelineAgents.testEvidence
-     * 的 adapter 里按 task 注入 evidenceDir + collectors。
-     *
-     * evidenceDir 与 V4.5 `scanRunEvidence` 共享 `.issuepilot/evidence/`
-     * 父目录，但 partition 方式不同：V4.5 按 runId 切
-     * (`<taskWorktreePath>/.issuepilot/evidence/<runId>`)，V4.6 这里按
-     * taskId 切 (`<workspace.root>/<projectSlug>/<issueIid>/.issuepilot/
-     * evidence/<taskId>`)。前序 V4.5 dispatch / coder 写到 runId 子目录
-     * 的产物不会被本 collector 自动扫到 —— V4.6 默认 layout 的目标是给
-     * V4.6 自己的 evidence 产物留位（V4.7 接入 ensureWorktree 后 coder
-     * agent 会直接写到这里）。
+     * V4.7 runner adapter contract：runner adapter 自己不持有 workItem，
+     * 但 GitLab tools 工厂需要当前 issue 的 iid / url / title 来生成
+     * `gitlab_*` tool schemas，RunnerEvent → publishEvent 也需要把
+     * workItem.sourceIssue.iid 写进 `detail.issueIid` 让 eventStore
+     * 能按 issue 路由。所以这里维护一个 per-call-key 的 workItem 表，
+     * pipelineAgents 包装器在调用 agent.run 之前 set，结束后 delete；
+     * 表 key = `<pipelineRunId>/<taskId>/<role>`，唯一对应一次 V4.6
+     * agent.run。
      */
-    const testEvidenceAgent = createTestEvidenceAgent({});
+    const currentWorkItemByCallKey = new Map<string, WorkItem>();
+    const runnerCallKey = (input: {
+      pipelineRunId: string;
+      taskId: string;
+      role: string;
+    }): string =>
+      `${input.pipelineRunId}/${input.taskId}/${input.role}`;
+
+    const codexAdapterTools = (input: RunnerRunInput) => {
+      const wi = currentWorkItemByCallKey.get(runnerCallKey(input));
+      if (!wi) return [];
+      return createGitLabTools(gitlabToolsAdapter, {
+        id: String(wi.sourceIssue.iid),
+        iid: wi.sourceIssue.iid,
+        title: wi.sourceIssue.title,
+        url: wi.sourceIssue.url,
+        projectId: wi.sourceIssue.projectId,
+        labels: [],
+      });
+    };
+
+    const runnerEventSink: RunnerEventSink = {
+      emit(event: RunnerEvent): void {
+        const wi = currentWorkItemByCallKey.get(
+          runnerCallKey({
+            pipelineRunId: event.pipelineRunId,
+            taskId: event.taskId,
+            role: event.role,
+          }),
+        );
+        if (!wi) return;
+        publishLifecycleEvent({
+          role: event.role as "coder" | "reviewer" | "test_evidence",
+          type: event.type,
+          data: {
+            ...(event.data ?? {}),
+            runnerId: event.runnerId,
+            ...(event.runnerRunId ? { runnerRunId: event.runnerRunId } : {}),
+            ...(event.message ? { message: event.message } : {}),
+            ...(event.redactedFields && event.redactedFields.length > 0
+              ? { redactedFields: event.redactedFields }
+              : {}),
+          },
+          workItem: wi,
+          task: {
+            taskId: event.taskId,
+            title: "",
+            goal: "",
+            scope: "",
+            dependsOn: [],
+            suggestedValidation: [],
+            status: "running",
+            runIds: [],
+            riskLevel: "low",
+          },
+        });
+      },
+    };
+
+    const workflowRunners = workflow.runners ?? {};
+    const runnerRegistry = createRunnerRegistry({
+      descriptors: workflowRunners,
+      adapters: Object.values(workflowRunners)
+        .filter((descriptor) => descriptor.kind === "codex_app_server")
+        .map((descriptor) =>
+          createCodexAppServerAdapter({
+            descriptor,
+            codex: workflow.codex,
+            tools: codexAdapterTools,
+          }),
+        ),
+    });
+
+    const coderAgent = createCoderAgent({
+      runnerRegistry,
+      events: runnerEventSink,
+    });
+    const reviewerAgent = createReviewerAgent({
+      runnerRegistry,
+      events: runnerEventSink,
+    });
+    /**
+     * V4.7 — test_evidence agent 也通过 RunnerRegistry 取 adapter
+     * （spec §16.1）：runner 跑一次决定要采哪些证据，然后再串接 collectors
+     * 把证据真正落盘到 `<workspace>/.issuepilot/evidence/<taskId>/`。
+     * collectors 由 daemon 装配层按 task 注入，agent.run 时一并消费。
+     */
+    const testEvidenceAgent = createTestEvidenceAgent({
+      runnerRegistry,
+      events: runnerEventSink,
+    });
     const evidenceDirFor = (workItem: WorkItem, task: TaskNode): string =>
       path.join(
         workflow.workspace.root,
@@ -773,6 +823,19 @@ export async function startDaemon(
       scopeInsufficient: false as const,
     });
 
+    const withRunnerCallContext = async <T,>(
+      key: string,
+      workItem: WorkItem,
+      fn: () => Promise<T>,
+    ): Promise<T> => {
+      currentWorkItemByCallKey.set(key, workItem);
+      try {
+        return await fn();
+      } finally {
+        currentWorkItemByCallKey.delete(key);
+      }
+    };
+
     const pipelineAgents: CoordinatorAgents = {
       coder: {
         async run(input): Promise<
@@ -786,13 +849,20 @@ export async function startDaemon(
             );
           }
           const coderProfile: CoderRoleProfile = input.profile;
-          return coderAgent.run({
-            workItem: input.workItem,
-            task: input.task,
-            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
-            profile: coderProfile,
-            cwd: codexCwdFor(input.workItem),
+          const key = runnerCallKey({
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            taskId: input.task.taskId,
+            role: "coder",
           });
+          return withRunnerCallContext(key, input.workItem, () =>
+            coderAgent.run({
+              workItem: input.workItem,
+              task: input.task,
+              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+              profile: coderProfile,
+              cwd: codexCwdFor(input.workItem),
+            }),
+          );
         },
       },
       reviewer: {
@@ -810,13 +880,20 @@ export async function startDaemon(
             );
           }
           const reviewerProfile: ReviewerRoleProfile = input.profile;
-          return reviewerAgent.run({
-            workItem: input.workItem,
-            task: input.task,
-            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
-            profile: reviewerProfile,
-            cwd: codexCwdFor(input.workItem),
+          const key = runnerCallKey({
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            taskId: input.task.taskId,
+            role: "reviewer",
           });
+          return withRunnerCallContext(key, input.workItem, () =>
+            reviewerAgent.run({
+              workItem: input.workItem,
+              task: input.task,
+              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+              profile: reviewerProfile,
+              cwd: codexCwdFor(input.workItem),
+            }),
+          );
         },
       },
       testEvidence: {
@@ -831,14 +908,22 @@ export async function startDaemon(
             );
           }
           const teProfile: TestEvidenceRoleProfile = input.profile;
-          return testEvidenceAgent.run({
-            workItem: input.workItem,
-            task: input.task,
-            pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
-            profile: teProfile,
-            evidenceDir: evidenceDirFor(input.workItem, input.task),
-            collectors: collectorsForTask(input.task),
+          const key = runnerCallKey({
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            taskId: input.task.taskId,
+            role: "test_evidence",
           });
+          return withRunnerCallContext(key, input.workItem, () =>
+            testEvidenceAgent.run({
+              workItem: input.workItem,
+              task: input.task,
+              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+              profile: teProfile,
+              cwd: codexCwdFor(input.workItem),
+              evidenceDir: evidenceDirFor(input.workItem, input.task),
+              collectors: collectorsForTask(input.task),
+            }),
+          );
         },
       },
       reviewerPublisher: {
@@ -2569,6 +2654,10 @@ export async function startDaemon(
     await loop.stop();
     await watcher?.stop();
     await app.close();
+    // V4.7 review N-2:在退出前 drain batched event store,避免最后一批
+    // 缓冲事件因 setTimeout 还没触发而被丢弃(timer 在 dispose 里被显式
+    // 清掉,Node 进程才能干净退出)。
+    await eventStore.dispose();
     resolveStopped?.();
   }
 

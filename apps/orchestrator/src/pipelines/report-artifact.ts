@@ -90,7 +90,14 @@ export function buildPipelineRunReport(input: {
     run: {
       status: runStatusFromPipelineStatus(input.finalStatus),
       attempt: 1,
-      branch: coder?.coder.branch ?? `pipeline:${input.pipelineRun.pipelineRunId}`,
+      // V4.7 review H1:`branch` 在 V4.7 之前永远不会是 `null/undefined`,
+      // 现在 adapter 失败 / git 读不到时会落空字符串。改用 `||` 让空串也
+      // 走 fallback,避免 dashboard / handoff / review-feedback 链路看到
+      // 空 branch。
+      branch:
+        coder?.coder.branch && coder.coder.branch.length > 0
+          ? coder.coder.branch
+          : `pipeline:${input.pipelineRun.pipelineRunId}`,
       workspacePath: "",
       startedAt: input.pipelineRun.createdAt,
       ...(endedAt ? { endedAt } : {}),
@@ -132,7 +139,11 @@ export function buildPipelineRunReport(input: {
       nextAction: "Review the linked MR and V4.6 AgentReports.",
     },
     diff: {
-      summary: coder?.coder.diffSummary ?? "not available",
+      // V4.7 review H2:同 branch,改用 `||` 让空字符串也走 fallback。
+      summary:
+        coder?.coder.diffSummary && coder.coder.diffSummary.length > 0
+          ? coder.coder.diffSummary
+          : "not available",
       filesChanged: 0,
       notableFiles: [],
     },

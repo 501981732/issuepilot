@@ -105,6 +105,12 @@ export interface BaseRoleProfile {
   role: AgentRole;
   /** spec §8.2：`AgentReport.roleProfileId`。 */
   roleProfileId: string;
+  /**
+   * V4.7：role 引用的 runner id（workflow `runners:` 中的 key）。
+   * agent factory 用它从 RunnerRegistry 取出 adapter 并写入 AgentReport
+   * 的 runner trace 字段。
+   */
+  runnerId: string;
   /** spec §10：渲染后的 prompt 内容。 */
   prompt: string;
   /** spec §8.2 / §10：稳定 sha256，agent 写入 AgentReport 用于复现。 */
@@ -186,6 +192,7 @@ const buildBase = async (
   return {
     role: cfg.role,
     roleProfileId: `${cfg.role}@${promptTemplateHash.slice(0, 7)}`,
+    runnerId: cfg.runner,
     prompt,
     promptTemplateHash,
     sandbox: cfg.sandbox,

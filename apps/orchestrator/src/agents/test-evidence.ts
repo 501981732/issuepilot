@@ -21,6 +21,8 @@ import { randomUUID } from "node:crypto";
 
 import type {
   LastErrorCode,
+  RunnerKind,
+  RunnerResult,
   TaskNode,
   TestEvidenceAgentReport,
   TestEvidenceBaseline,
@@ -29,8 +31,14 @@ import type {
 } from "@issuepilot/shared-contracts";
 
 import type { TestEvidenceRoleProfile } from "../pipelines/role-profile.js";
+import { runnerErrorToLastErrorCode } from "../runners/failure-mapping.js";
+import { RunnerRegistryError } from "../runners/registry.js";
+import type { RunnerRegistry } from "../runners/types.js";
+import type { RunnerEventSink } from "../runners/types.js";
 
 import { SandboxViolationError } from "./coder.js";
+
+const RUNNER_KIND_CODEX: RunnerKind = "codex_app_server";
 
 export interface CollectorInput {
   workItem: WorkItem;
@@ -66,6 +74,7 @@ export interface TestEvidenceAgentRunInput {
   task: TaskNode;
   pipelineRun: { pipelineRunId: string };
   profile: TestEvidenceRoleProfile;
+  cwd: string;
   evidenceDir: string;
   collectors: EvidenceCollector[];
   now?: () => string;
@@ -86,12 +95,15 @@ const buildReport = (input: {
   pipelineRunId: string;
   taskId: string;
   roleProfileId: string;
+  runnerId: string;
+  runnerRunId: string | null;
   promptTemplateHash: string;
   startedAt: string;
   completedAt: string;
   status: TestEvidenceAgentReport["status"];
   items: TestEvidenceItem[];
   baseline: TestEvidenceBaseline | null;
+  redactedFields: string[];
   lastErrorCode?: LastErrorCode;
   lastErrorMessage?: string;
 }): TestEvidenceAgentReport => ({
@@ -101,6 +113,9 @@ const buildReport = (input: {
   taskId: input.taskId,
   role: "test_evidence",
   roleProfileId: input.roleProfileId,
+  runnerId: input.runnerId,
+  runnerKind: RUNNER_KIND_CODEX,
+  runnerRunId: input.runnerRunId,
   status: input.status,
   startedAt: input.startedAt,
   completedAt: input.completedAt,
@@ -116,19 +131,26 @@ const buildReport = (input: {
   evidenceLinks: input.items
     .map((i) => i.artifactPath)
     .filter((p): p is string => typeof p === "string"),
-  redactedFields: [],
+  redactedFields: input.redactedFields,
   testEvidence: {
     evidenceItems: input.items,
     baselineEvidence: input.baseline,
   },
 });
 
+const runnerRedactedFieldsForReport = (result: RunnerResult): string[] => {
+  if (!result.redactedFields || result.redactedFields.length === 0) return [];
+  return result.redactedFields.map((field) => `runner.${field}`);
+};
+
 export const createTestEvidenceAgent = (deps: {
+  runnerRegistry: RunnerRegistry;
+  events?: RunnerEventSink;
   now?: () => string;
   newId?: () => string;
-} = {}): TestEvidenceAgent => {
-  const now = deps.now ?? (() => new Date().toISOString());
-  const newId = deps.newId ?? (() => randomUUID());
+}): TestEvidenceAgent => {
+  const now = deps.now ?? ((): string => new Date().toISOString());
+  const newId = deps.newId ?? ((): string => randomUUID());
 
   return {
     async run(input) {
@@ -137,7 +159,101 @@ export const createTestEvidenceAgent = (deps: {
       const startedAt = tickNow();
       const items: TestEvidenceItem[] = [];
       let baseline: TestEvidenceBaseline | null = null;
+      const runnerId = input.profile.runnerId;
 
+      let runnerResult: RunnerResult;
+      try {
+        const adapter = deps.runnerRegistry.getForRole({
+          role: "test_evidence",
+          runnerId,
+        });
+        runnerResult = await adapter.run(
+          {
+            runnerId,
+            role: "test_evidence",
+            prompt: input.profile.prompt,
+            cwd: input.cwd,
+            workItemId: input.workItem.workItemId,
+            taskId: input.task.taskId,
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            roleProfileId: input.profile.roleProfileId,
+            toolAllow: input.profile.toolAllow,
+            sandbox: input.profile.sandbox,
+            metadata: { agentReportRole: "test_evidence" },
+            ...(input.profile.timeoutSeconds !== undefined
+              ? { timeoutSeconds: input.profile.timeoutSeconds }
+              : {}),
+          },
+          deps.events ? { events: deps.events } : undefined,
+        );
+      } catch (cause) {
+        const isRegistryError = cause instanceof RunnerRegistryError;
+        return {
+          kind: "report",
+          report: buildReport({
+            agentReportId: tickId(),
+            workItemId: input.workItem.workItemId,
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            taskId: input.task.taskId,
+            roleProfileId: input.profile.roleProfileId,
+            runnerId,
+            runnerRunId: null,
+            promptTemplateHash: input.profile.promptTemplateHash,
+            startedAt,
+            completedAt: tickNow(),
+            status: "failed",
+            items: [],
+            baseline: null,
+            redactedFields: [],
+            lastErrorCode: isRegistryError
+              ? "runner_unavailable"
+              : "evidence_unavailable",
+            lastErrorMessage:
+              cause instanceof Error ? cause.message : String(cause),
+          }),
+        };
+      }
+
+      if (runnerResult.status === "cancelled") {
+        return { kind: "cancelled", cancelledAt: runnerResult.cancelledAt };
+      }
+
+      const runnerRunId = runnerResult.runId ?? null;
+      const redactedFields = runnerRedactedFieldsForReport(runnerResult);
+
+      if (
+        runnerResult.status === "failed" ||
+        runnerResult.status === "timeout"
+      ) {
+        const baseCode = runnerErrorToLastErrorCode(runnerResult.error.code);
+        const errCode: LastErrorCode =
+          runnerResult.error.code === "artifact_collection_failed"
+            ? "evidence_unavailable"
+            : baseCode;
+        return {
+          kind: "report",
+          report: buildReport({
+            agentReportId: tickId(),
+            workItemId: input.workItem.workItemId,
+            pipelineRunId: input.pipelineRun.pipelineRunId,
+            taskId: input.task.taskId,
+            roleProfileId: input.profile.roleProfileId,
+            runnerId,
+            runnerRunId,
+            promptTemplateHash: input.profile.promptTemplateHash,
+            startedAt,
+            completedAt: tickNow(),
+            status: "failed",
+            items: [],
+            baseline: null,
+            redactedFields,
+            lastErrorCode: errCode,
+            lastErrorMessage: runnerResult.error.message,
+          }),
+        };
+      }
+
+      // runner completed → run collectors
       for (const collector of input.collectors) {
         try {
           const out = await collector.collect({
@@ -169,12 +285,15 @@ export const createTestEvidenceAgent = (deps: {
                 pipelineRunId: input.pipelineRun.pipelineRunId,
                 taskId: input.task.taskId,
                 roleProfileId: input.profile.roleProfileId,
+                runnerId,
+                runnerRunId,
                 promptTemplateHash: input.profile.promptTemplateHash,
                 startedAt,
                 completedAt: tickNow(),
                 status: "failed",
                 items,
                 baseline,
+                redactedFields,
                 lastErrorCode: "sandbox_violation",
                 lastErrorMessage: cause.message,
               }),
@@ -188,12 +307,15 @@ export const createTestEvidenceAgent = (deps: {
               pipelineRunId: input.pipelineRun.pipelineRunId,
               taskId: input.task.taskId,
               roleProfileId: input.profile.roleProfileId,
+              runnerId,
+              runnerRunId,
               promptTemplateHash: input.profile.promptTemplateHash,
               startedAt,
               completedAt: tickNow(),
               status: "failed",
               items,
               baseline,
+              redactedFields,
               lastErrorCode: "evidence_unavailable",
               lastErrorMessage:
                 cause instanceof Error ? cause.message : String(cause),
@@ -232,12 +354,15 @@ export const createTestEvidenceAgent = (deps: {
           pipelineRunId: input.pipelineRun.pipelineRunId,
           taskId: input.task.taskId,
           roleProfileId: input.profile.roleProfileId,
+          runnerId,
+          runnerRunId,
           promptTemplateHash: input.profile.promptTemplateHash,
           startedAt,
           completedAt: tickNow(),
           status: finalStatus,
           items,
           baseline,
+          redactedFields,
           ...(lastCode ? { lastErrorCode: lastCode } : {}),
           ...(lastMsg ? { lastErrorMessage: lastMsg } : {}),
         }),

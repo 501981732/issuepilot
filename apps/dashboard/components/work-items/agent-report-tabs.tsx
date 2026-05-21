@@ -1,11 +1,13 @@
 "use client";
 
-import type {
-  AgentReport,
-  AgentRole,
-  CoderAgentReport,
-  ReviewerAgentReport,
-  TestEvidenceAgentReport,
+import {
+  RUNNER_KIND_VALUES,
+  type AgentReport,
+  type AgentRole,
+  type CoderAgentReport,
+  type ReviewerAgentReport,
+  type RunnerKind,
+  type TestEvidenceAgentReport,
 } from "@issuepilot/shared-contracts";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
@@ -59,6 +61,80 @@ function severityTone(sev: string): BadgeTone {
   if (sev === "high") return "danger";
   if (sev === "medium") return "warning";
   return "neutral";
+}
+
+/**
+ * V4.7 runner trace metadata row：在每个 role panel 内紧贴 status badge 下方
+ * 展示 `runnerId`、`runnerKind`、`runnerRunId`，供调试和审计跨任务的 runner
+ * 行为。设计约束（详见 plan Task 7.2 / review N2）：
+ * - 复用现有 `text-xs text-fg-muted` 风格，不引入新卡片或缩进。
+ * - `runnerRunId` 缺失（`null` / `undefined`）时不渲染空槽位，避免给用户留下
+ *   「这里应该有值」的误导。
+ * - 长 id 使用 `break-all` 自动换行，避免触发横向滚动条。
+ * - 所有可读 label 与 runner kind display name 走 i18n
+ *   (`workItem.agentReportTab.runnerTrace.*`)，保持与同面板其他文案一致。
+ */
+/**
+ * 已知 runner kind 的可读 display name 映射，i18n key 是
+ * `workItem.agentReportTab.runnerTrace.kinds.<kind>`。未列入此白名单的
+ * runner kind 直接回退到原 enum 值，避免 next-intl 4.x 在 missing key 时
+ * 抛 `MISSING_MESSAGE`（4.x 没有 `t.has()` API，回退必须显式处理）。
+ *
+ * V4.7 review N-5 修复：白名单复用 `RUNNER_KIND_VALUES`（contract 单源），
+ * 避免与 `packages/shared-contracts/src/runner.ts` 的双源漂移；V4.8 新增
+ * runner kind 时只需要在 contract 和 i18n bundle 同步加，无需再回这里
+ * 改硬编码 set。
+ */
+const KNOWN_RUNNER_KINDS: ReadonlySet<RunnerKind> = new Set(RUNNER_KIND_VALUES);
+
+/**
+ * V4.7 review N-6 修复：把 `t("kinds.<kind>")` 的 string cast 改成 switch
+ * exhaustive；TypeScript 在 `RUNNER_KIND_VALUES` 扩容时会要求补 case，
+ * 顺手把"加 runner 漏更新 i18n"这条变成编译期错误。
+ */
+function runnerKindLabel(
+  kind: AgentReport["runnerKind"],
+  t: ReturnType<typeof useTranslations<"workItem.agentReportTab.runnerTrace">>,
+): string {
+  if (!KNOWN_RUNNER_KINDS.has(kind as RunnerKind)) {
+    return kind;
+  }
+  switch (kind as RunnerKind) {
+    case "codex_app_server":
+      return t("kinds.codex_app_server");
+    default: {
+      const _exhaustive: never = kind as never;
+      void _exhaustive;
+      return kind;
+    }
+  }
+}
+
+function RunnerTrace({ report }: { report: AgentReport }) {
+  const t = useTranslations("workItem.agentReportTab.runnerTrace");
+  const runId = report.runnerRunId ?? null;
+  const kindLabel = runnerKindLabel(report.runnerKind, t);
+  return (
+    <dl
+      data-testid={`agent-runner-trace-${report.role}`}
+      className="grid gap-x-3 gap-y-1 text-xs text-fg-muted sm:grid-cols-3"
+    >
+      <div>
+        <dt className="font-medium text-fg">{t("runner")}</dt>
+        <dd className="break-all">{report.runnerId}</dd>
+      </div>
+      <div>
+        <dt className="font-medium text-fg">{t("kind")}</dt>
+        <dd className="break-all">{kindLabel}</dd>
+      </div>
+      {runId ? (
+        <div data-testid={`agent-runner-trace-${report.role}-runId`}>
+          <dt className="font-medium text-fg">{t("run")}</dt>
+          <dd className="break-all">{runId}</dd>
+        </div>
+      ) : null}
+    </dl>
+  );
 }
 
 export interface AgentReportTabsProps {
@@ -128,6 +204,7 @@ function CoderPanel({ report }: { report: CoderAgentReport }) {
       <header className="flex items-center gap-2">
         <Badge tone={statusTone(report.status)}>{report.status}</Badge>
       </header>
+      <RunnerTrace report={report} />
       <p className="whitespace-pre-wrap text-sm text-fg">
         {report.coder.diffSummary}
       </p>
@@ -164,6 +241,7 @@ function ReviewerPanel({ report }: { report: ReviewerAgentReport }) {
           mrPublicationStatus={report.reviewer.mrPublication.status}
         />
       </header>
+      <RunnerTrace report={report} />
       <p className="whitespace-pre-wrap text-sm text-fg">
         {report.reviewer.summary}
       </p>
@@ -235,6 +313,7 @@ function TestEvidencePanel({ report }: { report: TestEvidenceAgentReport }) {
       <header className="flex items-center gap-2">
         <Badge tone={statusTone(report.status)}>{report.status}</Badge>
       </header>
+      <RunnerTrace report={report} />
       <section>
         <h4 className="text-xs font-semibold text-fg-muted">
           {t("evidenceItems.title")} ({report.testEvidence.evidenceItems.length})

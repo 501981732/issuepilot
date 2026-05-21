@@ -17,6 +17,12 @@ const baseFields = {
   pipelineRunId: "p-1",
   taskId: "t-1",
   roleProfileId: "v1",
+  // V4.7: every AgentReport carries runner trace fields. Fixtures must
+  // include them so V4.6 dashboard render tests stay compatible with the
+  // strengthened `isAgentReport()` guard in shared-contracts.
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: "turn-1",
   startedAt: "2026-05-19T00:00:00.000Z",
   completedAt: "2026-05-19T00:01:00.000Z",
   evidenceLinks: [],
@@ -174,5 +180,76 @@ describe("AgentReportTabs (V4.6)", () => {
     expect(screen.getByTestId("coder-panel").textContent).toMatch(
       /wrote 12 files \+ tests/,
     );
+  });
+
+  it("V4.7 shows compact runner trace metadata on each role panel", () => {
+    render(
+      <AgentReportTabs
+        reports={{
+          coder: coderReport({
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: "turn-coder",
+          }),
+        }}
+      />,
+    );
+    const trace = screen.getByTestId("agent-runner-trace-coder");
+    // V4.7 review N2: 标签必须走 i18n, 在 en bundle 下展示 "Runner / Kind /
+    // Run"; runnerKind 通过 `kinds.codex_app_server` 映射成 display name
+    // "Codex App Server" 而不是裸 enum 值。注意 `<dt>` 是 inline label,所以
+    // 用 `within(...).getByText` 拿单独节点比对,而不是把整段 textContent
+    // 拼起来正则匹配。
+    const labels = within(trace).getAllByText(/^(Runner|Kind|Run)$/);
+    expect(labels.map((n) => n.textContent)).toEqual([
+      "Runner",
+      "Kind",
+      "Run",
+    ]);
+    expect(within(trace).getByText("Codex App Server")).toBeInTheDocument();
+    // runnerId 仍然按原 enum 渲染,用于跨任务定位 adapter。
+    expect(within(trace).getByText("codex_app_server")).toBeInTheDocument();
+    expect(within(trace).getByText("turn-coder")).toBeInTheDocument();
+  });
+
+  it("V4.7 review N-5 regression: unknown runnerKind falls back to raw enum (no i18n throw)", () => {
+    // 模拟未来 V4.8 加了 second runner 但只更新 contract、暂时没补 i18n
+    // bundle 的过渡期。RunnerTrace 不应抛 next-intl 4.x 的 MISSING_MESSAGE,
+    // 而应直接渲染原 enum 值,等 i18n bundle 补齐再升级显示。
+    render(
+      <AgentReportTabs
+        reports={{
+          coder: coderReport({
+            runnerId: "claude_code_v1",
+            // 故意用一个不在 RUNNER_KIND_VALUES 的字符串走 fallback 路径。
+            runnerKind: "claude_code" as unknown as "codex_app_server",
+            runnerRunId: "turn-claude",
+          }),
+        }}
+      />,
+    );
+    const trace = screen.getByTestId("agent-runner-trace-coder");
+    // Kind 字段应渲染未翻译的 "claude_code" 而不是 "kinds.claude_code"。
+    expect(within(trace).getByText("claude_code")).toBeInTheDocument();
+    expect(within(trace).queryByText("kinds.claude_code")).not.toBeInTheDocument();
+  });
+
+  it("V4.7 does not render an empty runnerRunId slot when missing", () => {
+    render(
+      <AgentReportTabs
+        reports={{
+          reviewer: reviewerReport({
+            runnerId: "codex_app_server",
+            runnerKind: "codex_app_server",
+            runnerRunId: null,
+          }),
+        }}
+      />,
+    );
+    const trace = screen.getByTestId("agent-runner-trace-reviewer");
+    expect(trace.textContent).toMatch(/codex_app_server/);
+    expect(
+      screen.queryByTestId("agent-runner-trace-reviewer-runId"),
+    ).not.toBeInTheDocument();
   });
 });

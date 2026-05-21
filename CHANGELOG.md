@@ -2,6 +2,225 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.7 Runner Adapter Contract（实施阶段）
+
+### Plan & Acceptance
+
+- 设计 spec：
+  `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`。
+- 实施计划：
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`。
+- 验收清单：
+  `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
+
+### Added
+
+- `packages/shared-contracts/src/runner.ts`：V4.7 Runner Adapter Contract
+  （`RunnerDescriptor` / `RunnerRunInput` / `RunnerResult` / `RunnerEvent` /
+  `RunnerErrorCode`），仅支持 `codex_app_server` kind，capability allowlist
+  覆盖 roles / events.streaming / cancel / artifacts / gitlab.tools /
+  filesystem。
+- `packages/workflow`：解析顶层 `runners:` registry 并在 `resolveWorkflow()`
+  里 fail-closed 校验 runner id / kind / capability / role sandbox。`runners:`
+  缺失时回退到内置 `codex_app_server` descriptor，options allowlist 拒绝
+  secret-like / cwd 等字段。
+- `apps/orchestrator/src/runners/`：本地 `RunnerRegistry`、`RunnerEventSink`、
+  `runnerErrorToLastErrorCode` 失败映射，以及 `createCodexAppServerAdapter`
+  把现有 Codex lifecycle 收束成标准 `RunnerResult`，对外 emit sanitized
+  `RunnerEvent` 并在 `RunnerResult.redactedFields[]` 中追溯被改写的字段。
+  Adapter 在 `completed` 路径用 `execa` 跑 `git rev-parse --abbrev-ref HEAD`
+  与 `git diff --stat HEAD` 真实采集 worktree 状态，并以 `kind: "diff"`
+  artifact（头部 `branch:<name>\n` + 后续 git stat 输出）输出，覆盖以下游
+  `CoderAgentReport.coder.{branch, diffSummary}` 与 RunReport handoff /
+  diff summary。
+- `AgentReportBase` 新增 `runnerId` / `runnerKind` / `runnerRunId` 追溯字段；
+  `isAgentReport()` 强制 V4.7 字段存在，旧 fixture 直接升级（不做 lazy
+  migration）。
+- Dashboard `AgentReportTabs` 每个 role panel 紧凑显示 `Runner / Kind / Run`，
+  `runnerRunId` 缺失时不渲染空槽位，复用现有 muted text 风格。所有 label
+  以及 runner kind 的 display name 走 i18n
+  (`workItem.agentReportTab.runnerTrace.*`)，zh 与 en bundle 同步补全
+  `runner` / `kind` / `run` / `kinds.codex_app_server`；未列入白名单的
+  runner kind 回退到原 enum 值，避免 next-intl 4.x missing-key 抛错。
+
+### Changed
+
+- `apps/orchestrator/src/agents/{coder,reviewer,test-evidence}.ts` 不再直接
+  消费 Codex lifecycle outcome；统一从 `RunnerRegistry.getForRole()` 取
+  adapter，把 `RunnerResult` 翻译为 role-specific `AgentReport`，并把 runner
+  redaction 追溯到 `AgentReport.redactedFields[]`（`runner.finalMessage` /
+  `runner.artifacts[*].summary` / `runner.error.message`）。
+- `apps/orchestrator/src/daemon.ts` 与 `apps/orchestrator/src/team/daemon.ts`
+  通过 resolved workflow 的 `runners:` 构造 `RunnerRegistry`，注入
+  `codex_app_server` adapter；不再依赖 `createCoderLifecycle` /
+  `createReviewerLifecycle`。新增 `currentWorkItemByCallKey` 侧 channel，
+  以 `(pipelineRunId, taskId, role)` 维度把 `WorkItem` 上下文限定到具体 run，
+  保证 `codexAdapterTools` 和 `runnerEventSink` 在并发场景不串扰。
+- `apps/orchestrator/src/pipelines/role-profile.ts` 把
+  `workflow.roles.<role>.runner` 透传到 `BaseRoleProfile.runnerId`，供
+  runner registry lookup 使用。
+
+### Removed
+
+- 删除 `apps/orchestrator/src/agents/codex-lifecycle.ts` 与对应测试文件。
+  daemon、agent factory 均不再依赖该旧 Codex-specific 表面。
+
+### Fixed（post-merge code review 二轮收口）
+
+- **B1 (blocker)** — `apps/orchestrator/src/runners/codex-app-server.ts` 的
+  `NOTIFICATION_EVENT_TYPE` 之前用 `turn/start` / `turn/notification` /
+  `tool_call/start` / `tool_call/end` 等 Codex RPC 方法名做 key，但
+  `packages/runner-codex-app-server/src/lifecycle.ts` 内部 `onEvent(...)`
+  实际 emit 的是下划线版（`turn_started` / `tool_call_started` / `notification`
+  …），导致生产 streaming 路径每次 lookup 都返回 `undefined`，
+  `RunnerEventSink` 永远不被触发。修复后 mapping 表对齐 lifecycle 真名，
+  覆盖 `session_started` / `turn_started` / `tool_call_started` /
+  `tool_call_completed` / `tool_call_failed` / `notification` /
+  `turn_failed` / `turn_cancelled` / `turn_timeout` / `turn_completed`。
+- **H1 (high)** — `CoderAgentReport.coder.branch` 之前在三条路径（happy /
+  failed / registry-error）均写死 `""`，相对 V4.6 是回归且让
+  `report-artifact.ts` 用 `??` 的 fallback 永不触发。修复后 adapter 直接
+  从 worktree 跑 `git rev-parse --abbrev-ref HEAD` 读取 branch 并嵌入
+  `kind: "diff"` artifact 头部，agent 拆头部回填 `coder.branch`；
+  `report-artifact.ts` 同步把 branch fallback 改用 `||` 让空字符串也走
+  `pipeline:<id>` 兜底。
+- **H2 (high)** — `parseArtifacts` 之前在没有 `kind: "diff"` artifact 时把
+  `kind: "text"` artifact 兜底成 `diffSummary`，结果 dashboard 上
+  「Coder 当次写了什么」实际显示 `final_message:\n<Codex 散文>`。修复后
+  agent 不再 fallback `text` artifact 到 `diffSummary`，找不到 diff
+  artifact 时 `diffSummary` 留空，由 `report-artifact.ts` 用
+  `"not available"` 兜底。
+- **M1 (medium)** — Adapter 在 `await driveLifecycle(...)` 之前不持有
+  `lastTurnId`，streaming 期间 `RunnerEvent.runnerRunId` 永远 undefined。
+  修复后 `onEvent("turn_started", { turnId })` 立刻把 `turnId` 缓存到
+  闭包变量，后续 `tool_call_*` / `runner_message` 都能带正确的 `runnerRunId`。
+- **M2 (medium)** — `apps/orchestrator/src/agents/__tests__/*.test.ts` 与
+  `apps/orchestrator/src/__tests__/daemon-{pipeline,task4b}-wiring.test.ts`
+  之前用 `filesystem.read_write_worktree` /
+  `filesystem.read_only_worktree` / `filesystem.read_only_source_write_evidence`
+  这类「sandbox 名」充当 capability，并使用已经从 schema 移除的
+  `runnerProfileHash` / `config` 字段。修复后改成 V4.7 真值
+  (`filesystem.worktree_write` / `filesystem.readonly`)，消除测试 fixture
+  与生产 schema 的视盲。
+- **N2 (low)** — Dashboard `RunnerTrace` 的 `Runner / Kind / Run` label 之前
+  硬编码英文且 `runnerKind` 直接显示 enum 原值，与同面板其他 zh i18n 文案
+  断裂。改成走 `workItem.agentReportTab.runnerTrace.*` i18n，且通过
+  `KNOWN_RUNNER_KINDS` 白名单避免 next-intl 4.x 在 missing key 时抛
+  `MISSING_MESSAGE`。
+
+### Fixed（post-merge code review 三轮收口）
+
+- **N-1 (medium)** — `apps/orchestrator/src/runners/codex-app-server.ts`
+  的 `readWorkspaceGitSummary` 之前对 `git rev-parse` / `git diff --stat`
+  都用同一个 5s timeout 且失败时静默吞错，结果生产里若 git 二进制不在
+  PATH / worktree 巨大让 `diff --stat` 超时 / fs 临时错误，H1 会**静默
+  回到空 branch**，操作员分不清是"没 branch"还是"git 读失败"。修复后
+  rev-parse 单独打 2s timeout（亚秒级足够）、diff 拉到 15s 与 Codex
+  turnTimeoutMs 数量级对齐；每条命令的非零退出 / 异常都通过
+  `console.warn("[runner] git rev-parse|diff degraded ...")` surface，
+  日志里 cwd 路径只保留尾部 60 字符防泄漏。
+- **N-2 (medium)** — B1 修好之后所有 lifecycle 事件首次进 event store,
+  每事件一次 `fs.appendFile` 让 syscall 数量级跳升,dashboard SSE 实时
+  流也跟着放大。新增 `packages/observability/src/event-store-batching.ts`
+  提供 `createBatchedEventStore`,把同一 `(projectSlug, issueIid)` 的多
+  次 append 在 250ms 内 / 50 条以内合并为一次 `fs.appendFile`;`read`
+  时先 flush 匹配 key 保证 read-after-write 语义,`dispose()` 在 daemon
+  `stop()` 时被显式调用 drain 缓冲并清理 timer。daemon 默认包裹 batched
+  store,不改任何上游 API。
+- **N-3 (low)** — `tool_call_failed` 之前借用 `tool_call_completed` enum,
+  下游消费方从事件 type 完全分不清成功 / 失败的工具调用。改成映射到
+  `runner_message`,dashboard 至少可以按颜色区分;V4.8 给
+  `RUNNER_EVENT_TYPE_VALUES` 补 `tool_call_failed` 后再做语义升级。
+- **N-4 (low)** — V4.7 contract 定义了 `runner_completed` /
+  `runner_failed` / `runner_cancelled` 但 adapter 没人 emit,结果三个
+  enum 是 dead value;同时 `turn_completed` 之前被映射成 `runner_message`,
+  多 turn 场景会让 dashboard 误以为 LLM 又输出了一段消息。修复后
+  adapter 在 `mapDriveResultToRunnerResult` return 之前主动 emit 一次
+  终态事件,`TERMINAL_EVENT_TYPE_BY_STATUS` 把 `DriveResult.status` 一
+  一映射到 `runner_*` 终态;`turn_completed → runner_message` 映射移除。
+- **N-5 (low)** — Dashboard `KNOWN_RUNNER_KINDS` 之前硬编码
+  `["codex_app_server"]`,与 `packages/shared-contracts` 的
+  `RUNNER_KIND_VALUES` 是 dual source of truth;V4.8 加 second runner
+  漏改这里会让 RunnerTrace 静默 fallback 到 enum 原值。改成复用
+  contract `RUNNER_KIND_VALUES`,真正单源。
+- **N-6 (low)** — `agent-report-tabs.tsx` 之前用
+  `t(\`kinds.${kind}\` as "kinds.codex_app_server")` 强 cast,可读性差
+  且严格 eslint 规则下会报。改成 `runnerKindLabel(kind, t)` switch
+  exhaustive,加 runner kind 时 TypeScript `never` 兜底分支会主动提醒
+  补 case。
+- **follow-up (non-blocking)** — Adapter 之前只在 `completed` 路径调
+  `buildArtifacts`,failure / cancelled / timeout 路径会丢已经创建的
+  MR(对应"pipeline 后期失败但 MR 已经建好"场景)。新增
+  `buildFailureArtifacts` 把 MR artifact 抽取放进所有 failure 路径;
+  `RunnerResultCancelled` / `RunnerResultTimeout` contract 同步加
+  optional `artifacts?` 字段;`coder.ts` 的 failed / timeout 分支也读
+  `parseArtifacts(result.artifacts).mergeRequest` 回填
+  `CoderAgentReport.coder.mergeRequest`,让 reviewer / handoff /
+  dashboard 不再丢已存在的 MR iid。
+
+### Regression tests added
+
+- `apps/orchestrator/src/runners/__tests__/codex-app-server.test.ts`：
+  - B1+M1：在 mock 的 `driveLifecycle` 里以真名（`session_started` /
+    `turn_started` / `tool_call_started` / `notification` /
+    `tool_call_completed`）触发 `onEvent`，断言全部 `RunnerEvent` 都到达
+    `events: { emit }` sink 且 `runnerRunId` 在 streaming 期间已填。
+  - H1+H2：在 tmpdir 真起 git repo、`feature/v4-7-regression` branch、
+    dirty src 文件，跑完 adapter 后断言 `kind: "diff"` artifact 头部是
+    `branch:feature/v4-7-regression\n` 且后续含 `src/a.ts`，并验证
+    `kind: "text"` artifact 仍然存在用作 Codex `final_message` 通道。
+- `apps/orchestrator/src/agents/__tests__/coder.test.ts`：
+  - H1/H2 happy path：diff artifact 含 branch 头部时 agent 拆出
+    `coder.branch = "feature/issue-42"` 与 `coder.diffSummary` 不含
+    `branch:` 前缀。
+  - H2 regression：只有 `text` artifact 时 `coder.diffSummary` 必须留空，
+    `final_message` 不再污染下游。
+  - **三轮 follow-up regression**：`status: "failed"` + artifacts 含
+    `merge_request:...` 时，`coder.mergeRequest` 必须被回填为
+    `{ iid, url, state: "opened" }`，验证 failure 路径 MR 不再丢。
+- `apps/orchestrator/src/runners/__tests__/codex-app-server.test.ts`
+  （三轮新增）：
+  - **N-3 regression**：mocked lifecycle 触发
+    `onEvent("tool_call_failed", ...)`，断言 RunnerEventSink 收到
+    `runner_message` 而不是 `tool_call_completed`，失败信号不再被
+    伪装成功。
+  - **N-4 regression**：`status: completed` 路径必须 emit 恰好 1 个
+    `runner_completed` 终态事件且不再有 `runner_message`（因为
+    `turn_completed` 映射已经去掉）；`status: failed` 路径必须 emit
+    1 个 `runner_failed` 携带 `failureReason`，验证终态事件不丢。
+  - **follow-up regression**：`status: failed` + completedToolCalls
+    含 gitlab_create_merge_request 时，`RunnerResult.artifacts` 必须
+    含 `kind: "tool_result"` 的 MR artifact。
+- `apps/dashboard/components/work-items/agent-report-tabs.test.tsx`
+  （三轮新增）：
+  - **N-5 regression**：`runnerKind = "claude_code"`（不在
+    `RUNNER_KIND_VALUES` 的过渡值）时 RunnerTrace 必须直接显示原
+    enum 值，不能抛 `MISSING_MESSAGE`，也不能把 i18n key
+    `kinds.claude_code` 露给用户。
+- `packages/observability/src/__tests__/event-store-batching.test.ts`
+  （三轮新增）：
+  - 7 个用例验证 `createBatchedEventStore` 的合并写、size-triggered
+    flush、跨 key 顺序保持、read-after-write 语义、`dispose()` 后
+    fallback 到 inner、redact 透传、`onError` 路径。
+
+### Tests
+
+- `packages/shared-contracts`、`packages/workflow`、`packages/runner-codex-app-server`：runner contract / runners registry / Codex adapter 测试全绿。
+- `apps/orchestrator`：80 个测试文件 / 942 个用例全部通过，含 9 个 V4.6
+  multi-agent e2e 场景（其中 1 个新增 V4.7 runner trace 断言）、`runners/`
+  registry & failure-mapping & Codex adapter 套件、daemon 单机/team wiring
+  套件、agent factory runner outcome 映射套件。
+- `apps/dashboard`：44 个测试文件 / 283 个用例全部通过，含
+  `agent-report-tabs.test.tsx` 新增 V4.7 runner trace 可见性 / 缺失 runId 不
+  显示空槽位两条用例。
+
+### Non-Goals（V4.7 内不做）
+
+- 不接入第二种 runner kind（Claude Code、internal coder agent 等）。
+- 不引入 dynamic runner discovery、worker pool、remote runner service 或外部
+  SDK。
+- 不修改 `PipelineCoordinator` 状态机或 V4.6 业务语义。
+
 ## [Unreleased] V4.6 Multi-Agent Collaboration（实施阶段）
 
 ### Plan & Acceptance

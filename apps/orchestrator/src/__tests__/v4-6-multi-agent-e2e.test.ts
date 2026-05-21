@@ -78,6 +78,9 @@ const BASE_TASK: TaskNode = {
 const coderProfile: CoderRoleProfile = {
   role: "coder",
   roleProfileId: "coder@cafe1234",
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: null,
   prompt: "do",
   promptTemplateHash: "cafe1234",
   sandbox: "read_write_worktree",
@@ -88,6 +91,9 @@ const coderProfile: CoderRoleProfile = {
 const reviewerProfile: ReviewerRoleProfile = {
   role: "reviewer",
   roleProfileId: "reviewer@cafe1234",
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: null,
   prompt: "review",
   promptTemplateHash: "cafe1234",
   sandbox: "read_only_worktree",
@@ -101,6 +107,9 @@ const reviewerProfile: ReviewerRoleProfile = {
 const teProfile: TestEvidenceRoleProfile = {
   role: "test_evidence",
   roleProfileId: "test_evidence@cafe1234",
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: null,
   prompt: "te",
   promptTemplateHash: "cafe1234",
   sandbox: "read_only_source_write_evidence",
@@ -125,6 +134,9 @@ const fakeCoder = (
   taskId: "t_e2e",
   role: "coder",
   roleProfileId: "coder@cafe1234",
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: null,
   status: "complete",
   startedAt: "2026-05-19T11:00:00.000Z",
   evidenceLinks: [],
@@ -141,6 +153,9 @@ const fakeReviewer = (
   taskId: "t_e2e",
   role: "reviewer",
   roleProfileId: "reviewer@cafe1234",
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: null,
   status: "complete",
   startedAt: "2026-05-19T11:00:00.000Z",
   evidenceLinks: [],
@@ -166,6 +181,9 @@ const fakeTe = (
   taskId: "t_e2e",
   role: "test_evidence",
   roleProfileId: "test_evidence@cafe1234",
+  runnerId: "codex_app_server",
+  runnerKind: "codex_app_server",
+  runnerRunId: null,
   status: "complete",
   startedAt: "2026-05-19T11:00:00.000Z",
   evidenceLinks: [],
@@ -266,6 +284,38 @@ describe("V4.6 multi-agent e2e — full_pipeline happy path", () => {
     expect(h.reviewerRun).toHaveBeenCalledTimes(1);
     expect(h.teRun).toHaveBeenCalledTimes(1);
     expect(h.taskPatches.at(-1)?.status).toBe("awaiting_human_review");
+  });
+
+  it("V4.7 every persisted AgentReport carries runner trace fields", async () => {
+    const h = await buildE2E();
+    const res = await h.coordinator.startPipeline({
+      workItem: WORK_ITEM,
+      task: BASE_TASK,
+      workflowDefault: "full_pipeline",
+    });
+    expect(res.finalStatus).toBe("awaiting_human_review");
+    const ids = res.pipelineRun.agentReportIds;
+    const reportIds: string[] = [];
+    if (ids.coder) reportIds.push(ids.coder);
+    if (ids.reviewer) reportIds.push(ids.reviewer);
+    if (ids.test_evidence) reportIds.push(ids.test_evidence);
+    const reports = await Promise.all(
+      reportIds.map(async (id) => {
+        const found = await h.store.findAgentReportById(id);
+        if (!found) throw new Error(`agent report ${id} not found`);
+        return found.report;
+      }),
+    );
+    // V4.7 contract: every persisted AgentReport must carry a runner trace
+    // tuple so dashboards and audits can correlate reports back to the
+    // runner adapter that produced them. V4.7 only supports
+    // `codex_app_server`; second runner kinds remain explicitly out of
+    // scope (see docs/.../v4-7-runner-adapter-contract-design.md).
+    expect(reports.map((r) => [r.role, r.runnerId, r.runnerKind])).toEqual([
+      ["coder", "codex_app_server", "codex_app_server"],
+      ["reviewer", "codex_app_server", "codex_app_server"],
+      ["test_evidence", "codex_app_server", "codex_app_server"],
+    ]);
   });
 });
 

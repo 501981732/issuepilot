@@ -14,6 +14,8 @@ import type {
   CoderAgentReport,
   IssuePilotInternalEvent,
   ReviewerAgentReport,
+  RunnerEvent,
+  RunnerRunInput,
   TaskNode,
   TestEvidenceAgentReport,
   WorkItem,
@@ -30,10 +32,6 @@ import {
 import { slugify } from "@issuepilot/workspace";
 
 import { createCoderAgent } from "../agents/coder.js";
-import {
-  createCoderLifecycle,
-  createReviewerLifecycle,
-} from "../agents/codex-lifecycle.js";
 import { collectorsForTask } from "../agents/evidence-collectors.js";
 import { createReviewerAgent } from "../agents/reviewer.js";
 import { createTestEvidenceAgent } from "../agents/test-evidence.js";
@@ -67,6 +65,9 @@ import { createPipelineStore, type PipelineStore } from "../pipelines/store.js";
 import type { QualityCollectorDeps } from "../quality/collect.js";
 import { createPipelineQualitySummaryCallback } from "../quality/pipeline-summary.js";
 import { createReportStore, type ReportStore } from "../reports/store.js";
+import { createCodexAppServerAdapter } from "../runners/codex-app-server.js";
+import { createRunnerRegistry } from "../runners/registry.js";
+import type { RunnerEventSink } from "../runners/types.js";
 import {
   createLeaseStore as defaultCreateLeaseStore,
   type LeaseStore,
@@ -505,16 +506,6 @@ export async function startTeamDaemon(
           slugify(projectWorkflow.tracker.projectId),
           String(workItem.sourceIssue.iid),
         );
-      const threadNameFor = ({
-        workItem,
-        task,
-        role,
-      }: {
-        workItem: WorkItem;
-        task: TaskNode;
-        role: "coder" | "reviewer" | "test_evidence";
-      }): string =>
-        `${projectWorkflow.tracker.projectId}#${workItem.sourceIssue.iid}/${task.taskId}/${role}`;
       /**
        * V4.6 follow-up Task 4c —— lifecycle adapter `onEvent` 现在带 ctx
        * （workItem / task / role），让 team-mode event envelope 也能带上
@@ -591,55 +582,111 @@ export async function startTeamDaemon(
         getPipelineStatus: async (ref: string) =>
           (await gitlabForProject(project)).getPipelineStatus(ref),
       };
-      const coderLifecycle = createCoderLifecycle({
-        codex: projectWorkflow.codex,
-        maxTurns: projectWorkflow.agent.maxTurns,
-        threadName: threadNameFor,
-        tools: (ctx) =>
-          createGitLabTools(gitlabToolsAdapter, {
-            id: String(ctx.workItem.sourceIssue.iid),
-            iid: ctx.workItem.sourceIssue.iid,
-            title: ctx.workItem.sourceIssue.title,
-            url: ctx.workItem.sourceIssue.url,
-            projectId: ctx.workItem.sourceIssue.projectId,
-            labels: [],
-          }),
-        onEvent: (type, data, ctx) =>
-          publishLifecycleEvent({
-            role: "coder",
-            type,
-            data,
-            workItem: ctx.workItem,
-            task: ctx.task,
-          }),
-      });
-      const reviewerLifecycle = createReviewerLifecycle({
-        codex: projectWorkflow.codex,
-        maxTurns: projectWorkflow.agent.maxTurns,
-        threadName: threadNameFor,
-        onEvent: (type, data, ctx) =>
-          publishLifecycleEvent({
-            role: "reviewer",
-            type,
-            data,
-            workItem: ctx.workItem,
-            task: ctx.task,
-          }),
-      });
-      const coderAgent = createCoderAgent({ lifecycle: coderLifecycle });
-      const reviewerAgent = createReviewerAgent({
-        lifecycle: reviewerLifecycle,
-      });
       /**
-       * V4.6 follow-up Task 4c — test_evidence agent + 默认 scanner
-       * collector：与单 daemon 同款 evidenceDir layout，per-project
-       * 落到 `<project.workspace.root>/<projectSlug>/<issueIid>/
-       * .issuepilot/evidence/<taskId>`，严格不跨 project 漂移。共享
-       * V4.5 `scanRunEvidence` 的 `.issuepilot/evidence/` 父目录，但
-       * partition 方式不同：V4.5 按 runId 切，V4.6 按 taskId 切；细节
-       * 见 daemon.ts 的同款注释。
+       * V4.7 runner adapter contract（team mode）：runner adapter 不持有
+       * workItem。team daemon 给每个 project 单独 build RunnerRegistry，
+       * 用 per-call-key 的 workItem 表把 GitLab tools / RunnerEvent
+       * 路由所需的 issue 上下文喂给 codex adapter；project A 的 workItem
+       * 不会污染 project B 的 tools 工厂。
        */
-      const testEvidenceAgent = createTestEvidenceAgent({});
+      const currentWorkItemByCallKey = new Map<string, WorkItem>();
+      const runnerCallKey = (input: {
+        pipelineRunId: string;
+        taskId: string;
+        role: string;
+      }): string =>
+        `${input.pipelineRunId}/${input.taskId}/${input.role}`;
+
+      const codexAdapterTools = (input: RunnerRunInput) => {
+        const wi = currentWorkItemByCallKey.get(runnerCallKey(input));
+        if (!wi) return [];
+        return createGitLabTools(gitlabToolsAdapter, {
+          id: String(wi.sourceIssue.iid),
+          iid: wi.sourceIssue.iid,
+          title: wi.sourceIssue.title,
+          url: wi.sourceIssue.url,
+          projectId: wi.sourceIssue.projectId,
+          labels: [],
+        });
+      };
+
+      const runnerEventSink: RunnerEventSink = {
+        emit(event: RunnerEvent): void {
+          const wi = currentWorkItemByCallKey.get(
+            runnerCallKey({
+              pipelineRunId: event.pipelineRunId,
+              taskId: event.taskId,
+              role: event.role,
+            }),
+          );
+          if (!wi) return;
+          publishLifecycleEvent({
+            role: event.role as "coder" | "reviewer" | "test_evidence",
+            type: event.type,
+            data: {
+              ...(event.data ?? {}),
+              runnerId: event.runnerId,
+              ...(event.runnerRunId ? { runnerRunId: event.runnerRunId } : {}),
+              ...(event.message ? { message: event.message } : {}),
+              ...(event.redactedFields && event.redactedFields.length > 0
+                ? { redactedFields: event.redactedFields }
+                : {}),
+            },
+            workItem: wi,
+            task: {
+              taskId: event.taskId,
+              title: "",
+              goal: "",
+              scope: "",
+              dependsOn: [],
+              suggestedValidation: [],
+              status: "running",
+              runIds: [],
+              riskLevel: "low",
+            },
+          });
+        },
+      };
+
+      const projectRunners = projectWorkflow.runners ?? {};
+      const runnerRegistry = createRunnerRegistry({
+        descriptors: projectRunners,
+        adapters: Object.values(projectRunners)
+          .filter((descriptor) => descriptor.kind === "codex_app_server")
+          .map((descriptor) =>
+            createCodexAppServerAdapter({
+              descriptor,
+              codex: projectWorkflow.codex,
+              tools: codexAdapterTools,
+            }),
+          ),
+      });
+
+      const withRunnerCallContext = async <T,>(
+        key: string,
+        workItem: WorkItem,
+        fn: () => Promise<T>,
+      ): Promise<T> => {
+        currentWorkItemByCallKey.set(key, workItem);
+        try {
+          return await fn();
+        } finally {
+          currentWorkItemByCallKey.delete(key);
+        }
+      };
+
+      const coderAgent = createCoderAgent({
+        runnerRegistry,
+        events: runnerEventSink,
+      });
+      const reviewerAgent = createReviewerAgent({
+        runnerRegistry,
+        events: runnerEventSink,
+      });
+      const testEvidenceAgent = createTestEvidenceAgent({
+        runnerRegistry,
+        events: runnerEventSink,
+      });
       const evidenceDirFor = (workItem: WorkItem, task: TaskNode): string =>
         path.join(
           projectWorkflow.workspace.root,
@@ -676,13 +723,20 @@ export async function startTeamDaemon(
               );
             }
             const coderProfile: CoderRoleProfile = input.profile;
-            return coderAgent.run({
-              workItem: input.workItem,
-              task: input.task,
-              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
-              profile: coderProfile,
-              cwd: codexCwdFor(input.workItem),
+            const key = runnerCallKey({
+              pipelineRunId: input.pipelineRun.pipelineRunId,
+              taskId: input.task.taskId,
+              role: "coder",
             });
+            return withRunnerCallContext(key, input.workItem, () =>
+              coderAgent.run({
+                workItem: input.workItem,
+                task: input.task,
+                pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+                profile: coderProfile,
+                cwd: codexCwdFor(input.workItem),
+              }),
+            );
           },
         },
         reviewer: {
@@ -699,13 +753,20 @@ export async function startTeamDaemon(
               );
             }
             const reviewerProfile: ReviewerRoleProfile = input.profile;
-            return reviewerAgent.run({
-              workItem: input.workItem,
-              task: input.task,
-              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
-              profile: reviewerProfile,
-              cwd: codexCwdFor(input.workItem),
+            const key = runnerCallKey({
+              pipelineRunId: input.pipelineRun.pipelineRunId,
+              taskId: input.task.taskId,
+              role: "reviewer",
             });
+            return withRunnerCallContext(key, input.workItem, () =>
+              reviewerAgent.run({
+                workItem: input.workItem,
+                task: input.task,
+                pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+                profile: reviewerProfile,
+                cwd: codexCwdFor(input.workItem),
+              }),
+            );
           },
         },
         testEvidence: {
@@ -722,14 +783,22 @@ export async function startTeamDaemon(
               );
             }
             const teProfile: TestEvidenceRoleProfile = input.profile;
-            return testEvidenceAgent.run({
-              workItem: input.workItem,
-              task: input.task,
-              pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
-              profile: teProfile,
-              evidenceDir: evidenceDirFor(input.workItem, input.task),
-              collectors: collectorsForTask(input.task),
+            const key = runnerCallKey({
+              pipelineRunId: input.pipelineRun.pipelineRunId,
+              taskId: input.task.taskId,
+              role: "test_evidence",
             });
+            return withRunnerCallContext(key, input.workItem, () =>
+              testEvidenceAgent.run({
+                workItem: input.workItem,
+                task: input.task,
+                pipelineRun: { pipelineRunId: input.pipelineRun.pipelineRunId },
+                profile: teProfile,
+                cwd: codexCwdFor(input.workItem),
+                evidenceDir: evidenceDirFor(input.workItem, input.task),
+                collectors: collectorsForTask(input.task),
+              }),
+            );
           },
         },
         reviewerPublisher: {

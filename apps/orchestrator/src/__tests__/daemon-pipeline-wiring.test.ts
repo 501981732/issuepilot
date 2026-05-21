@@ -74,6 +74,9 @@ function coderReport(over: Partial<CoderAgentReport> = {}): CoderAgentReport {
     taskId: "t_1",
     role: "coder",
     roleProfileId: "coder@v1",
+    runnerId: "codex_app_server",
+    runnerKind: "codex_app_server",
+    runnerRunId: null,
     status: "complete",
     startedAt: isoNow,
     evidenceLinks: [],
@@ -95,6 +98,9 @@ function reviewerReport(
     taskId: "t_1",
     role: "reviewer",
     roleProfileId: "reviewer@v1",
+    runnerId: "codex_app_server",
+    runnerKind: "codex_app_server",
+    runnerRunId: null,
     status: "complete",
     startedAt: isoNow,
     evidenceLinks: [],
@@ -407,24 +413,42 @@ function buildV46Workflow(root: string): WorkflowConfig {
       loadedAt: "2026-05-19T00:00:00.000Z",
     },
     defaultRecipe: "full_pipeline",
+    runners: {
+      codex_app_server: {
+        runnerId: "codex_app_server",
+        kind: "codex_app_server",
+        capabilities: [
+          "roles.coder",
+          "roles.reviewer",
+          "roles.test_evidence",
+          "filesystem.worktree_write",
+          "filesystem.readonly",
+          "artifacts",
+          "gitlab.tools",
+        ],
+      },
+    },
     roles: {
       coder: {
         role: "coder",
         promptTemplate: "/tmp/c.md",
         promptTemplateHash: "deadbeef",
         sandbox: "read_write_worktree",
+        runner: "codex_app_server",
       },
       reviewer: {
         role: "reviewer",
         promptTemplate: "/tmp/r.md",
         promptTemplateHash: "deadbeef",
         sandbox: "read_only_worktree",
+        runner: "codex_app_server",
       },
       test_evidence: {
         role: "test_evidence",
         promptTemplate: "/tmp/t.md",
         promptTemplateHash: "deadbeef",
         sandbox: "read_only_source_write_evidence",
+        runner: "codex_app_server",
       },
     },
   } satisfies WorkflowConfig;
@@ -538,6 +562,9 @@ describe("V4.6 daemon revoke wiring (review C3)", () => {
           taskId: "t_http",
           role: "coder",
           roleProfileId: "coder@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -558,6 +585,9 @@ describe("V4.6 daemon revoke wiring (review C3)", () => {
           taskId: "t_http",
           role: "reviewer",
           roleProfileId: "reviewer@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -679,6 +709,9 @@ describe("V4.6 daemon revoke wiring (review C3)", () => {
           taskId: "t_no_mr",
           role: "coder",
           roleProfileId: "coder@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -694,6 +727,9 @@ describe("V4.6 daemon revoke wiring (review C3)", () => {
           taskId: "t_no_mr",
           role: "reviewer",
           roleProfileId: "reviewer@v1",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -839,6 +875,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3)", () => {
           taskId,
           role: "coder",
           roleProfileId: "coder@deadbeef",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -854,6 +893,9 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3)", () => {
           taskId,
           role: "reviewer",
           roleProfileId: "reviewer@deadbeef",
+          runnerId: "codex_app_server",
+          runnerKind: "codex_app_server",
+          runnerRunId: null,
           status: "complete",
           startedAt: isoNow,
           evidenceLinks: [],
@@ -985,12 +1027,13 @@ describe("Task 4b — V4.6 daemon wiring (C1 part 2/3)", () => {
           expect(spawnMock).toHaveBeenCalledTimes(1);
           expect(driveMock).toHaveBeenCalledTimes(1);
           const driveArgs = driveMock.mock.calls[0]?.[0];
-          // Reviewer thread name uses the role suffix from the daemon's
-          // threadNameFor helper. This protects the daemon → adapter →
-          // lifecycle round-trip.
-          expect(driveArgs?.threadName).toBe(
-            `group/project#${workItem.sourceIssue.iid}/${taskId}/reviewer`,
-          );
+          // V4.7 codex_app_server adapter constructs the thread name from the
+          // stable `workItemId/taskId/role` triple (see
+          // apps/orchestrator/src/runners/codex-app-server.ts:386). This avoids
+          // leaking the GitLab project path / issue iid into Codex thread
+          // metadata and matches the contract in
+          // packages/shared-contracts/src/runner.ts (`RunnerRunInput`).
+          expect(driveArgs?.threadName).toBe(`${workItemId}/${taskId}/reviewer`);
 
           // The new reviewer report landed with parse_failed (because the
           // adapter still passes rawMessage = "" — V4.7 TODO). The exact

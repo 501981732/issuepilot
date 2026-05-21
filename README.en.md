@@ -734,6 +734,30 @@ productionizes the capabilities that prove valuable here.
     branch; GitLab MR `diff_refs` publisher, team revoke, AgentReport failure
     drilldown, and dashboard 500 / 503 visibility are wired. Acceptance plan:
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-6-production-gap-closure.md`.
+- **Runner Adapter Contract** (V4.7 in progress): extract the V4.6 three-role
+  pipeline out of the Codex-specific lifecycle and onto a stable local Runner
+  Adapter Contract.
+  - `packages/shared-contracts/src/runner.ts` defines `RunnerDescriptor`,
+    `RunnerRunInput`, `RunnerResult`, and `RunnerEvent`; `AgentReport` adds
+    `runnerId` / `runnerKind` / `runnerRunId` trace fields.
+  - Workflow gains a top-level `runners:` registry plus
+    `roles.<role>.runner` references; resolver fails closed on missing
+    runner id / kind / capability / sandbox.
+  - Orchestrator adds a `RunnerRegistry` and `createCodexAppServerAdapter`;
+    the single-project and team daemons compose the three-role pipeline
+    through the registry and drop the direct
+    `createCoderLifecycle` / `createReviewerLifecycle` path.
+  - The dashboard `AgentReportTabs` shows a compact runner trace row per
+    role panel.
+  - V4.7 still only supports `codex_app_server`; no second runner kind,
+    dynamic discovery, worker pool, remote runner service, or SDK is
+    introduced.
+  - Design spec:
+    `docs/superpowers/specs/2026-05-20-issuepilot-v4-7-runner-adapter-contract-design.md`.
+    Implementation plan:
+    `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`.
+    Acceptance checklist:
+    `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

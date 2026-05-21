@@ -235,13 +235,6 @@ export function assertRunnerCapabilities(cfg: WorkflowConfig): void {
         "runner_missing",
       );
     }
-    if (runner.kind !== "codex_app_server") {
-      throw new RunnerConfigInvalidError(
-        `unsupported runner kind: ${runner.kind} (runners.${runnerId})`,
-        `runners.${runnerId}.kind`,
-        "unsupported_runner_kind",
-      );
-    }
     const required: RunnerCapability[] = [runnerCapabilityForRole(role)];
     if (role === "test_evidence") required.push("artifacts");
     if (needsGitlabTools(profile)) required.push("gitlab.tools");

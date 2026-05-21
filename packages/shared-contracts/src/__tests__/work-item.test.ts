@@ -254,6 +254,29 @@ describe("work-item contracts", () => {
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
 
+  it("V4.9: WorkItemReport accepts an optional reviewReworkSummary", () => {
+    const report: WorkItemReport = {
+      workItemId: "wi_01",
+      overallStatus: "complete",
+      taskSummaries: [],
+      validationSummary: "",
+      riskSummary: "",
+      evidence: { index: [], byTask: {} },
+      openQuestions: [],
+      recommendedNextActions: [],
+      humanReviewChecklist: [],
+      reviewReworkSummary: {
+        blockingCount: 1,
+        acceptedCount: 2,
+        resolvedCount: 0,
+        perTask: { "task-1": { blocking: 1, accepted: 2, resolved: 0 } },
+        latestPlanIds: ["plan-1"],
+      },
+      generatedAt: "2026-05-17T00:10:00.000Z",
+    };
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
+  });
+
   it("EVIDENCE_STATUS_VALUES 严格四项", () => {
     expect([...EVIDENCE_STATUS_VALUES]).toEqual([
       "complete",

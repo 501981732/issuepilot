@@ -190,6 +190,17 @@ describe("@issuepilot/shared-contracts/events", () => {
     }
   });
 
+  it.each([
+    "review_rework_plan_generated",
+    "review_rework_plan_generation_failed",
+    "review_rework_plan_accepted",
+    "review_rework_plan_dismissed",
+    "review_rework_item_updated",
+    "review_rework_plan_injected",
+  ] as const)("V4.9: %s is a known event type", (type) => {
+    expect(isEventType(type)).toBe(true);
+  });
+
   it("IssuePilotEvent requires id / runId / issue / type / message / createdAt", () => {
     expectTypeOf<IssuePilotEvent>()
       .toHaveProperty("id")

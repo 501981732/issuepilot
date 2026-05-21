@@ -134,6 +134,13 @@ export const EVENT_TYPE_VALUES = [
   "task_replanned",
   "task_unskipped",
   "task_graph_recomputed",
+  // V4.9 review rework workflow
+  "review_rework_plan_generated",
+  "review_rework_plan_generation_failed",
+  "review_rework_plan_accepted",
+  "review_rework_plan_dismissed",
+  "review_rework_item_updated",
+  "review_rework_plan_injected",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPE_VALUES)[number];

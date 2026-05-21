@@ -13,6 +13,7 @@ export * from "./quality.js";
 export * from "./report.js";
 export * from "./retention.js";
 export * from "./review.js";
+export * from "./review-rework.js";
 export * from "./run.js";
 export * from "./state.js";
 export * from "./work-item.js";

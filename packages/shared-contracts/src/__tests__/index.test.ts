@@ -37,6 +37,21 @@ describe("@issuepilot/shared-contracts", () => {
     expect(summary.comments).toEqual([]);
   });
 
+  it("V4.9: re-exports review rework contracts from root index", () => {
+    expect(Array.isArray(mod.REVIEW_REWORK_PLAN_STATUS_VALUES)).toBe(true);
+    expect(Array.isArray(mod.REVIEW_REWORK_ITEM_STATUS_VALUES)).toBe(true);
+    expect(Array.isArray(mod.REVIEW_REWORK_CATEGORY_VALUES)).toBe(true);
+    expect(Array.isArray(mod.REVIEW_REWORK_PRIORITY_VALUES)).toBe(true);
+    expect(Array.isArray(mod.REVIEW_REWORK_SOURCE_KIND_VALUES)).toBe(true);
+    expect(typeof mod.isReviewReworkPlan).toBe("function");
+    expect(typeof mod.isReviewReworkItem).toBe("function");
+    expect(typeof mod.isReviewReworkSummary).toBe("function");
+    const _plan: mod.ReviewReworkPlan | undefined = undefined;
+    const _item: mod.ReviewReworkItem | undefined = undefined;
+    const _summary: mod.ReviewReworkSummary | undefined = undefined;
+    expect([_plan, _item, _summary]).toBeDefined();
+  });
+
   it("re-exports V4.6 multi-agent contracts from root index", () => {
     expect(Array.isArray(mod.AGENT_ROLE_VALUES)).toBe(true);
     expect(Array.isArray(mod.AGENT_REPORT_STATUS_VALUES)).toBe(true);

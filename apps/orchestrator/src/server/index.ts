@@ -39,6 +39,11 @@ import type { QualityCollectorDeps } from "../quality/collect.js";
 import { parseQualityQuery } from "../quality/filters.js";
 import { buildPipelineQualitySummary } from "../quality/pipeline-summary.js";
 import type { ReportStore } from "../reports/store.js";
+import {
+  registerReviewWorkflowRoutes,
+  type ReviewWorkflowRouteContext,
+} from "../review-workflow/routes.js";
+import type { ReviewWorkflowService } from "../review-workflow/service.js";
 import type { RuntimeState } from "../runtime/state.js";
 import { serveEvidenceFile } from "../work-items/evidence-file-server.js";
 
@@ -273,6 +278,18 @@ export interface ServerDeps {
    * 对应 store，保证 byRole 切片严格 per-project 不混库。
    */
   pipelineStoreByProject?: Map<string, PipelineStore>;
+  /**
+   * V4.9 Intelligent Review Workflow: 单 project 模式下的
+   * `ReviewWorkflowService`。未注入时 HTTP 路由统一返回
+   * 503 `review_workflow_unavailable`。
+   */
+  reviewWorkflowService?: ReviewWorkflowService;
+  /**
+   * V4.9 Intelligent Review Workflow: team 模式下 per-project 的
+   * `ReviewWorkflowService`，要求请求带 `x-issuepilot-project` header
+   * 才能拿到对应 service；缺 header 或未知 project 返回 400 / 404。
+   */
+  reviewWorkflowServiceByProject?: Map<string, ReviewWorkflowService>;
 }
 
 function resolveSnapshotField<T>(
@@ -1446,6 +1463,80 @@ export async function createServer(
   }
 
   registerPipelineRoutes(app, resolvePipelineService);
+
+  /**
+   * V4.9 Intelligent Review Workflow: resolve the per-request review
+   * workflow service. Mirrors the pipeline resolver: in team mode the
+   * client must send `x-issuepilot-project`; the legacy `?project=`
+   * query is rejected. When no project-keyed map exists we fall back
+   * to the single-project service slot. When neither is configured
+   * the server returns a deterministic 503 so dashboards see a stable
+   * unavailable signal rather than a 5xx.
+   */
+  function resolveReviewWorkflowContext(
+    headers: Record<string, unknown>,
+    queryProject?: unknown,
+  ): ReviewWorkflowRouteContext {
+    if (
+      deps.reviewWorkflowServiceByProject &&
+      deps.reviewWorkflowServiceByProject.size > 0
+    ) {
+      if (queryProject !== undefined) {
+        return {
+          ok: false,
+          statusCode: 400,
+          body: {
+            ok: false,
+            code: "project_query_not_allowed",
+            message:
+              "project query is not supported; team mode uses x-issuepilot-project",
+          },
+        };
+      }
+      const raw = headers["x-issuepilot-project"];
+      const project = Array.isArray(raw) ? raw[0] : raw;
+      if (typeof project !== "string" || project.length === 0) {
+        return {
+          ok: false,
+          statusCode: 400,
+          body: {
+            ok: false,
+            code: "project_required",
+            message:
+              "x-issuepilot-project header is required for review workflow in team mode",
+          },
+        };
+      }
+      const service = deps.reviewWorkflowServiceByProject.get(project);
+      if (!service) {
+        return {
+          ok: false,
+          statusCode: 404,
+          body: {
+            ok: false,
+            code: "project_not_found",
+            message: `Unknown project: ${project}`,
+          },
+        };
+      }
+      return { ok: true, service, projectId: project };
+    }
+    if (!deps.reviewWorkflowService) {
+      return {
+        ok: false,
+        statusCode: 503,
+        body: {
+          ok: false,
+          code: "review_workflow_unavailable",
+          message:
+            "Review workflow service is not configured on this orchestrator",
+        },
+      };
+    }
+    return { ok: true, service: deps.reviewWorkflowService };
+  }
+
+  registerReviewWorkflowRoutes(app, resolveReviewWorkflowContext);
 
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 4738;

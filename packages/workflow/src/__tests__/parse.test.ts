@@ -544,7 +544,6 @@ runners:
     options:
       command: "claude"
       model: "sonnet"
-      max_turns: 3
       turn_timeout_ms: 600000
 roles:
   reviewer:
@@ -564,7 +563,6 @@ hi
     expect(descriptor.options).toEqual({
       command: "claude",
       model: "sonnet",
-      maxTurns: 3,
       turnTimeoutMs: 600_000,
     });
     expect(cfg.roles.reviewer?.runner).toBe("claude_reviewer");
@@ -631,6 +629,7 @@ hi
     "args",
     "script",
     "stdin_template",
+    "max_turns",
   ])("V4.8: 拒绝 claude_code.options 中的敏感或越界字段 %s", (field) => {
     const raw = `---
 tracker:

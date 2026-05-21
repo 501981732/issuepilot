@@ -31,6 +31,27 @@
 [ci-equivalent] all stages passed.
 ```
 
+## Code review follow-up gate
+
+- [x] `pnpm --filter @issuepilot/shared-contracts exec vitest run src/__tests__/runner.test.ts src/__tests__/agent-report.test.ts`
+- [x] `pnpm --filter @issuepilot/workflow exec vitest run src/__tests__/parse.test.ts src/__tests__/resolve.test.ts`
+- [x] `pnpm --filter @issuepilot/orchestrator exec vitest run src/runners/__tests__/claude-code.test.ts src/__tests__/daemon-pipeline-wiring.test.ts src/team/__tests__/daemon.test.ts`
+- [x] `pnpm --filter @issuepilot/shared-contracts exec tsc --noEmit`
+- [x] `pnpm --filter @issuepilot/workflow exec tsc --noEmit`
+- [x] `pnpm --filter @issuepilot/orchestrator exec tsc --noEmit`
+- [x] `pnpm --filter @issuepilot/orchestrator lint`
+- [x] `git diff --check`
+- [x] `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh`
+
+Code review follow-up 修复点：
+
+- shared runner contract 的 `RunnerDescriptor.options` guard 改为 per-kind unknown-key fail closed。
+- `claude_code.options.max_turns` 已从 allowlist 移除；当前本机 `claude --help` 未暴露稳定 `--max-turns` 参数。
+- `claude_code.options.turn_timeout_ms` 已接入 adapter timeout。
+- `driver.start()` 同步异常已映射为 `RunnerResultFailed` / `runner_unavailable`。
+- timeout kill 改为不阻塞 adapter 返回，并在 default driver 中加入 bounded termination。
+- single daemon / team daemon 增加 `claude_code` adapter 注册覆盖。
+
 ## 真实 Claude Code 自用验证
 
 - [ ] `ISSUEPILOT_CLAUDE_CODE_E2E=1 pnpm --filter @issuepilot/orchestrator exec vitest run src/__tests__/v4-8-claude-code-dogfood.test.ts`

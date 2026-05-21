@@ -27,7 +27,6 @@ const claudeDescriptor = (): Extract<
   options: {
     command: "claude",
     model: "sonnet",
-    maxTurns: 3,
     turnTimeoutMs: 600_000,
   },
 });
@@ -57,13 +56,21 @@ const fakeDriver = (result: ClaudeCodeDriverResult): ClaudeCodeDriver => ({
   })),
 });
 
-const hangingDriver = (onKill: (reason: "cancelled" | "timeout") => void): ClaudeCodeDriver => ({
+const hangingDriver = (
+  onKill: (reason: "cancelled" | "timeout") => void,
+): ClaudeCodeDriver => ({
   start: vi.fn(() => ({
     result: new Promise<ClaudeCodeDriverResult>(() => {}),
     kill: vi.fn(async (reason) => {
       onKill(reason);
     }),
   })),
+});
+
+const throwingDriver = (error: Error): ClaudeCodeDriver => ({
+  start: vi.fn(() => {
+    throw error;
+  }),
 });
 
 describe("ClaudeCodeRunnerAdapter (V4.8)", () => {
@@ -147,18 +154,61 @@ describe("ClaudeCodeRunnerAdapter (V4.8)", () => {
   it("kills the driver on timeout and returns RunnerResultTimeout", async () => {
     const killed: string[] = [];
     const adapter = createClaudeCodeAdapter({
-      descriptor: claudeDescriptor(),
+      descriptor: {
+        ...claudeDescriptor(),
+        options: { command: "claude", turnTimeoutMs: 1 },
+      },
       driver: hangingDriver((reason) => killed.push(reason)),
       now: () => "2026-05-21T00:00:00.000Z",
     });
 
-    const result = await adapter.run(runnerInput({ timeoutSeconds: 0.001 }));
+    const result = await adapter.run(runnerInput({ timeoutSeconds: 60 }));
 
     expect(result).toMatchObject({
       status: "timeout",
       error: { code: "runner_timeout" },
     });
     expect(killed).toEqual(["timeout"]);
+  });
+
+  it("does not wait for a hanging kill promise before returning timeout", async () => {
+    const adapter = createClaudeCodeAdapter({
+      descriptor: {
+        ...claudeDescriptor(),
+        options: { command: "claude", turnTimeoutMs: 1 },
+      },
+      driver: {
+        start: vi.fn(() => ({
+          result: new Promise<ClaudeCodeDriverResult>(() => {}),
+          kill: vi.fn(() => new Promise<void>(() => {})),
+        })),
+      },
+      now: () => "2026-05-21T00:00:00.000Z",
+    });
+
+    const result = await adapter.run(runnerInput({ timeoutSeconds: 60 }));
+
+    expect(result).toMatchObject({
+      status: "timeout",
+      error: { code: "runner_timeout" },
+    });
+  });
+
+  it("maps synchronous driver startup failures to runner_unavailable", async () => {
+    const adapter = createClaudeCodeAdapter({
+      descriptor: claudeDescriptor(),
+      driver: throwingDriver(new Error("claude binary missing")),
+    });
+
+    const result = await adapter.run(runnerInput());
+
+    expect(result).toMatchObject({
+      status: "failed",
+      error: {
+        code: "runner_unavailable",
+        message: "claude binary missing",
+      },
+    });
   });
 
   it("redacts secret-looking final message, errors and artifact summaries", async () => {

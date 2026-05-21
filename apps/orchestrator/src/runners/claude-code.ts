@@ -22,6 +22,8 @@ interface RedactionScope {
   fields: Set<string>;
 }
 
+const TIMEOUT_SENTINEL = Symbol("claude_code_timeout");
+
 const redactString = (value: string): [string, boolean] => {
   let redacted = false;
   const next = value.replace(SECRET_VALUE_PATTERN, () => {
@@ -104,52 +106,49 @@ export function createClaudeCodeAdapter(
         runInput: input,
       });
 
-      const process = driver.start(input, options.descriptor.options ?? {});
       let driverResult: ClaudeCodeDriverResult;
       let timeout: ReturnType<typeof setTimeout> | undefined;
-      const timeoutMs = Math.max(0, (input.timeoutSeconds ?? 0) * 1000);
+      const timeoutMs = Math.max(
+        0,
+        options.descriptor.options?.turnTimeoutMs ??
+          (input.timeoutSeconds ?? 0) * 1000,
+      );
       try {
+        const process = driver.start(input, options.descriptor.options ?? {});
         if (timeoutMs > 0) {
-          driverResult = await Promise.race([
+          const outcome = await Promise.race([
             process.result,
-            new Promise<ClaudeCodeDriverResult>((resolve) => {
+            new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
               timeout = setTimeout(() => {
-                resolve({
-                  status: "failed",
-                  runnerRunId: `${input.pipelineRunId}:${input.role}:timeout`,
-                  errorMessage: "claude_code runner timed out",
-                  artifacts: [],
-                });
+                resolve(TIMEOUT_SENTINEL);
               }, timeoutMs);
             }),
           ]);
-          if (driverResult.errorMessage === "claude_code runner timed out") {
-            await process.kill("timeout");
-            const message = redactOptionalString(
-              driverResult.errorMessage,
-              "error.message",
-              scope,
-            );
+          if (outcome === TIMEOUT_SENTINEL) {
+            void process.kill("timeout").catch(() => undefined);
+            const runnerRunId = `${input.pipelineRunId}:${input.role}:timeout`;
+            const message = "claude_code runner timed out";
             await emit(ctx, {
               type: "runner_failed",
               at: now(),
               descriptor: options.descriptor,
-              runnerRunId: driverResult.runnerRunId,
+              runnerRunId,
               runInput: input,
-              ...(message ? { message } : {}),
+              message,
               redactedFields: [...scope.fields],
             });
             return {
               status: "timeout",
-              runId: driverResult.runnerRunId,
+              runId: runnerRunId,
               error: {
                 code: "runner_timeout",
-                message: message ?? "claude_code runner timed out",
+                message,
               },
               artifacts: [],
               redactedFields: [...scope.fields],
             };
           }
+          driverResult = outcome;
         } else {
           driverResult = await process.result;
         }

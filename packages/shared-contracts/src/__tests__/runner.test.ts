@@ -94,12 +94,35 @@ describe("runner contract (V4.8)", () => {
       options: {
         command: "claude",
         model: "sonnet",
-        maxTurns: 3,
         turnTimeoutMs: 600_000,
       },
     };
 
     expect(isRunnerDescriptor(descriptor)).toBe(true);
+  });
+
+  it("rejects unknown or unsafe kind-specific runner options", () => {
+    const claudeDescriptor = {
+      runnerId: "claude_reviewer",
+      kind: "claude_code",
+      capabilities: ["roles.reviewer", "filesystem.readonly"],
+      options: { command: "claude", args: ["--dangerous"] },
+    };
+    const codexDescriptor = {
+      runnerId: "codex_app_server",
+      kind: "codex_app_server",
+      capabilities: ["roles.coder", "filesystem.worktree_write"],
+      options: { command: "codex app-server", env: { TOKEN: "secret" } },
+    };
+
+    expect(isRunnerDescriptor(claudeDescriptor)).toBe(false);
+    expect(isRunnerDescriptor(codexDescriptor)).toBe(false);
+    expect(
+      isRunnerDescriptor({
+        ...claudeDescriptor,
+        options: { command: "claude", maxTurns: 3 },
+      }),
+    ).toBe(false);
   });
 
   it("rejects invalid runner descriptor", () => {

@@ -27,7 +27,6 @@ describe("V4.8 real claude_code dogfood smoke", () => {
           options: {
             command: "claude",
             model: "sonnet",
-            maxTurns: 1,
             turnTimeoutMs: 120_000,
           },
         },

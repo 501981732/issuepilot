@@ -85,7 +85,6 @@ export interface CodexAppServerRunnerOptions {
 export interface ClaudeCodeRunnerOptions {
   command?: string;
   model?: string;
-  maxTurns?: number;
   turnTimeoutMs?: number;
 }
 
@@ -261,11 +260,24 @@ const isCodexAppServerOptions = (
   if (value === undefined) return true;
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
+  const allowed = new Set([
+    "command",
+    "maxTurns",
+    "turnTimeoutMs",
+    "approvalPolicy",
+    "threadSandbox",
+  ]);
+  if (Object.keys(obj).some((key) => !allowed.has(key))) return false;
   if (obj.command !== undefined && typeof obj.command !== "string") return false;
-  if (obj.maxTurns !== undefined && typeof obj.maxTurns !== "number")
-    return false;
-  if (obj.turnTimeoutMs !== undefined && typeof obj.turnTimeoutMs !== "number")
-    return false;
+  if (obj.maxTurns !== undefined) {
+    if (typeof obj.maxTurns !== "number") return false;
+    if (!Number.isInteger(obj.maxTurns) || obj.maxTurns <= 0) return false;
+  }
+  if (obj.turnTimeoutMs !== undefined) {
+    if (typeof obj.turnTimeoutMs !== "number") return false;
+    if (!Number.isInteger(obj.turnTimeoutMs) || obj.turnTimeoutMs < 1000)
+      return false;
+  }
   if (obj.approvalPolicy !== undefined && obj.approvalPolicy !== "never")
     return false;
   if (
@@ -282,12 +294,15 @@ const isClaudeCodeOptions = (
   if (value === undefined) return true;
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
+  const allowed = new Set(["command", "model", "turnTimeoutMs"]);
+  if (Object.keys(obj).some((key) => !allowed.has(key))) return false;
   if (obj.command !== undefined && typeof obj.command !== "string") return false;
   if (obj.model !== undefined && typeof obj.model !== "string") return false;
-  if (obj.maxTurns !== undefined && typeof obj.maxTurns !== "number")
-    return false;
-  if (obj.turnTimeoutMs !== undefined && typeof obj.turnTimeoutMs !== "number")
-    return false;
+  if (obj.turnTimeoutMs !== undefined) {
+    if (typeof obj.turnTimeoutMs !== "number") return false;
+    if (!Number.isInteger(obj.turnTimeoutMs) || obj.turnTimeoutMs < 1000)
+      return false;
+  }
   return true;
 };
 

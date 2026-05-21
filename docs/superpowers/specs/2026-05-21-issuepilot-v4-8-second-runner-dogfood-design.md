@@ -157,7 +157,6 @@ interface CodexAppServerRunnerOptions {
 interface ClaudeCodeRunnerOptions {
   command?: string;
   model?: string;
-  maxTurns?: number;
   turnTimeoutMs?: number;
 }
 
@@ -169,6 +168,8 @@ type RunnerOptionsByKind = {
 
 禁止字段保持 fail closed：`env`、`token`、`secret`、`credential`、`cwd`、
 `workspaceRoot`、`repoRoot`、`shell`、`args`、`script`、`stdinTemplate`。
+`claude_code` 不暴露 `maxTurns`，因为当前本地 Claude Code CLI help 未提供稳定
+`--max-turns` 参数；V4.8 只把 `turnTimeoutMs` 接入 adapter 超时。
 
 ### 6.3 RunnerEvent
 
@@ -224,7 +225,6 @@ runners:
     options:
       command: claude
       model: sonnet
-      max_turns: 3
       turn_timeout_ms: 600000
 
 roles:

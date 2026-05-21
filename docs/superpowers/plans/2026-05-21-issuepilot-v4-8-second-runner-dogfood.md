@@ -61,7 +61,7 @@
 
 - Modify `packages/workflow/src/parse.ts`
   - 新增 `parseRunnerOptionsByKind(runnerId, kind, raw)`。
-  - 新增 `parseClaudeCodeOptions()`，只允许 `command`、`model`、`max_turns`、`turn_timeout_ms`。
+  - 新增 `parseClaudeCodeOptions()`，只允许 `command`、`model`、`turn_timeout_ms`。
   - forbidden keys 对所有 kind 生效。
 - Modify `packages/workflow/src/resolve.ts`
   - 移除 hard-coded `codex_app_server` kind 拒绝。
@@ -146,7 +146,7 @@ it("V4.8: validates claude_code descriptor options", () => {
     kind: "claude_code",
     displayName: "Claude Code Reviewer",
     capabilities: ["roles.reviewer", "events.streaming", "cancel", "artifacts", "filesystem.readonly"],
-    options: { command: "claude", model: "sonnet", maxTurns: 3, turnTimeoutMs: 600000 },
+    options: { command: "claude", model: "sonnet", turnTimeoutMs: 600000 },
   };
   expect(isRunnerDescriptor(descriptor)).toBe(true);
 });
@@ -188,7 +188,6 @@ export const RUNNER_KIND_VALUES = ["codex_app_server", "claude_code"] as const;
 export interface ClaudeCodeRunnerOptions {
   command?: string;
   model?: string;
-  maxTurns?: number;
   turnTimeoutMs?: number;
 }
 
@@ -275,7 +274,6 @@ runners:
     options:
       command: claude
       model: sonnet
-      max_turns: 3
       turn_timeout_ms: 600000
 roles:
   reviewer:
@@ -287,7 +285,6 @@ roles:
   expect(cfg.runners.claude_reviewer?.options).toEqual({
     command: "claude",
     model: "sonnet",
-    maxTurns: 3,
     turnTimeoutMs: 600000,
   });
 });
@@ -399,7 +396,6 @@ Implement `parseClaudeCodeOptions()` with the same numeric validation as Codex o
 ```ts
 case "command":
 case "model":
-case "max_turns":
 case "turn_timeout_ms":
 ```
 
@@ -1000,7 +996,7 @@ runIfClaudeSmoke("V4.8: real claude_code reviewer smoke", async () => {
       runnerId: "claude_reviewer",
       kind: "claude_code",
       capabilities: ["roles.reviewer", "events.streaming", "cancel", "artifacts", "filesystem.readonly"],
-      options: { command: "claude", model: "sonnet", maxTurns: 1, turnTimeoutMs: 120000 },
+      options: { command: "claude", model: "sonnet", turnTimeoutMs: 120000 },
     },
   });
 

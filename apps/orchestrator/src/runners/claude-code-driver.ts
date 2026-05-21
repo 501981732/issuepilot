@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 import type {
   ClaudeCodeRunnerOptions,
   RunnerArtifact,
@@ -6,6 +8,7 @@ import type {
 import { execa } from "execa";
 
 export type ClaudeCodeDriverStatus = "completed" | "failed" | "cancelled";
+const KILL_GRACE_MS = 2000;
 
 export interface ClaudeCodeDriverResult {
   status: ClaudeCodeDriverStatus;
@@ -31,7 +34,8 @@ export interface ClaudeCodeDriver {
 export const createDefaultClaudeCodeDriver = (): ClaudeCodeDriver => ({
   start(input, options) {
     const command = options.command ?? "claude";
-    const args = options.model ? ["--model", options.model] : [];
+    const args = ["--print"];
+    if (options.model) args.push("--model", options.model);
     const child = execa(command, args, {
       cwd: input.cwd,
       shell: false,
@@ -39,6 +43,7 @@ export const createDefaultClaudeCodeDriver = (): ClaudeCodeDriver => ({
       stdout: "pipe",
       stderr: "pipe",
       reject: false,
+      forceKillAfterDelay: KILL_GRACE_MS,
     });
     child.stdin?.end(input.prompt);
 
@@ -69,7 +74,14 @@ export const createDefaultClaudeCodeDriver = (): ClaudeCodeDriver => ({
       result,
       async kill() {
         child.kill("SIGTERM");
-        await child.catch(() => undefined);
+        const settled = child.catch(() => undefined);
+        await Promise.race([
+          settled,
+          delay(KILL_GRACE_MS).then(() => {
+            child.kill("SIGKILL");
+          }),
+        ]);
+        await Promise.race([settled, delay(500)]).catch(() => undefined);
       },
     };
   },

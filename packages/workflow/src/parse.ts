@@ -742,19 +742,6 @@ function parseClaudeCodeOptions(
         }
         out.model = value;
         break;
-      case "max_turns":
-        if (
-          typeof value !== "number" ||
-          !Number.isInteger(value) ||
-          value <= 0
-        ) {
-          throw new WorkflowConfigError(
-            `runners.${runnerId}.options.max_turns must be a positive integer`,
-            `runners.${runnerId}.options.max_turns`,
-          );
-        }
-        out.maxTurns = value;
-        break;
       case "turn_timeout_ms":
         if (
           typeof value !== "number" ||

@@ -1,5 +1,7 @@
 import {
   effectiveTaskStatus,
+  type ReviewReworkPlan,
+  type ReviewReworkSummary,
   type RunReportArtifact,
   type TaskNode,
   type TaskNodeStatus,
@@ -60,7 +62,61 @@ export interface AggregateDeps {
   getEvidenceConfirmations?(
     workItemId: string,
   ): Promise<Record<string, { confirmedBy: string; confirmedAt: string }>>;
+  /**
+   * V4.9 Intelligent Review Workflow: optional accessor returning the
+   * latest `ReviewReworkPlan`s known for this WorkItem. The aggregator
+   * uses it to populate `WorkItemReport.reviewReworkSummary` so the
+   * Parent Review Packet can render counts without re-reading the
+   * plan store from the dashboard tier. Callers wire this to
+   * `reviewWorkflowService.list({ workItemId })`.
+   */
+  getReviewReworkPlans?(workItemId: string): Promise<ReviewReworkPlan[]>;
   now?(): string;
+}
+
+/**
+ * V4.9 §6.2 / §9.2: collapse an array of plans into the
+ * per-WorkItem `ReviewReworkSummary` snapshot. Only `accepted` plans
+ * contribute to the blocking / accepted / resolved counters because
+ * `draft` / `dismissed` / `superseded` plans are not actionable from
+ * the agent's perspective. `latestPlanIds` keeps the full pointer
+ * list so dashboards can deep-link to historical plans.
+ */
+export function aggregateReviewRework(
+  plans: ReviewReworkPlan[],
+): ReviewReworkSummary | undefined {
+  if (plans.length === 0) return undefined;
+  const summary: ReviewReworkSummary = {
+    blockingCount: 0,
+    acceptedCount: 0,
+    resolvedCount: 0,
+    perTask: {},
+    latestPlanIds: plans.map((p) => p.planId),
+  };
+  for (const plan of plans) {
+    if (plan.status !== "accepted") continue;
+    const taskKey = plan.taskId ?? "_workitem";
+    const bucket = summary.perTask[taskKey] ?? {
+      blocking: 0,
+      accepted: 0,
+      resolved: 0,
+    };
+    for (const item of plan.items) {
+      if (item.status === "accepted") {
+        summary.acceptedCount += 1;
+        bucket.accepted += 1;
+        if (item.priority === "blocking") {
+          summary.blockingCount += 1;
+          bucket.blocking += 1;
+        }
+      } else if (item.status === "resolved") {
+        summary.resolvedCount += 1;
+        bucket.resolved += 1;
+      }
+    }
+    summary.perTask[taskKey] = bucket;
+  }
+  return summary;
 }
 
 export interface AggregateResult {
@@ -318,6 +374,9 @@ export async function aggregateWorkItem(
   );
 
   const ciSummary = buildCiSummary(entries);
+  const reviewReworkPlans =
+    (await deps.getReviewReworkPlans?.(workItem.workItemId)) ?? [];
+  const reviewReworkSummary = aggregateReviewRework(reviewReworkPlans);
   const report: WorkItemReport = {
     workItemId: workItem.workItemId,
     overallStatus,
@@ -338,6 +397,7 @@ export async function aggregateWorkItem(
     ),
     ...(ciSummary ? { ciSummary } : {}),
     testSummary: buildTestSummary(entries),
+    ...(reviewReworkSummary ? { reviewReworkSummary } : {}),
     generatedAt,
   };
 

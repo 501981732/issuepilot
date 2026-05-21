@@ -191,4 +191,16 @@ export interface QualitySummaryResponse {
    * V4.6 by-role 切片（spec §17.4）。可选字段，老 client 视为 undefined 即可。
    */
   byRole?: QualityByRoleSlice;
+  /**
+   * V4.9 Intelligent Review Workflow 切片（spec §6.2 / §10）。返回最近
+   * 窗口内 `ReviewReworkPlan` 的聚合计数 + 分类 / runner 维度的分布。
+   * 老 client / 未启用 V4.9 的部署视为 undefined。
+   */
+  reviewWorkflow?: {
+    plansGenerated: number;
+    itemsAccepted: number;
+    itemsResolved: number;
+    topCategories: Array<{ category: string; count: number }>;
+    runnerKindBreakdown: Record<string, number>;
+  };
 }

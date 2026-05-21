@@ -546,4 +546,54 @@ describe("buildQualitySummary", () => {
       "agent-report:ar-status-filter",
     ]);
   });
+
+  // V4.9 Intelligent Review Workflow: when the orchestrator passes a
+  // `reviewWorkflow` window slice, `buildQualitySummary` returns the
+  // counts + topCategories shape consumed by the dashboard
+  // ReviewWorkflowCard (spec §6.2).
+  it("V4.9: surfaces review workflow counters on the quality summary", () => {
+    const summary = buildQualitySummary({
+      items: [],
+      filters: baseFilters,
+      scope: { mode: "single-project" },
+      diagnostics: { invalidReportCount: 0 },
+      reviewWorkflow: {
+        plans: [
+          {
+            status: "accepted",
+            items: [
+              { status: "accepted", category: "test_gap" },
+              { status: "resolved", category: "ci_failure" },
+            ],
+          },
+          {
+            status: "draft",
+            items: [{ status: "open", category: "security" }],
+          },
+        ],
+        runnerKindBreakdown: { codex_app_server: 1, claude_code: 1 },
+      },
+    });
+    expect(summary.reviewWorkflow).toEqual(
+      expect.objectContaining({
+        plansGenerated: 2,
+        itemsAccepted: 1,
+        itemsResolved: 1,
+        topCategories: expect.arrayContaining([
+          { category: "test_gap", count: 1 },
+        ]),
+        runnerKindBreakdown: { codex_app_server: 1, claude_code: 1 },
+      }),
+    );
+  });
+
+  it("V4.9: leaves reviewWorkflow undefined when no plans are passed", () => {
+    const summary = buildQualitySummary({
+      items: [],
+      filters: baseFilters,
+      scope: { mode: "single-project" },
+      diagnostics: { invalidReportCount: 0 },
+    });
+    expect(summary.reviewWorkflow).toBeUndefined();
+  });
 });

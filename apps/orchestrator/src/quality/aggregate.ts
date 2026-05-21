@@ -39,6 +39,23 @@ export interface BuildQualitySummaryInput {
    * 老 caller 不传等于 undefined，结果不会带 byRole。
    */
   agentReports?: AgentReport[];
+  /**
+   * V4.9 Intelligent Review Workflow：当窗口内有 ReviewReworkPlan 时
+   * 注入裁剪后的字段（plan.status / item.status / item.category）。
+   * caller 自行决定窗口 / scope，aggregate 只做计数。
+   */
+  reviewWorkflow?: ReviewWorkflowQualityInput;
+}
+
+export interface ReviewWorkflowQualityInput {
+  plans: Array<{
+    status: string;
+    items: Array<{
+      status: string;
+      category: string;
+    }>;
+  }>;
+  runnerKindBreakdown?: Record<string, number>;
 }
 
 /**
@@ -927,6 +944,9 @@ export function buildQualitySummary(
     ? buildByRoleSlice(input.agentReports)
     : undefined;
 
+  const reviewWorkflowSlice = buildReviewWorkflowQualitySlice(
+    input.reviewWorkflow,
+  );
   return {
     scope,
     filters,
@@ -937,5 +957,45 @@ export function buildQualitySummary(
     dimensions,
     diagnostics,
     ...(byRole ? { byRole } : {}),
+    ...(reviewWorkflowSlice ? { reviewWorkflow: reviewWorkflowSlice } : {}),
+  };
+}
+
+/**
+ * V4.9 §6.2: collapse the runtime `ReviewReworkPlan` window into the
+ * `QualitySummaryResponse.reviewWorkflow` slice. `accepted` items are
+ * counted into `itemsAccepted` + `topCategories`; `resolved` items
+ * into `itemsResolved`. `topCategories` is sorted desc by count and
+ * truncated to 5 to keep the response shape stable for the dashboard.
+ */
+function buildReviewWorkflowQualitySlice(
+  input: ReviewWorkflowQualityInput | undefined,
+): NonNullable<QualitySummaryResponse["reviewWorkflow"]> | undefined {
+  if (!input || input.plans.length === 0) return undefined;
+  let itemsAccepted = 0;
+  let itemsResolved = 0;
+  const categoryCounter = new Map<string, number>();
+  for (const plan of input.plans) {
+    for (const item of plan.items) {
+      if (item.status === "accepted") {
+        itemsAccepted += 1;
+        categoryCounter.set(
+          item.category,
+          (categoryCounter.get(item.category) ?? 0) + 1,
+        );
+      } else if (item.status === "resolved") {
+        itemsResolved += 1;
+      }
+    }
+  }
+  return {
+    plansGenerated: input.plans.length,
+    itemsAccepted,
+    itemsResolved,
+    topCategories: [...categoryCounter.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([category, count]) => ({ category, count })),
+    runnerKindBreakdown: input.runnerKindBreakdown ?? {},
   };
 }

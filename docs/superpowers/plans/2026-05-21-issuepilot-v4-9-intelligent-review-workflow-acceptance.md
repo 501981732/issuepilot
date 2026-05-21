@@ -14,7 +14,12 @@
 - [x] `pnpm --filter @issuepilot/workflow test -- src/__tests__/render.test.ts`
 - [x] `pnpm --filter @issuepilot/orchestrator test -- src/review-workflow src/orchestrator/__tests__/dispatch.test.ts src/orchestrator/__tests__/review-feedback.test.ts src/__tests__/v4-9-review-rework-e2e.test.ts src/__tests__/v4-9-mixed-runner-source-ref.test.ts src/work-items/__tests__/aggregate.test.ts src/quality/__tests__/aggregate.test.ts`
 - [x] `pnpm --filter @issuepilot/dashboard test -- components/detail/review-rework-plan-panel.test.tsx components/work-items/review-rework-summary.test.tsx components/reports/review-workflow-card.test.tsx`
-- [ ] `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh`（待用户在 land 前最终运行）
+- [x] `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh`
+      （stage 1/5 tsc -b、stage 2/5 tsc -p scripts/tsconfig.json、
+      stage 3/5 next build (apps/dashboard)、stage 4/5 eslint
+      --max-warnings 0、stage 5/5 vitest run（含 review-workflow /
+      dispatch / review-feedback / E2E / aggregate / quality /
+      dashboard 全套）全部通过；最后 git diff --check 也通过。）
 
 ## 完整 review-rework E2E
 

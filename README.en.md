@@ -758,7 +758,7 @@ productionizes the capabilities that prove valuable here.
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`.
     Acceptance checklist:
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`.
-- **Second Runner Dog-food** (V4.8 in design): attach a second real local runner
+- **Second Runner Dog-food** (V4.8 plan written, pending implementation): attach a second real local runner
   to the V4.7 Runner Adapter Contract to validate the contract before building
   any V3 runner platform.
   - `RunnerKind` expands with `claude_code`, with shared contracts, workflow
@@ -774,6 +774,8 @@ productionizes the capabilities that prove valuable here.
     runner selection, or production sandbox in this slice.
   - Design spec:
     `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`.
+    Implementation plan:
+    `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`.
 - **Intelligent review workflow**: summarize MR risks, classify review
   comments, generate rework plans, and turn review feedback into structured
   input for the next run.

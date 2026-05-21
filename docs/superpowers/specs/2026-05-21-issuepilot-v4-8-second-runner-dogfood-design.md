@@ -14,9 +14,11 @@
 
 ## 实施计划
 
-- V4.8 第二 Runner 自用验证（Second Runner Dog-food）：实施计划待写。等本
-  设计评审通过后，再由 `writing-plans` skill 产出
-  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`。
+- V4.8 第二 Runner 自用验证（Second Runner Dog-food）：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`
+  （实施计划已写，覆盖 shared runner contract、workflow parser / resolver、
+  `claude_code` adapter、daemon / team daemon wiring、agent report runner trace、
+  dashboard i18n、mixed-runner fixture 和 acceptance 记录）。
 
 ## 1. 背景
 

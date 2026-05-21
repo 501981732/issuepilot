@@ -701,7 +701,7 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract.md`；
     验收清单：
     `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
-- **第二 Runner 自用验证**（V4.8 设计中）：在 V4.7 Runner Adapter
+- **第二 Runner 自用验证**（V4.8 实施计划已写，待实施）：在 V4.7 Runner Adapter
   Contract 上接入第二个真实本地 runner，先验证 contract，而不是提前建设
   V3 runner 平台。
   - `RunnerKind` 扩展 `claude_code`，同步 shared contracts、workflow
@@ -714,7 +714,9 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   - 不做 dynamic discovery、worker pool、remote runner service、SDK、自动
     runner selection 或 production sandbox。
   - 设计 spec：
-    `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`。
+    `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`；
+    实施计划：
+    `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`。
 - **智能 review 工作流**：自动总结 MR 风险、归类 review 评论、生成返工计划，
   并把 review 反馈转成下一轮 agent 的结构化输入。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、

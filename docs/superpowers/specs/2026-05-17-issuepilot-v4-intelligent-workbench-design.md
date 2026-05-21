@@ -42,9 +42,10 @@
   `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`）。
 - V4.8 第二 Runner 自用验证：
   `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`
-  （设计待评审；目标是在 V4.7 contract 上接入 `claude_code` 第二本地
+  （实施计划已写，目标是在 V4.7 contract 上接入 `claude_code` 第二本地
   runner，先自用验证 reviewer role，不提前进入 V3 worker / discovery /
-  remote runner service）。
+  remote runner service；实施计划见
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`）。
 
 ## 1. Roadmap 决策
 
@@ -333,7 +334,7 @@ contract，但不接入第二个真实 runner，也不做生产 worker 平台。
 验收清单：
 `docs/superpowers/plans/2026-05-20-issuepilot-v4-7-runner-adapter-contract-acceptance.md`。
 
-### V4.8：第二 Runner 自用验证（设计待评审）
+### V4.8：第二 Runner 自用验证（实施计划已写，待实施）
 
 目标：在 V4.7 Runner Adapter Contract 上接入第二个真实本地 runner，先验证
 contract，而不是提前建设 V3 runner 平台。
@@ -354,6 +355,9 @@ contract，而不是提前建设 V3 runner 平台。
 
 设计 spec：
 `docs/superpowers/specs/2026-05-21-issuepilot-v4-8-second-runner-dogfood-design.md`。
+
+实施计划：
+`docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`。
 
 ## 8. 架构
 

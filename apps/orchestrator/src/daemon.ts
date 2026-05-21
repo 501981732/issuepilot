@@ -89,8 +89,6 @@ import {
   reconcile,
 } from "./orchestrator/reconcile.js";
 import { sweepReviewFeedbackOnce } from "./orchestrator/review-feedback.js";
-import { createReviewReworkPlanStore } from "./review-workflow/store.js";
-import { createReviewWorkflowService } from "./review-workflow/service.js";
 import {
   CoordinatorError,
   createCoordinator,
@@ -114,6 +112,8 @@ import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
+import { createReviewWorkflowService } from "./review-workflow/service.js";
+import { createReviewReworkPlanStore } from "./review-workflow/store.js";
 import { createClaudeCodeAdapter } from "./runners/claude-code.js";
 import { createCodexAppServerAdapter } from "./runners/codex-app-server.js";
 import { createRunnerRegistry } from "./runners/registry.js";

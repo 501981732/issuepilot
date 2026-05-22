@@ -438,6 +438,11 @@ contract，而不是提前建设 V3 runner 平台。
 - 不新增智能功能、不做 V3 platform 能力、不静默修改 workflow / skills /
   prompt / 项目规则。
 
+V4.10 的 team-mode 结论必须保守：`claude_code` runner registry 和 mixed-runner
+contract wiring 可以 release-lock；V4.9 review workflow service 在 team daemon
+中的完整 project-scoped binding 仍作为后续 multi-project 服务化 follow-up，不在
+V4.10 中宣称已完成。
+
 设计 spec：
 `docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`。
 

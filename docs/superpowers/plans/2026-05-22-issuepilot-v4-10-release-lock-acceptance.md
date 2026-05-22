@@ -44,12 +44,19 @@
 
 ## Single Daemon / Team Daemon Matrix
 
+- [x] `pnpm --filter @issuepilot/orchestrator exec vitest run src/runners/__tests__/claude-code.test.ts src/__tests__/daemon-pipeline-wiring.test.ts src/team/__tests__/daemon.test.ts`
+  - Result: 3 test files passed; 20 tests passed.
+- [x] `rg -n "team.*review workflow|review workflow service|multi-project 服务化|reviewWorkflowService|reviewWorkflow" apps/orchestrator/src/team apps/orchestrator/src/daemon.ts docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`
+  - Result: single daemon shows `reviewWorkflowService` wiring; V4.9 acceptance records team daemon review workflow binding as later multi-project 服务化 work.
+
 | 能力 | single daemon | team daemon | V4.10 结论 |
 | --- | --- | --- | --- |
-| `claude_code` adapter registry | 待验证 | 待验证 | 待记录 |
-| mixed-runner reviewer provenance | 待验证 | 待验证 | 待记录 |
-| review workflow service | 待验证 | 待验证 | 待记录 |
-| dashboard project-scoped review plan | 待验证 | 待验证 | 待记录 |
+| `claude_code` adapter registry | 已接入并有 focused tests | 已接入并有 focused tests | V4.8 contract 可 release-lock；真实 CLI 状态见上一节 |
+| mixed-runner reviewer provenance | 已由 V4.9 mixed-runner source-ref test 覆盖 | contract / wiring 已覆盖，仍需真实 team dog-food | 不宣称 team dog-food 已完成 |
+| review workflow service | 已在 V4.9 single daemon 路径接入 | 属于后续 multi-project 服务化 follow-up | README / V4 spec 不声明 team mode 已完整可用 |
+| dashboard project-scoped review plan | single project 可用 | 依赖 team review workflow service binding | V4.10 记录为 release follow-up |
+
+结论：V4.10 release lock 可以覆盖 single daemon dog-food 和 runner contract；team daemon 的 V4.9 review workflow service binding 不作为已完成能力宣称，进入后续 multi-project 服务化 follow-up。
 
 ## Final Gate
 

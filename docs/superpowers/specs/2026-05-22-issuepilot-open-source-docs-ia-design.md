@@ -39,6 +39,8 @@ IssuePilot 当前的文档问题不是内容不足，而是入口层级不清。
 - 新读者能在 README 前 1-2 屏内理解产品定位、核心价值、当前成熟度和启动路径。
 - `docs/README.md` 成为文档中心，清楚区分 Getting Started、Guides、Operations、
   Reference、Roadmap、Internal Design Archive。
+- README 和 docs 首页要有真实 dashboard 截图、架构图和端到端流程图入口，让读者
+  在第一屏就能看到产品实际长什么样。
 - 启动文档独立成 `docs/getting-started.*.md`，避免用户在 1200 行使用手册里找启动命令。
 - `USAGE.md` / `USAGE.zh-CN.md` 从全量长手册降级为用户指南索引或保留为深度 guide，
   但 README 不再把它当作唯一入口。
@@ -83,6 +85,12 @@ docs/
   getting-started.md
   getting-started.zh-CN.md
   roadmap.md
+  assets/
+    screenshots/
+      dashboard-command-center.png
+      dashboard-run-detail.png
+      dashboard-work-item-review-packet.png
+      dashboard-reports.png
   guides/
     single-project.md
     team-mode.md
@@ -105,6 +113,7 @@ docs/
 - `docs/getting-started.md`
 - `docs/getting-started.zh-CN.md`
 - `docs/roadmap.md`
+- `docs/assets/screenshots/` 下至少 2 张 IssuePilot dashboard 真实截图
 
 第一轮可以先不创建 `guides/`、`operations/`、`reference/` 的所有拆分文件；如果实现时
 需要降低 `USAGE` 篇幅，可以从 `USAGE` 中拆出其中 1-2 个最明显的章节。
@@ -130,6 +139,8 @@ README 第一轮目标长度：约 220-320 行。
    - 一句话：IssuePilot turns GitLab Issues into isolated, reviewable AI engineering runs.
    - 中文 README 用中文表达，技术名词保留英文。
    - 3 个快速链接：Get started、Docs、Roadmap。
+   - Hero 下方放一张真实 dashboard 截图或截图拼图，优先展示 Command Center /
+     Run Detail / Review Packet，而不是抽象插画。
 2. **Why IssuePilot**
    - 说明痛点：团队不该监督 agent 会话，而应该管理 Issue/MR/Review。
 3. **How it works**
@@ -159,7 +170,32 @@ README 第一轮目标长度：约 220-320 行。
 
 README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation status 或内部 spec/plan 列表。
 
-## 6. Getting Started 文档
+## 6. Visual Assets / Screenshots
+
+开源文档必须让读者看到真实产品界面。第一轮至少补齐：
+
+| 资产 | 目标位置 | 用途 |
+| --- | --- | --- |
+| `docs/assets/screenshots/dashboard-command-center.png` | README hero、`docs/README.md` | 展示 IssuePilot 的 List / Board / service health 第一印象 |
+| `docs/assets/screenshots/dashboard-run-detail.png` | `docs/getting-started.*.md` | 展示一次 run 的 timeline、MR、events、review feedback |
+| `docs/assets/screenshots/dashboard-work-item-review-packet.png` | `docs/roadmap.md` 或 `docs/README.md` | 展示 V4 Review Packet / Evidence 能力 |
+| `docs/assets/screenshots/dashboard-reports.png` | `docs/roadmap.md` | 展示 Reports / quality analytics / review workflow |
+| `docs/superpowers/diagrams/v2-architecture.svg` | README / docs | 架构图入口 |
+| `docs/superpowers/diagrams/v2-flow.svg` | README / docs | 端到端流程图入口 |
+
+截图要求：
+
+- 必须来自当前 TypeScript IssuePilot dashboard，不使用旧 `.github/media/elixir-screenshot.png`
+  或 OpenAI Symphony prototype 截图。
+- 使用本地 fixture / demo data / seeded state；敏感信息、真实 token、真实公司项目名、
+  私有 GitLab URL 必须脱敏。
+- 图片放在 `docs/assets/screenshots/`，README 使用相对路径引用并写清 alt text。
+- 截图宽度建议 1440px；若要展示移动端，单独补 mobile 截图，不把 desktop 图硬压缩。
+- 保留现有 SVG 架构图 / 流程图，但 README 只嵌入或链接最关键的 1-2 张，避免再次变长。
+- 如果本地 dashboard 无法启动，第一轮 implementation plan 必须先记录 blocker；
+  不能用假图或 stock-like 图片替代。
+
+## 7. Getting Started 文档
 
 `docs/getting-started.zh-CN.md` 和 `docs/getting-started.md` 是启动文档，不是全量用户手册。
 
@@ -180,6 +216,7 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 - 第一个 `WORKFLOW.md` 最小示例。
 - GitLab label 准备。
 - 启动 V1 single-project run。
+- 启动 dashboard 后的预期截图或截图链接，帮助用户确认“我启动对了”。
 - 常见启动失败：
   - dashboard unreachable。
   - GitLab token missing / 401 / 403。
@@ -194,7 +231,7 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 - 完整 HTTP API 速查。
 - 内部 acceptance 历史。
 
-## 7. Roadmap 文档
+## 8. Roadmap 文档
 
 新增 `docs/roadmap.md`，把 README 中当前 roadmap 压缩搬迁。
 
@@ -210,7 +247,7 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 
 Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commit/acceptance 记录。详细设计仍链接到 `docs/superpowers/specs/`。
 
-## 8. USAGE 收敛
+## 9. USAGE 收敛
 
 第一轮有两种可接受落地方式：
 
@@ -229,7 +266,7 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 
 第一轮推荐方式 A。理由：风险低、改动可控、能快速改善开源第一印象。方式 B 可以作为第二轮。
 
-## 9. 语言同步规则
+## 10. 语言同步规则
 
 - `README.md` 和 `README.zh-CN.md` 语义同步，中文为主。
 - `README.en.md` 与中文 README 语义同步，但不要求逐字句式一致。
@@ -237,7 +274,7 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 - `docs/README.md` 可以用英文优先或中英混合；第一轮建议中文为主，英文链接清晰。
 - 技术名词、命令、配置字段、API 路径、label、runner kind 保持原文。
 
-## 10. 验收标准
+## 11. 验收标准
 
 第一轮文档重构完成时：
 
@@ -246,11 +283,14 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 - `docs/README.md` 提供清晰文档地图。
 - `docs/getting-started.*.md` 能独立指导本地启动。
 - `docs/roadmap.md` 承接 README 中的长 roadmap。
+- README 或 `docs/README.md` 至少展示 1 张真实 dashboard 截图。
+- `docs/assets/screenshots/` 至少包含 2 张当前 IssuePilot dashboard 截图。
+- README / docs 明确链接现有架构图和端到端流程图。
 - `USAGE.*.md` 顶部明确自己不是第一次启动入口。
 - `git diff --check` 通过。
 - 若只改 markdown，不需要 `scripts/ci-equivalent-check.sh`。
 
-## 11. 回滚
+## 12. 回滚
 
 文档重构主要是内容和入口重排。
 
@@ -259,8 +299,10 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 - 优先从 commit diff 恢复被删段落到 `docs/roadmap.md` 或 `USAGE.*.md`。
 - 不把内部 `docs/superpowers/*` 删除作为第一轮动作。
 - README 只保留短入口，不能重新膨胀回内部进度报告。
+- 如果截图生成失败，保留文字重构，但不要提交旧图或无关图片；把截图 blocker 写进
+  implementation acceptance。
 
-## 12. 下一步
+## 13. 下一步
 
 用户确认本 spec 后，写 implementation plan：
 
@@ -271,6 +313,7 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 1. 新建 `docs/README.md`。
 2. 新建 `docs/getting-started.zh-CN.md` / `docs/getting-started.md`。
 3. 新建 `docs/roadmap.md`。
-4. 重写 README 三语版本。
-5. 给 `USAGE.*.md` 增加启动文档入口和定位说明。
-6. 文档自检和 `git diff --check`。
+4. 生成 / 放置 dashboard 截图，并接入 README / docs。
+5. 重写 README 三语版本。
+6. 给 `USAGE.*.md` 增加启动文档入口和定位说明。
+7. 文档自检和 `git diff --check`。

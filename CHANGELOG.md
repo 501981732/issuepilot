@@ -2,7 +2,7 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased] Open Source Docs IA（实施计划已提交）
+## [Unreleased] Open Source Docs IA（实施完成）
 
 ### Design
 
@@ -18,6 +18,13 @@
   计划按文档入口重构执行：先建立公开 docs 地图和启动文档，再用 mock orchestrator
   采集当前 dashboard 截图，随后重写 README 三语版本、降权 `USAGE.*.md` 并完成
   `git diff --check`。
+
+### Added
+
+- 2026-05-22 — 完成第一轮开源文档入口重构：新增 `docs/README.md`、
+  `docs/getting-started.zh-CN.md`、`docs/getting-started.md`、`docs/roadmap.md`
+  和 `docs/assets/screenshots/` dashboard 截图；README 三语版本收敛为短开源首页，
+  `USAGE.*.md` 顶部增加首次启动入口说明，并从 README / docs 明确链接架构图与端到端流程图。
 
 ## [Unreleased] V4.10 Release Lock / Dog-food Closure（执行完成）
 

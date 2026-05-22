@@ -2,10 +2,15 @@
 
 English | [简体中文](./USAGE.zh-CN.md)
 
-This guide is for **engineers running IssuePilot for the first time**. The
-goal: turn a single GitLab Issue into a branch, a Merge Request and an Issue
-note automatically, then scale a single shared machine up to multiple GitLab
-projects with CI / review feedback and workspace cleanup wired in.
+> New to IssuePilot? Start with
+> [docs/getting-started.md](./docs/getting-started.md).
+> This file is the full user guide, covering single-project mode, team mode,
+> dashboard operations, review packets, quality analytics and troubleshooting.
+
+Use this guide when you need the deeper operating details: turning a GitLab
+Issue into a branch, a Merge Request and an Issue note automatically, then
+scaling a single shared machine up to multiple GitLab projects with CI / review
+feedback and workspace cleanup wired in.
 
 > **Versions covered**: V1 single-project local loop + V2 team-operable
 > release (Phase 1–5 merged into main).

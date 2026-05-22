@@ -24,7 +24,9 @@
   （已落地，覆盖 §7 V4.4 + Reports / Process Insights 第一版）。
 - V4.5 Workflow / Skills Improvement Loop：
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`
-  （实施计划已完成，覆盖 V4.5 recommendation queue、patch preview 和 human apply gate）。
+  （**实施已完成**，覆盖 V4.5 recommendation queue、patch preview、human apply
+  gate、team project isolation、fail-closed 和 acceptance 记录；验收清单见
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop-acceptance.md`）。
 - V4.6 Multi-Agent Collaboration：
   `docs/superpowers/specs/2026-05-19-issuepilot-v4-6-multi-agent-collaboration-design.md`
   （**实施已完成**，覆盖 §7 V4.6 + Coder/Reviewer/TestEvidence 三角色 pipeline + AgentReport
@@ -51,9 +53,18 @@
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`）。
 - V4.9 智能 Review 工作流：
   `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`
-  （设计待评审，目标是把 V2 review feedback sweep 和 V4.6 reviewer findings
-  升级为可审计的 `ReviewReworkPlan`，由 operator 确认后注入下一轮 `ai-rework`
-  agent 输入）。
+  （**实施已完成，待用户验收**；目标是把 V2 review feedback sweep 和 V4.6 reviewer
+  findings 升级为可审计的 `ReviewReworkPlan`，由 operator 确认后注入下一轮
+  `ai-rework` agent 输入；实施计划见
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`，
+  验收记录见
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`）。
+- V4.10 Release Lock / Dog-food Closure：
+  `docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`
+  （设计待评审；目标是在进入 V3 前收口 V4.1-V4.9：完成 V4.9 用户验收与
+  review-rework dog-food、确认 V4.8 第二 runner 真实 CLI dog-food 状态、明确
+  single daemon / team daemon 能力矩阵，并同步 README / CHANGELOG / V4 总 spec
+  的 roadmap 状态）。
 
 ## 1. Roadmap 决策
 
@@ -189,8 +200,9 @@ V4 不做：
 
 V4 原按 6 个中阶段设计；V4.6 落地后新增 V4.7 作为 runner adapter
 contract 收口阶段，V4.8 用第二本地 runner 自用验证该 contract；V4.9 把 review
-feedback 升级成可审计返工计划。
-V4.1 必须先做；V4.2-V4.9 可根据自用验证反馈调整顺序。
+feedback 升级成可审计返工计划；V4.10 作为进入 V3 前的 release lock /
+dog-food closure。
+V4.1 必须先做；V4.2-V4.10 可根据自用验证反馈调整顺序。
 
 ### V4.1：Workflow Spine
 
@@ -281,7 +293,7 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
 - 识别常见失败模式：测试缺失、需求不清、权限不足、环境问题、review 返工。
 - Reports 页面展示趋势和 drill-down。
 
-### V4.5：Workflow / Skills Improvement Loop
+### V4.5：Workflow / Skills Improvement Loop（实施已完成）
 
 目标：让 IssuePilot 能从失败中提出流程改进建议。
 
@@ -290,7 +302,8 @@ V4.1 中，`TaskNode` 到现有 IssuePilot run 的映射必须遵守以下契约
 - 根据失败模式推荐 workflow front matter、prompt、skills、项目规则调整。
 - 每条建议有证据来源：哪些 run、哪些失败、哪些 review comment。
 - Operator 可以接受、拒绝或延后建议。
-- 接受的建议生成可审查 patch，不直接静默修改。
+- `accept` 只记录 operator 决策，不直接静默改文件；`patch-preview` 单独生成
+  inert diff，并通过 sandbox / stale source / missing target fail closed。
 
 ### V4.6：Multi-Agent / Multi-Runner Collaboration（实施已完成）
 
@@ -380,7 +393,7 @@ contract，而不是提前建设 V3 runner 平台。
 可审计的 `ReviewReworkPlan`，由 operator 确认后作为下一轮 `ai-rework` agent
 输入。
 
-能力（设计中）：
+能力（已实现）：
 
 - 新增 `ReviewReworkPlan` / `ReviewReworkItem` shared contract，记录分类、
   优先级、目标文件、source refs、建议验证和状态。
@@ -404,6 +417,29 @@ contract，而不是提前建设 V3 runner 平台。
 
 验收记录：
 `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
+
+### V4.10：Release Lock / Dog-food Closure（设计待评审）
+
+目标：在进入 V3 生产化执行平台前，把 V4.1-V4.9 从“功能已实现”收口成“可以
+对内试点”的状态。
+
+能力：
+
+- V4.9 用户验收闭环：用真实/准真实 review feedback、reviewer findings、CI /
+  evidence context 证明 `ReviewReworkPlan` 能生成、accept、注入下一轮
+  `ai-rework` prompt，并在 Run Detail、Parent Review Packet 和 Reports 中形成
+  一致事实。
+- V4.8 第二 runner dog-food：确认 `claude_code` CLI / 登录态是否可真实运行
+  reviewer read-only role；若环境不可用，记录 blocker 和保守降级判断。
+- single daemon / team daemon 能力矩阵：明确 V4.8 / V4.9 哪些能力已接入、
+  哪些属于后续 multi-project 服务化 follow-up，避免 roadmap 过度承诺。
+- 文档状态收口：同步 V4 总 spec、README 三语版本、CHANGELOG、V4.8 / V4.9
+  acceptance 记录。
+- 不新增智能功能、不做 V3 platform 能力、不静默修改 workflow / skills /
+  prompt / 项目规则。
+
+设计 spec：
+`docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`。
 
 ## 8. 架构
 

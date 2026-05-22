@@ -619,17 +619,19 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`；
   实施计划：
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`。
-- **Workflow / Skills Improvement Loop** — _V4.5 实施中_。
+- **Workflow / Skills Improvement Loop** — _V4.5 已落地_。
   从 V4.4 的 failure patterns、drilldown、missing evidence、review rework
   和 CI failure 中生成可审计 `ImprovementRecommendation`：每条建议必须带
   evidence refs、target kind、置信度、风险和 action 状态。第一版放在
   `/reports` 的 Recommendations section，operator 可 `accept` / `reject` /
-  `defer`；`accept` 只生成 workflow front matter、prompt template、
-  project rules 或 skill instruction 的 patch preview，不静默改文件、不自动
-  commit、不修改 label 状态机。设计 spec：
+  `defer`；`accept` 只记录决策，不静默改文件、不自动 commit、不修改 label
+  状态机；`patch-preview` 单独生成 workflow front matter、prompt template、
+  project rules 或 skill instruction 的 inert diff。设计 spec：
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`。
   实施计划：
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`。
+  验收记录：
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop-acceptance.md`。
 - **大 Issue 拆解与编排**：自动把大 Issue 拆成可执行子任务，识别顺序、
   并行度、共享上下文和回滚边界。
 - **跨 Issue 依赖分析**：发现 blocker、重复工作、上下游依赖和可合并任务，
@@ -728,6 +730,11 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`；
   验收记录：
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
+- **Release Lock / Dog-food Closure**（V4.10 设计待评审）：进入 V3 前先收口
+  V4.1-V4.9，把 V4.9 用户验收与 review-rework dog-food、V4.8 第二 runner
+  真实 CLI dog-food 状态、single daemon / team daemon 能力矩阵以及 README /
+  CHANGELOG / V4 总 spec roadmap 状态同步锁定。设计 spec：
+  `docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`。
 - **验收材料自动生成**：产出截图、录屏、Playwright walkthrough video、
   测试证据、风险清单和可直接贴到 MR / Issue 的验收报告。
 - **质量与过程分析**：分析成功率、返工率、CI 通过率、review 命中率、耗时

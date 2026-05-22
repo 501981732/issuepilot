@@ -665,18 +665,21 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-4-quality-analytics-design.md`;
   implementation plan:
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-4-quality-analytics.md`.
-- **Workflow / Skills Improvement Loop** — _in V4.5 implementation_. V4.5 turns
+- **Workflow / Skills Improvement Loop** — _landed in V4.5_. V4.5 turns
   V4.4 failure patterns, drill-down items, missing evidence, review rework,
   and CI failures into auditable `ImprovementRecommendation` records. Each
   recommendation carries evidence refs, a target kind, confidence, risk, and
   action status. The first version lives in a Recommendations section on
   `/reports`; operators can `accept`, `reject`, or `defer`. `accept` only
-  creates a patch preview for workflow front matter, prompt templates, project
-  rules, or skill instructions. It does not silently edit files, auto-commit, or
-  change the label state machine. Design spec:
+  records the operator decision; `patch-preview` separately creates inert diffs
+  for workflow front matter, prompt templates, project rules, or skill
+  instructions. It does not silently edit files, auto-commit, or change the
+  label state machine. Design spec:
   `docs/superpowers/specs/2026-05-18-issuepilot-v4-5-improvement-loop-design.md`.
   Implementation plan:
   `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop.md`.
+  Acceptance record:
+  `docs/superpowers/plans/2026-05-18-issuepilot-v4-5-improvement-loop-acceptance.md`.
 - **Large-issue decomposition and orchestration**: split large issues into
   executable sub-tasks with ordering, parallelism, shared context, and rollback
   boundaries.
@@ -788,6 +791,12 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`;
   acceptance record:
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`.
+- **Release Lock / Dog-food Closure** (V4.10 design pending review): before V3,
+  close V4.1-V4.9 into a pilot-ready boundary by locking V4.9 user acceptance
+  and review-rework dog-food, the V4.8 second-runner real CLI dog-food state,
+  the single-daemon / team-daemon capability matrix, and README / CHANGELOG /
+  V4 master spec roadmap status. Design spec:
+  `docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`.
 - **Acceptance evidence generation**: screenshots, recordings, Playwright
   walkthrough videos, test evidence, risk lists, and MR / Issue-ready
   acceptance reports.

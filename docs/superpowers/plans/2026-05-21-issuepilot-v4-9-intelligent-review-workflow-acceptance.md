@@ -65,6 +65,17 @@ V4.9 共拆成 11 个 task 执行：
   `runnerKindBreakdown` 与 Parent Review Packet 的 provenance 在第二 runner
   路径下不丢失（见 `apps/orchestrator/src/__tests__/v4-9-mixed-runner-source-ref.test.ts`）。
 
+## V4.10 用户验收 / Dog-food 复核（2026-05-22）
+
+- [x] `pnpm --filter @issuepilot/orchestrator test -- src/__tests__/v4-9-review-rework-e2e.test.ts src/__tests__/v4-9-mixed-runner-source-ref.test.ts`
+  - Result: 88 test files passed, 1 skipped; 1003 tests passed, 1 skipped.
+- [x] `pnpm --filter @issuepilot/orchestrator test -- src/orchestrator/__tests__/dispatch.test.ts src/orchestrator/__tests__/review-feedback.test.ts src/review-workflow`
+  - Result: 88 test files passed, 1 skipped; 1003 tests passed, 1 skipped.
+- [x] `pnpm --filter @issuepilot/dashboard test -- components/detail/review-rework-plan-panel.test.tsx components/work-items/review-rework-summary.test.tsx components/reports/review-workflow-card.test.tsx`
+  - Result: 47 test files passed; 295 tests passed.
+
+V4.10 复核结论：V4.9 review-rework 链路可作为 release-lock 的可复现 dog-food 场景。accepted plan 注入、fallback、mixed-runner provenance 和 dashboard/report 展示路径均有 focused gate 覆盖。
+
 ## 已知后续工作
 
 - V4.5 路径下若调用 `reviewWorkflowService.list({ workItemId })` 仍需 V4.6+

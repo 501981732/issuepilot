@@ -17,9 +17,19 @@
 
 ## V4.9 Review-Rework Dog-food
 
-- [ ] focused orchestrator E2E
-- [ ] dashboard review workflow components
-- [ ] review workflow facts are visible in Run Detail / Parent Review Packet / Reports paths through existing tests
+- [x] `pnpm --filter @issuepilot/orchestrator test -- src/__tests__/v4-9-review-rework-e2e.test.ts src/__tests__/v4-9-mixed-runner-source-ref.test.ts`
+  - Result: 88 test files passed, 1 skipped; 1003 tests passed, 1 skipped.
+- [x] `pnpm --filter @issuepilot/orchestrator test -- src/orchestrator/__tests__/dispatch.test.ts src/orchestrator/__tests__/review-feedback.test.ts src/review-workflow`
+  - Result: 88 test files passed, 1 skipped; 1003 tests passed, 1 skipped.
+- [x] `pnpm --filter @issuepilot/dashboard test -- components/detail/review-rework-plan-panel.test.tsx components/work-items/review-rework-summary.test.tsx components/reports/review-workflow-card.test.tsx`
+  - Result: 47 test files passed; 295 tests passed.
+
+结论：
+
+- accepted `ReviewReworkPlan` 会 prepend `## Review rework plan` 到下一轮 `ai-rework` prompt。
+- planner 失败或没有 accepted plan 时仍 fallback 到 V2 `## Review feedback`。
+- `claude_code` reviewer finding 经 V4.9 planner 后保留 `runnerKind` provenance。
+- Run Detail、Parent Review Packet 和 Reports 的 review workflow 展示路径均有 focused gate 覆盖。
 
 ## V4.8 Claude Code CLI Dog-food
 

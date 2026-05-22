@@ -1,7 +1,7 @@
 # IssuePilot Open Source Docs IA 设计
 
 日期：2026-05-22
-状态：待用户评审
+状态：实施计划已提交
 
 关联文档：
 

@@ -62,6 +62,17 @@ Code review follow-up 修复点：
 需要确认本机 Claude Code CLI 已安装并具备可用登录态；默认 gate 不依赖该本机状态。
 ```
 
+## V4.10 Claude Code CLI Dog-food 复核（2026-05-22）
+
+- [x] `command -v claude` → `/Users/wangmeng5/.local/bin/claude`
+- [x] `claude --version` → `2.1.145 (Claude Code)`
+- [x] `pnpm --filter @issuepilot/orchestrator exec vitest run src/__tests__/v4-8-claude-code-dogfood.test.ts`
+  - Result: 1 test skipped, as expected without `ISSUEPILOT_CLAUDE_CODE_E2E=1`.
+- [ ] `ISSUEPILOT_CLAUDE_CODE_E2E=1 pnpm --filter @issuepilot/orchestrator exec vitest run src/__tests__/v4-8-claude-code-dogfood.test.ts`
+  - Result: failed. The real CLI smoke timed out after 5000ms in `runs reviewer role through local Claude Code CLI`.
+
+结论：本机 Claude Code CLI 已安装并可报告版本，但真实 CLI dog-food 仍受本机 CLI / 登录态 / 测试超时环境阻塞。V4.10 release lock 采用保守降级：保留 `claude_code` adapter contract 和默认 gate 结果，但 README 只声明默认 runner 仍是 `codex_app_server`，`claude_code` 继续限制为显式 opt-in reviewer read-only role。
+
 ## 覆盖点
 
 - `RunnerKind` 已支持 `claude_code`，`AgentReport.runnerKind` guard 已同步。

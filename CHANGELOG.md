@@ -2,6 +2,32 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased] V4.10 Release Lock / Dog-food Closure（执行完成）
+
+### Design
+
+- 2026-05-22 — 新增 V4.10 Release Lock / Dog-food Closure 设计：
+  `docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`。
+  该设计不新增更大的智能功能，而是在进入 V3 前收口 V4.1-V4.9：完成 V4.9
+  review-rework dog-food 与用户验收、确认 V4.8 第二 runner 真实 CLI dog-food
+  状态、明确 single daemon / team daemon 能力矩阵，并同步 README /
+  CHANGELOG / V4 总 spec 的 roadmap 状态。
+
+### Plan
+
+- 2026-05-22 — 新增 V4.10 Release Lock / Dog-food Closure 实施计划：
+  `docs/superpowers/plans/2026-05-22-issuepilot-v4-10-release-lock.md`。
+  计划按 release-lock 执行，而不是新增产品功能：先建立 V4.10 acceptance 事实源，
+  再分别完成 V4.9 review-rework dog-food、V4.8 `claude_code` 真实 CLI dog-food
+  或 blocker 记录、single daemon / team daemon 能力矩阵、roadmap 状态同步和最终 gate。
+
+### Acceptance
+
+- 2026-05-22 — V4.10 release lock 验收记录：
+  `docs/superpowers/plans/2026-05-22-issuepilot-v4-10-release-lock-acceptance.md`。
+  记录 V4.9 review-rework dog-food、V4.8 `claude_code` CLI dog-food 状态、
+  single daemon / team daemon 能力矩阵、roadmap 状态同步和最终 gate。
+
 ## [Unreleased] V4.9 Intelligent Review Workflow（实施完成；待用户验收）
 
 ### Design

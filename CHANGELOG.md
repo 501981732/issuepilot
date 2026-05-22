@@ -13,6 +13,14 @@
   状态、明确 single daemon / team daemon 能力矩阵，并同步 README /
   CHANGELOG / V4 总 spec 的 roadmap 状态。
 
+### Plan
+
+- 2026-05-22 — 新增 V4.10 Release Lock / Dog-food Closure 实施计划：
+  `docs/superpowers/plans/2026-05-22-issuepilot-v4-10-release-lock.md`。
+  计划按 release-lock 执行，而不是新增产品功能：先建立 V4.10 acceptance 事实源，
+  再分别完成 V4.9 review-rework dog-food、V4.8 `claude_code` 真实 CLI dog-food
+  或 blocker 记录、single daemon / team daemon 能力矩阵、roadmap 状态同步和最终 gate。
+
 ## [Unreleased] V4.9 Intelligent Review Workflow（实施完成；待用户验收）
 
 ### Design

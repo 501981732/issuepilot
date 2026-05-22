@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 
 import { ConfidencePill } from "./confidence-pill";
 import { HumanReviewChecklist } from "./human-review-checklist";
+import { ReviewReworkSummary } from "./review-rework-summary";
 
 const STATUS_TONE: Record<WorkItemReportStatus, string> = {
   draft: "bg-fg-subtle/20 text-fg-subtle",
@@ -173,6 +174,10 @@ export function ParentReviewPacket({ report, project }: ParentReviewPacketProps)
             <p className="text-sm text-fg-muted">{t("noNextActions")}</p>
           )}
         </Section>
+
+        {report.reviewReworkSummary ? (
+          <ReviewReworkSummary summary={report.reviewReworkSummary} />
+        ) : null}
 
         {report.evidence.index.length > 0 ? (
           <Section title={t("evidence")}>

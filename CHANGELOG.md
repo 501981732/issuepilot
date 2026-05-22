@@ -2,7 +2,7 @@
 
 本仓库的所有显著变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased] V4.9 Intelligent Review Workflow（设计阶段）
+## [Unreleased] V4.9 Intelligent Review Workflow（实施完成；待用户验收）
 
 ### Design
 
@@ -13,6 +13,36 @@
   确认后，accepted plan 会作为下一轮 `ai-rework` agent 的结构化输入。V4.9
   不做自动 merge、GitLab webhook 实时回流、自动改代码、discussion resolve
   双向同步或 V3 runner platform。
+
+### Plan
+
+- 2026-05-21 — 新增 V4.9 智能 Review 工作流实施计划：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`。
+  计划拆成 11 个执行任务，覆盖 `ReviewReworkPlan` shared contract、PromptContext
+  Liquid alias、deterministic classifier + planner、原子写入 + supersede 链 plan
+  store、plan service（generate/accept/dismiss/split/resolve）、Fastify routes、
+  dispatch 注入 + V2 fallback、sweep → planner 集成 + report artifact、
+  work item 聚合 + quality analytics、dashboard panel/summary/card 三件套、
+  以及 E2E + docs + acceptance 验证。
+
+### Added
+
+- 2026-05-21 — V4.9 implementation 落地：新增
+  `@issuepilot/shared-contracts` 的 `ReviewReworkPlan`、`ReviewReworkItem`、
+  `ReviewReworkSummary`、`ReviewReworkSourceRef` 等 contract 与类型守卫；
+  `RunReportArtifact.reviewReworkPlan`、`WorkItemReport.reviewReworkSummary`、
+  `QualitySummaryResponse.reviewWorkflow`、`PromptContext.reviewReworkPlan`
+  全部就位。orchestrator 新增
+  `apps/orchestrator/src/review-workflow/`（deterministic classify + planner +
+  原子写入 store + service + Fastify routes），sweep 在 `human-review` 阶段
+  自动生成 `ReviewReworkPlan` 并写回 `RunReportArtifact`；dispatch 在 accepted
+  plan 存在时 prepend `## Review rework plan`，planner 失败 / 未 accept 时
+  fallback 到 V2 `## Review feedback`。dashboard 新增 `ReviewReworkPlanPanel`
+  / `ReviewReworkSummary` / `ReviewWorkflowCard` 三个组件，分别接入 Run Detail、
+  Work Item Parent Review Packet 和 Reports 页面，并补齐 zh / en i18n。E2E
+  覆盖 happy path（planner → accept → dispatch 注入）和 V4.8 mixed-runner
+  reviewer findings 的 `runnerKind` provenance 透传。验收记录：
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
 
 ## [Unreleased] V4.8 Second Runner Dog-food（已实现；真实 CLI dog-food 待确认）
 

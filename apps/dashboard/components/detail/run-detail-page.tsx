@@ -12,7 +12,15 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 
-import { ApiError, archiveRun, retryRun, stopRun } from "../../lib/api";
+import {
+  acceptReviewReworkPlan,
+  ApiError,
+  archiveRun,
+  dismissReviewReworkPlan,
+  retryRun,
+  stopRun,
+  updateReviewReworkItem,
+} from "../../lib/api";
 import { useEventStream } from "../../lib/use-event-stream";
 import { RunActions } from "../overview/run-actions";
 import { Badge, type BadgeTone } from "../ui/badge";
@@ -22,6 +30,7 @@ import { RUN_STATUS_TONES, StatusDot, StatusPill } from "../ui/status";
 import { EventTimeline } from "./event-timeline";
 import { LogTail } from "./log-tail";
 import { ReviewPacket } from "./review-packet";
+import { ReviewReworkPlanPanel } from "./review-rework-plan-panel";
 import { ToolCallList } from "./tool-call-list";
 
 const CI_TONES: Record<PipelineStatus, BadgeTone> = {
@@ -302,8 +311,70 @@ export function RunDetailPage({
       {run.latestReviewFeedback ? (
         <ReviewFeedbackPanel summary={run.latestReviewFeedback} />
       ) : null}
+
+      {report?.reviewReworkPlan ? (
+        <section className="flex flex-col gap-3">
+          <ReviewReworkPlanPanel
+            plan={report.reviewReworkPlan}
+            onAcceptPlan={(planId) => {
+              startAction(async () => {
+                try {
+                  await acceptReviewReworkPlan(planId);
+                  setActionError(null);
+                  router.refresh();
+                } catch (err) {
+                  setActionError(reviewReworkActionErrorMessage(err, "accept"));
+                }
+              });
+            }}
+            onDismissPlan={(planId, reason) => {
+              startAction(async () => {
+                try {
+                  await dismissReviewReworkPlan(planId, reason);
+                  setActionError(null);
+                  router.refresh();
+                } catch (err) {
+                  setActionError(
+                    reviewReworkActionErrorMessage(err, "dismiss"),
+                  );
+                }
+              });
+            }}
+            onItemAction={(planId, itemId, next, reason) => {
+              if (next === "open") return;
+              startAction(async () => {
+                try {
+                  await updateReviewReworkItem(planId, itemId, next, reason);
+                  setActionError(null);
+                  router.refresh();
+                } catch (err) {
+                  setActionError(
+                    reviewReworkActionErrorMessage(err, `item-${next}`),
+                  );
+                }
+              });
+            }}
+          />
+        </section>
+      ) : null}
     </div>
   );
+}
+
+/**
+ * V4.9: shared error formatter for review rework operator actions.
+ * Mirrors {@link performAction} above — surfaces `ApiError.reason` when
+ * the orchestrator returned a structured `{ code }` body and falls back
+ * to the message for transport-level failures.
+ */
+function reviewReworkActionErrorMessage(err: unknown, action: string): string {
+  if (err instanceof ApiError) {
+    return `review rework ${action} failed: ${
+      err.reason ?? `HTTP ${err.status ?? "?"}`
+    }`;
+  }
+  if (err instanceof Error) return `review rework ${action} failed: ${err.message}`;
+  return `review rework ${action} failed: unknown error`;
 }
 
 function SectionHeader({ title, caption }: { title: string; caption: string }) {

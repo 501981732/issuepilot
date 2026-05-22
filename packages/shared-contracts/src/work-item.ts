@@ -157,6 +157,7 @@ export const isEvidenceStatus = (value: unknown): value is EvidenceStatus =>
  * `RiskLevel`，避免 V4.1 与 V2.5 在两处定义不同的字面量。
  */
 import { RISK_LEVEL_VALUES, type RiskLevel } from "./report.js";
+import type { ReviewReworkSummary } from "./review-rework.js";
 
 export { RISK_LEVEL_VALUES, type RiskLevel };
 
@@ -517,6 +518,13 @@ export interface WorkItemReport {
   humanReviewChecklist: HumanReviewChecklistItem[];
   ciSummary?: WorkItemCiSummary;
   testSummary?: WorkItemTestSummary;
+  /**
+   * V4.9 spec §6.2 / §9.2：每个 task 最新一份 accepted ReviewReworkPlan
+   * 在 WorkItemReport 侧的聚合快照，dashboard Parent Review Packet
+   * 据此渲染 blocking / accepted / resolved 计数，不必从磁盘扫
+   * `review-rework-plans/`。
+   */
+  reviewReworkSummary?: ReviewReworkSummary;
   generatedAt: string;
 }
 

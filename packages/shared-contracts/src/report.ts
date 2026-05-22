@@ -1,3 +1,4 @@
+import type { ReviewReworkPlan } from "./review-rework.js";
 import type { PipelineStatus, RunStatus } from "./run.js";
 
 export const RUN_REPORT_VERSION = 1 as const;
@@ -133,6 +134,13 @@ export interface RunReportArtifact {
     failureNoteId?: number;
     closingNoteId?: number;
   };
+  /**
+   * V4.9: optional snapshot of the most recent (draft / accepted /
+   * superseded) `ReviewReworkPlan` for this run. Always present once the
+   * planner has generated a plan; older artifacts predating V4.9 may omit
+   * it (and the dashboard treats absence as "no plan yet").
+   */
+  reviewReworkPlan?: ReviewReworkPlan;
 }
 
 export interface RunReportSummary {

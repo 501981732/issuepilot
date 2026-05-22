@@ -4,7 +4,9 @@ import { redact, type EventBus } from "@issuepilot/observability";
 import type {
   IssuePilotInternalEvent,
   ReviewComment,
+  ReviewerAgentReport,
   ReviewFeedbackSummary,
+  ReviewReworkPlan,
   RunReportArtifact,
 } from "@issuepilot/shared-contracts";
 
@@ -76,6 +78,29 @@ export interface ReviewFeedbackWorkflowSlice {
   };
 }
 
+/**
+ * V4.9: 当 sweep 完成一轮新评论收集后，会把 summary 与最新 reviewer
+ * findings 一起交给这个 slice 生成 `ReviewReworkPlan` 草稿，然后落到
+ * `RunReportArtifact.reviewReworkPlan` 里。slice 故意做得很小：把
+ * `ReviewWorkflowService` 全量接口（带 store / planner / 事件）和
+ * sweep 的关注点（拿 reviewer report、生成 plan）解耦，方便在 daemon
+ * 适配层把 pipelineStore + reviewWorkflowService 组合成这个接口，也
+ * 让单测可以直接传 `vi.fn()`。
+ */
+export interface ReviewFeedbackReviewWorkflowSlice {
+  generate(input: {
+    runId: string;
+    issueIid: number;
+    projectId?: string;
+    summary?: ReviewFeedbackSummary;
+    reviewerReports: ReviewerAgentReport[];
+    reportArtifact?: RunReportArtifact;
+  }): Promise<ReviewReworkPlan>;
+  listLatestReviewerReports(input: {
+    runId: string;
+  }): Promise<ReviewerAgentReport[]>;
+}
+
 export interface SweepReviewFeedbackInput {
   state: RuntimeState;
   gitlab: ReviewFeedbackGitLabSlice;
@@ -88,6 +113,13 @@ export interface SweepReviewFeedbackInput {
    * report subsystem can leave it undefined.
    */
   reports?: ReportStore;
+  /**
+   * V4.9: optional slice that, when provided, will receive the freshly
+   * generated `ReviewFeedbackSummary` + reviewer findings and persist a
+   * draft `ReviewReworkPlan` snapshot on the report artifact. Sweep
+   * tests that do not exercise the planner can leave it undefined.
+   */
+  reviewWorkflow?: ReviewFeedbackReviewWorkflowSlice;
   /** Injectable clock so tests can pin `generatedAt`. */
   now?: () => Date;
 }
@@ -158,7 +190,9 @@ function emit(
   type:
     | "review_feedback_sweep_started"
     | "review_feedback_summary_generated"
-    | "review_feedback_sweep_failed",
+    | "review_feedback_sweep_failed"
+    | "review_rework_plan_generated"
+    | "review_rework_plan_generation_failed",
   data: Record<string, unknown>,
 ): void {
   const ts = nowIso(input);
@@ -188,6 +222,12 @@ function emit(
       }
       case "review_feedback_sweep_failed":
         return `review:failed:${run.runId}:${
+          safeData["reason"] ?? "unknown"
+        }`;
+      case "review_rework_plan_generated":
+        return `rework:plan:${run.runId}:${safeData["planId"] ?? "?"}`;
+      case "review_rework_plan_generation_failed":
+        return `rework:plan:failed:${run.runId}:${
           safeData["reason"] ?? "unknown"
         }`;
     }
@@ -426,6 +466,45 @@ export async function sweepReviewFeedbackOnce(
           mergeReadiness: evaluateMergeReadiness(next, {
             evaluatedAt: generatedAt,
           }),
+        });
+      }
+    }
+
+    if (input.reviewWorkflow) {
+      try {
+        const reviewerReports =
+          await input.reviewWorkflow.listLatestReviewerReports({
+            runId: run.runId,
+          });
+        const reportArtifact = input.reports
+          ? await input.reports.get(run.runId)
+          : undefined;
+        const plan = await input.reviewWorkflow.generate({
+          runId: run.runId,
+          issueIid: run.issueIid,
+          projectId: run.issue.projectId,
+          summary,
+          reviewerReports,
+          ...(reportArtifact ? { reportArtifact } : {}),
+        });
+        if (input.reports) {
+          const refreshed = await input.reports.get(run.runId);
+          if (refreshed) {
+            await input.reports.save({
+              ...refreshed,
+              reviewReworkPlan: plan,
+            });
+          }
+        }
+        emit(input, run, "review_rework_plan_generated", {
+          planId: plan.planId,
+          itemCount: plan.items.length,
+          status: plan.status,
+        });
+      } catch (err) {
+        emit(input, run, "review_rework_plan_generation_failed", {
+          reason: "planner_failed",
+          message: err instanceof Error ? err.message : String(err),
         });
       }
     }

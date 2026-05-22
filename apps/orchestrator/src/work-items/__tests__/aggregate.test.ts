@@ -917,4 +917,62 @@ describe("aggregateWorkItem", () => {
 
     expect(result.report.recommendedNextActions.join(" ")).toContain("t2");
   });
+
+  // V4.9 Intelligent Review Workflow: when the workflow service has
+  // accepted plans for the WorkItem, the aggregator must thread a
+  // `reviewReworkSummary` snapshot onto the report so the Parent
+  // Review Packet shows blocking / accepted / resolved counters
+  // without re-reading the plan store.
+  it("V4.9: aggregates per-task accepted rework items into reviewReworkSummary", async () => {
+    const plans = [
+      {
+        planId: "p1",
+        runId: "run_a",
+        issueIid: 42,
+        workItemId: workItem.workItemId,
+        taskId: "t1",
+        status: "accepted" as const,
+        generatedAt: "2026-05-21T00:00:00.000Z",
+        items: [
+          {
+            itemId: "i1",
+            status: "accepted" as const,
+            category: "test_gap" as const,
+            priority: "blocking" as const,
+            title: "Add e2e",
+            summary: "",
+            targetFiles: [],
+            suggestedValidation: [],
+            sourceRefs: [],
+            confidence: 0.7,
+          },
+          {
+            itemId: "i2",
+            status: "resolved" as const,
+            category: "ci_failure" as const,
+            priority: "high" as const,
+            title: "Fix flaky tsc",
+            summary: "",
+            targetFiles: [],
+            suggestedValidation: [],
+            sourceRefs: [],
+            confidence: 0.8,
+          },
+        ],
+      },
+    ];
+    const result = await aggregate(
+      planWith([task({ taskId: "t1", status: "completed" })]),
+      [link({ taskId: "t1", runId: "run_a", status: "completed" })],
+      new Map([["run_a", report({ runId: "run_a" })]]),
+      {
+        getReviewReworkPlans: async () => plans,
+      },
+    );
+    expect(result.report.reviewReworkSummary?.blockingCount).toBe(1);
+    expect(result.report.reviewReworkSummary?.acceptedCount).toBe(1);
+    expect(result.report.reviewReworkSummary?.resolvedCount).toBe(1);
+    expect(result.report.reviewReworkSummary?.perTask["t1"]?.blocking).toBe(1);
+    expect(result.report.reviewReworkSummary?.latestPlanIds).toEqual(["p1"]);
+  });
 });

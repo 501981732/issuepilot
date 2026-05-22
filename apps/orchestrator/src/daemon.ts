@@ -112,6 +112,8 @@ import { createPipelineQualitySummaryCallback } from "./quality/pipeline-summary
 import { createInitialReport, markReportFailed } from "./reports/lifecycle.js";
 import { renderFailureNote } from "./reports/render.js";
 import { createReportStore } from "./reports/store.js";
+import { createReviewWorkflowService } from "./review-workflow/service.js";
+import { createReviewReworkPlanStore } from "./review-workflow/store.js";
 import { createClaudeCodeAdapter } from "./runners/claude-code.js";
 import { createCodexAppServerAdapter } from "./runners/codex-app-server.js";
 import { createRunnerRegistry } from "./runners/registry.js";
@@ -505,6 +507,14 @@ export async function startDaemon(
   // workspace tree.
   const improvementStore = createImprovementStore({
     rootDir: path.join(workflow.workspace.root, ".issuepilot"),
+  });
+  const reviewWorkflowStore = createReviewReworkPlanStore({
+    rootDir: path.join(workflow.workspace.root, ".issuepilot"),
+  });
+  const reviewWorkflowService = createReviewWorkflowService({
+    store: reviewWorkflowStore,
+    eventBus,
+    now: () => new Date(),
   });
   // Patch preview sandbox: only read files inside the workflow file itself or
   // anywhere under the workflow workspace root (where project rules, prompt
@@ -1618,6 +1628,10 @@ export async function startDaemon(
                   state,
                   maxAttempts: workflow.agent.maxAttempts,
                   retryBackoffMs: workflow.agent.retryBackoffMs,
+                  reviewWorkflow: {
+                    getLatestAccepted: (filters) =>
+                      reviewWorkflowService.getLatestAccepted(filters),
+                  },
                   ensureMirror: async (opts) =>
                     ensureMirror({
                       repoUrl: opts.remoteUrl,
@@ -2060,6 +2074,7 @@ export async function startDaemon(
         workItems: workItemStore,
       },
       improvements: improvementService,
+      reviewWorkflowService,
       ...(pipelineService ? { pipelines: pipelineService } : {}),
       // V4.6 review follow-up (Issue 1)：把 pipelineStore 透给
       // /api/quality/summary 路由，让 dashboard `ByRolePanel` 的 byRole
@@ -2307,6 +2322,10 @@ export async function startDaemon(
               opts.template,
               opts.vars as unknown as PromptContext,
             ),
+          reviewWorkflow: {
+            getLatestAccepted: (filters) =>
+              reviewWorkflowService.getLatestAccepted(filters),
+          },
           runAgent: async (opts) => {
             const cmd = splitCommand(workflow.codex.command);
             const rpc = spawnRpc({ ...cmd, cwd: opts.cwd });
@@ -2599,6 +2618,16 @@ export async function startDaemon(
           },
         },
         reports: reportStore,
+        reviewWorkflow: {
+          generate: (genInput) => reviewWorkflowService.generate(genInput),
+          // V4.9: the V1 single-task workflow has no pipeline so the
+          // reviewer agent does not produce a `ReviewerAgentReport`.
+          // Returning an empty list keeps the planner deterministic
+          // (it falls back to human comments only). Future V4.6+
+          // pipelines wire `pipelineStore.latestAgentReportForRole(...)`
+          // here so reviewer findings flow into the plan.
+          listLatestReviewerReports: async () => [],
+        },
       });
     },
     reconcileRunning: async () => {

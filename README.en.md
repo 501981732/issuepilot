@@ -778,12 +778,16 @@ productionizes the capabilities that prove valuable here.
     `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood.md`.
     Acceptance record:
     `docs/superpowers/plans/2026-05-21-issuepilot-v4-8-second-runner-dogfood-acceptance.md`.
-- **Intelligent review workflow** (V4.9 design pending review): merge human MR
-  comments from the V2 review feedback sweep, V4.6 reviewer findings, CI /
-  evidence state, and task context into an auditable `ReviewReworkPlan`.
-  Once an operator accepts the plan, it becomes structured input for the next
-  `ai-rework` agent run. Design spec:
-  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`.
+- **Intelligent review workflow** (V4.9 implementation complete, pending user
+  acceptance): merge human MR comments from the V2 review feedback sweep, V4.6
+  reviewer findings, CI / evidence state, and task context into an auditable
+  `ReviewReworkPlan`. Once an operator accepts the plan, it becomes structured
+  input for the next `ai-rework` agent run. Design spec:
+  `docs/superpowers/specs/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-design.md`;
+  implementation plan:
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`;
+  acceptance record:
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`.
 - **Acceptance evidence generation**: screenshots, recordings, Playwright
   walkthrough videos, test evidence, risk lists, and MR / Issue-ready
   acceptance reports.

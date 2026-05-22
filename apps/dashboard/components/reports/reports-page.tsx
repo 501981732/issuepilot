@@ -30,6 +30,7 @@ import {
 
 import { QualityAnalytics } from "./quality-analytics";
 import { Recommendations } from "./recommendations";
+import { ReviewWorkflowCard } from "./review-workflow-card";
 
 interface ReportsPageProps {
   reports: RunReportSummary[];
@@ -339,6 +340,10 @@ export function ReportsPage({
       </section>
 
       <QualityAnalytics summary={quality} />
+
+      {quality.reviewWorkflow ? (
+        <ReviewWorkflowCard data={quality.reviewWorkflow} />
+      ) : null}
 
       {recommendationError ? (
         <p

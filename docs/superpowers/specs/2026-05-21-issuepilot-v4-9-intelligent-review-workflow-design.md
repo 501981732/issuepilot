@@ -1,7 +1,7 @@
 # IssuePilot V4.9 智能 Review 工作流设计
 
 日期：2026-05-21
-状态：待用户评审
+状态：实施完成（待用户验收）
 
 关联文档：
 
@@ -17,8 +17,10 @@
 
 ## 实施计划
 
-- V4.9 智能 Review 工作流：实施计划在本设计评审通过后补充到
+- V4.9 智能 Review 工作流：实施计划位于
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`。
+- 验收记录位于
+  `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
 
 ## 1. 背景
 

@@ -106,6 +106,24 @@ describe("report contracts", () => {
     });
   });
 
+  it("V4.9: RunReportArtifact accepts an optional reviewReworkPlan", () => {
+    const artifact: RunReportArtifact = {
+      ...baseReport,
+      reviewReworkPlan: {
+        planId: "plan-1",
+        runId: "run-1",
+        issueIid: 1,
+        status: "accepted",
+        generatedAt: "2026-05-21T00:00:00.000Z",
+        items: [],
+      },
+    };
+    expect(artifact.reviewReworkPlan?.planId).toBe("plan-1");
+    expect(JSON.parse(JSON.stringify(artifact)).reviewReworkPlan?.status).toBe(
+      "accepted",
+    );
+  });
+
   it("allows run reports to declare V4.3 evidence references", () => {
     const evidence: ReportEvidence = {
       kind: "command_output",

@@ -17,10 +17,12 @@ feedback and workspace cleanup wired in.
 > **Maintenance**: top-level bilingual entry; keep in sync with
 > [`USAGE.zh-CN.md`](./USAGE.zh-CN.md).
 
-Visual versions:
+Current visual versions:
 
-- Architecture: [`docs/superpowers/diagrams/v2-architecture.svg`](./docs/superpowers/diagrams/v2-architecture.svg)
-- End-to-end flow: [`docs/superpowers/diagrams/v2-flow.svg`](./docs/superpowers/diagrams/v2-flow.svg)
+- V4 architecture: [`docs/superpowers/diagrams/v4-architecture.svg`](./docs/superpowers/diagrams/v4-architecture.svg)
+- V4 end-to-end flow: [`docs/superpowers/diagrams/v4-flow.svg`](./docs/superpowers/diagrams/v4-flow.svg)
+- Historical V2 architecture: [`docs/superpowers/diagrams/v2-architecture.svg`](./docs/superpowers/diagrams/v2-architecture.svg)
+- Historical V2 flow: [`docs/superpowers/diagrams/v2-flow.svg`](./docs/superpowers/diagrams/v2-flow.svg)
 
 ---
 

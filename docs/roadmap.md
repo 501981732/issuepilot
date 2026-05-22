@@ -16,11 +16,16 @@ IssuePilot 当前处在 local-first / team-machine pilot 阶段。它已经能�
 
 ## Product Flow
 
-![IssuePilot flow](./superpowers/diagrams/v2-flow.svg)
+![IssuePilot V4 flow](./superpowers/diagrams/v4-flow.svg)
 
 ## Architecture
 
-![IssuePilot architecture](./superpowers/diagrams/v2-architecture.svg)
+![IssuePilot V4 architecture](./superpowers/diagrams/v4-architecture.svg)
+
+Historical V2 diagrams remain available for the team-operable runtime foundation:
+
+- [V2 architecture](./superpowers/diagrams/v2-architecture.svg)
+- [V2 flow](./superpowers/diagrams/v2-flow.svg)
 
 ## Completed Capabilities
 

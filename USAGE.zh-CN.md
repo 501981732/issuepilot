@@ -2,10 +2,14 @@
 
 [English](./USAGE.md) | 简体中文
 
-本手册面向**首次使用 IssuePilot 的工程师**。目标是把一个 GitLab Issue
-自动跑成一条分支、一个 Merge Request 和一条 Issue 回写说明；并把一台
-共享机器升级成可同时管理多个项目、自动回流 CI / review 反馈、自动清理
-workspace 的团队 daemon。
+> 第一次启动 IssuePilot？请先阅读
+> [docs/getting-started.zh-CN.md](./docs/getting-started.zh-CN.md)。
+> 本文件是完整用户手册，包含 single-project、team mode、dashboard operations、
+> review packet、quality analytics 和 troubleshooting 等深度内容。
+
+需要更深的操作细节时再使用本手册：把一个 GitLab Issue 自动跑成一条分支、
+一个 Merge Request 和一条 Issue 回写说明；并把一台共享机器升级成可同时
+管理多个项目、自动回流 CI / review 反馈、自动清理 workspace 的团队 daemon。
 
 > **覆盖版本**：V1 单项目本地闭环 + V2 团队可运营版本（Phase 1–5 已合入 main）。
 > **维护规则**：根目录公开双语入口，与 [`USAGE.md`](./USAGE.md) 同步。

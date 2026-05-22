@@ -730,7 +730,7 @@ V3 / V4 是能力域编号，不表示必须按数字顺序交付；当前判断
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`；
   验收记录：
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
-- **Release Lock / Dog-food Closure**（V4.10 设计待评审）：进入 V3 前先收口
+- **Release Lock / Dog-food Closure**（V4.10 执行完成，V4 对内试点边界已锁定）：进入 V3 前先收口
   V4.1-V4.9，把 V4.9 用户验收与 review-rework dog-food、V4.8 第二 runner
   真实 CLI dog-food 状态、single daemon / team daemon 能力矩阵以及 README /
   CHANGELOG / V4 总 spec roadmap 状态同步锁定。设计 spec：

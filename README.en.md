@@ -791,7 +791,7 @@ productionizes the capabilities that prove valuable here.
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow.md`;
   acceptance record:
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`.
-- **Release Lock / Dog-food Closure** (V4.10 design pending review): before V3,
+- **Release Lock / Dog-food Closure** (V4.10 complete; V4 internal-pilot boundary locked): before V3,
   close V4.1-V4.9 into a pilot-ready boundary by locking V4.9 user acceptance
   and review-rework dog-food, the V4.8 second-runner real CLI dog-food state,
   the single-daemon / team-daemon capability matrix, and README / CHANGELOG /

@@ -61,7 +61,7 @@
   `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`）。
 - V4.10 Release Lock / Dog-food Closure：
   `docs/superpowers/specs/2026-05-22-issuepilot-v4-10-release-lock-design.md`
-  （设计待评审；目标是在进入 V3 前收口 V4.1-V4.9：完成 V4.9 用户验收与
+  （执行完成，V4 对内试点边界已锁定；目标是在进入 V3 前收口 V4.1-V4.9：完成 V4.9 用户验收与
   review-rework dog-food、确认 V4.8 第二 runner 真实 CLI dog-food 状态、明确
   single daemon / team daemon 能力矩阵，并同步 README / CHANGELOG / V4 总 spec
   的 roadmap 状态）。
@@ -418,7 +418,7 @@ contract，而不是提前建设 V3 runner 平台。
 验收记录：
 `docs/superpowers/plans/2026-05-21-issuepilot-v4-9-intelligent-review-workflow-acceptance.md`。
 
-### V4.10：Release Lock / Dog-food Closure（设计待评审）
+### V4.10：Release Lock / Dog-food Closure（执行完成）
 
 目标：在进入 V3 生产化执行平台前，把 V4.1-V4.9 从“功能已实现”收口成“可以
 对内试点”的状态。

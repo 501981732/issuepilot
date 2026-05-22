@@ -14,10 +14,12 @@
 > **覆盖版本**：V1 单项目本地闭环 + V2 团队可运营版本（Phase 1–5 已合入 main）。
 > **维护规则**：根目录公开双语入口，与 [`USAGE.md`](./USAGE.md) 同步。
 
-视觉版本：
+当前视觉版本：
 
-- 架构图：[`docs/superpowers/diagrams/v2-architecture.svg`](./docs/superpowers/diagrams/v2-architecture.svg)
-- 端到端流程图：[`docs/superpowers/diagrams/v2-flow.svg`](./docs/superpowers/diagrams/v2-flow.svg)
+- V4 架构图：[`docs/superpowers/diagrams/v4-architecture.svg`](./docs/superpowers/diagrams/v4-architecture.svg)
+- V4 端到端流程图：[`docs/superpowers/diagrams/v4-flow.svg`](./docs/superpowers/diagrams/v4-flow.svg)
+- 历史 V2 架构图：[`docs/superpowers/diagrams/v2-architecture.svg`](./docs/superpowers/diagrams/v2-architecture.svg)
+- 历史 V2 端到端流程图：[`docs/superpowers/diagrams/v2-flow.svg`](./docs/superpowers/diagrams/v2-flow.svg)
 
 ---
 

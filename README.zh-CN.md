@@ -74,8 +74,8 @@ NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm dev:dashboard
 - [Roadmap](./docs/roadmap.md)
 - [用户手册中文](./USAGE.zh-CN.md)
 - [User Guide English](./USAGE.md)
-- [架构图](./docs/superpowers/diagrams/v2-architecture.svg)
-- [端到端流程图](./docs/superpowers/diagrams/v2-flow.svg)
+- [V4 架构图](./docs/superpowers/diagrams/v4-architecture.svg)
+- [V4 端到端流程图](./docs/superpowers/diagrams/v4-flow.svg)
 
 ## 开发与验证
 

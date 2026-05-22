@@ -25,6 +25,11 @@
   `docs/getting-started.zh-CN.md`、`docs/getting-started.md`、`docs/roadmap.md`
   和 `docs/assets/screenshots/` dashboard 截图；README 三语版本收敛为短开源首页，
   `USAGE.*.md` 顶部增加首次启动入口说明，并从 README / docs 明确链接架构图与端到端流程图。
+- 2026-05-22 — 新增当前 V4.10 架构图与端到端流程图：
+  `docs/superpowers/diagrams/v4-architecture.mmd` / `.svg` 和
+  `docs/superpowers/diagrams/v4-flow.mmd` / `.svg`。公开 README、docs 首页、
+  roadmap 和 `USAGE.*.md` 默认指向 V4 图；旧 `v2-*` 图保留为 historical V2
+  runtime foundation 参考。
 
 ## [Unreleased] V4.10 Release Lock / Dog-food Closure（执行完成）
 

@@ -11,6 +11,9 @@ agent 会话，而是通过 Issue、MR、Review Packet 和 dashboard 管理交�
 
 ## 一图看懂 V4
 
+下面两张手绘信息图面向第一次了解 IssuePilot 的读者：先看系统边界和核心模块，
+再看从 GitLab Issue 到 MR review / rework 的完整闭环。精确版架构图和流程图见文档区。
+
 ![IssuePilot V4 手绘架构信息图](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
 
 ![IssuePilot V4 手绘流程信息图](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)

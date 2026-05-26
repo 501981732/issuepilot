@@ -11,6 +11,11 @@ Teams should not have to supervise agent chat sessions directly; they should man
 
 ## V4 At A Glance
 
+The two hand-drawn infographics below are for first-time readers: start with
+the system boundary and core modules, then follow the loop from GitLab Issue to
+MR review and rework. The precise architecture and flow diagrams remain in the
+documentation section.
+
 ![IssuePilot V4 hand-drawn architecture infographic](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
 
 ![IssuePilot V4 hand-drawn flow infographic](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)

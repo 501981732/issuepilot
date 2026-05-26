@@ -1,0 +1,133 @@
+%% IssuePilot V4.10 current architecture
+%% Source of truth: docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md
+%% Release lock: docs/superpowers/plans/2026-05-22-issuepilot-v4-10-release-lock-acceptance.md
+%% Render: see docs/superpowers/diagrams/README.md
+flowchart LR
+    classDef extern fill:#fef3c7,stroke:#b45309,color:#1f2937;
+    classDef config fill:#e0e7ff,stroke:#4338ca,color:#1f2937;
+    classDef runtime fill:#dcfce7,stroke:#15803d,color:#1f2937;
+    classDef intelligence fill:#ede9fe,stroke:#7c3aed,color:#1f2937;
+    classDef runner fill:#fde68a,stroke:#92400e,color:#1f2937;
+    classDef ui fill:#fce7f3,stroke:#be185d,color:#1f2937;
+    classDef store fill:#f1f5f9,stroke:#475569,color:#1f2937;
+    classDef caution fill:#fee2e2,stroke:#b91c1c,color:#1f2937;
+
+    subgraph EXTERNAL["External systems"]
+        direction TB
+        OPERATOR["Operator<br/>maintainer"]:::extern
+        REVIEWER["Human reviewer"]:::extern
+        GITLAB[("GitLab<br/>Issues / Labels / Notes / MRs / Pipelines")]:::extern
+        CODEX["Codex app-server<br/>default runner"]:::extern
+        CLAUDE["Claude Code CLI<br/>opt-in reviewer runner"]:::extern
+    end
+
+    subgraph CONFIG["Configuration"]
+        direction TB
+        TEAM_CONFIG["issuepilot.team.yaml<br/>projects / scheduler / retention"]:::config
+        WORKFLOW["WORKFLOW.md<br/>tracker / git / roles / runners"]:::config
+        RECIPES["Workflow recipes<br/>role pipeline policy"]:::config
+    end
+
+    subgraph RUNTIME["V2.x local runtime foundation"]
+        direction TB
+        FASTIFY["Fastify API<br/>state / runs / work-items / reports"]:::runtime
+        SCHEDULER["scheduler + lease store<br/>global and project concurrency"]:::runtime
+        LOOP["main loop<br/>claim / dispatch / ci scan / review sweep / cleanup"]:::runtime
+        GITLAB_ADAPTER["tracker-gitlab adapter"]:::runtime
+        WORKSPACE_ADAPTER["workspace adapter<br/>mirror + git worktree"]:::runtime
+        EVENT_STORE[("events / runs / logs")]:::store
+    end
+
+    subgraph INTEL["V4 Workflow Intelligence Layer"]
+        direction TB
+        WORK_ITEMS["WorkItem store<br/>parent issue state"]:::intelligence
+        TASK_GRAPH["TaskPlan + TaskGraph<br/>dependency-aware tasks"]:::intelligence
+        PIPELINE["multi-agent pipeline<br/>coder / reviewer / test evidence"]:::intelligence
+        AGENT_REPORTS["AgentReport store<br/>role output + runner trace"]:::intelligence
+        REVIEW_PACKET["Parent Review Packet<br/>handoff / risks / evidence"]:::intelligence
+        QUALITY["Quality Analytics<br/>failure patterns / role slices"]:::intelligence
+        IMPROVE["Improvement Loop<br/>recommendations / patch preview"]:::intelligence
+        REWORK["ReviewReworkPlan<br/>comments to accepted rework input"]:::intelligence
+    end
+
+    subgraph RUNNERS["Runner Adapter Layer"]
+        direction TB
+        REGISTRY["RunnerRegistry<br/>kind / capability / role binding"]:::runner
+        CODEX_ADAPTER["codex_app_server adapter"]:::runner
+        CLAUDE_ADAPTER["claude_code adapter<br/>reviewer read-only opt-in"]:::runner
+        EVENTS["standard RunnerEvent<br/>sanitized artifacts"]:::runner
+    end
+
+    subgraph DASHBOARD["Dashboard"]
+        direction TB
+        COMMAND["Command Center<br/>list / board / health"]:::ui
+        WORK_UI["Work Items<br/>task graph / pipeline / recipe"]:::ui
+        DETAIL["Run Detail<br/>events / logs / review plan"]:::ui
+        PACKET_UI["Parent Review Packet<br/>evidence / human checklist"]:::ui
+        REPORTS_UI["Reports<br/>quality / recommendations / review workflow"]:::ui
+    end
+
+    subgraph LOCAL["~/.issuepilot local state"]
+        direction TB
+        REPOS[("repos / bare mirrors")]:::store
+        WORKSPACES[("workspaces / task worktrees")]:::store
+        STATE[("state / work-items / reports / recommendations")]:::store
+        CREDS[("credentials<br/>0600 tokens")]:::store
+    end
+
+    TEAM_CONFIG --> FASTIFY
+    WORKFLOW --> FASTIFY
+    WORKFLOW --> REGISTRY
+    RECIPES --> PIPELINE
+    OPERATOR --> WORKFLOW
+    OPERATOR --> COMMAND
+    REVIEWER --> GITLAB
+
+    FASTIFY --> COMMAND
+    FASTIFY --> WORK_UI
+    FASTIFY --> DETAIL
+    FASTIFY --> PACKET_UI
+    FASTIFY --> REPORTS_UI
+
+    LOOP --> SCHEDULER
+    LOOP --> GITLAB_ADAPTER
+    LOOP --> WORKSPACE_ADAPTER
+    LOOP --> WORK_ITEMS
+    LOOP --> PIPELINE
+    LOOP --> EVENT_STORE
+
+    GITLAB_ADAPTER <--> GITLAB
+    WORKSPACE_ADAPTER --> REPOS
+    WORKSPACE_ADAPTER --> WORKSPACES
+    EVENT_STORE --> STATE
+    WORK_ITEMS --> STATE
+    AGENT_REPORTS --> STATE
+    REVIEW_PACKET --> STATE
+    QUALITY --> STATE
+    IMPROVE --> STATE
+    CREDS --> GITLAB_ADAPTER
+
+    WORK_ITEMS --> TASK_GRAPH
+    TASK_GRAPH --> PIPELINE
+    PIPELINE --> REGISTRY
+    REGISTRY --> CODEX_ADAPTER
+    REGISTRY --> CLAUDE_ADAPTER
+    CODEX_ADAPTER <--> CODEX
+    CLAUDE_ADAPTER <--> CLAUDE
+    CODEX_ADAPTER --> EVENTS
+    CLAUDE_ADAPTER --> EVENTS
+    EVENTS --> AGENT_REPORTS
+
+    AGENT_REPORTS --> REVIEW_PACKET
+    REVIEW_PACKET --> QUALITY
+    REVIEW_PACKET --> REWORK
+    QUALITY --> IMPROVE
+    REWORK --> PIPELINE
+
+    DETAIL --> REWORK
+    PACKET_UI --> REVIEW_PACKET
+    REPORTS_UI --> QUALITY
+    REPORTS_UI --> IMPROVE
+
+    TEAM_FOLLOWUP["V4.10 boundary<br/>team daemon review workflow binding remains follow-up"]:::caution
+    REWORK -. "single daemon locked<br/>team project-scoped service follow-up" .-> TEAM_FOLLOWUP

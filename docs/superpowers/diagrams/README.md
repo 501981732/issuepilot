@@ -8,10 +8,14 @@
 
 | 文件 | 类型 | 描述 |
 | --- | --- | --- |
+| `v4-architecture.mmd` | mermaid 源 | IssuePilot V4.10 当前架构图 — 在 V2.x local runtime 之上展示 Workflow Intelligence Layer、multi-agent pipeline、runner adapter、dashboard 和本地状态 |
+| `v4-architecture.svg` | 渲染产物 | 上面文件的 SVG 渲染版本，README / docs / 使用手册默认引用这张当前架构图 |
+| `v4-flow.mmd` | mermaid 源 | V4.10 当前端到端流程图 — 覆盖 WorkItem planning、TaskGraph、multi-agent run、Review Packet、Quality Analytics、ReviewReworkPlan 和 V4.10 team follow-up 边界 |
+| `v4-flow.svg` | 渲染产物 | 上面文件的 SVG 渲染版本，README / docs / 使用手册默认引用这张当前流程图 |
 | `v2-architecture.mmd` | mermaid 源 | IssuePilot V2 团队可运营版本的运行时架构图 — 配置入口、orchestrator daemon、adapter、observability、本地存储与 dashboard 的层次关系 |
-| `v2-architecture.svg` | 渲染产物 | 上面文件的 SVG 渲染版本，README / spec / 使用手册可以直接 `![...](.../v2-architecture.svg)` 引用 |
+| `v2-architecture.svg` | 渲染产物 | 上面文件的 SVG 渲染版本；作为历史 V2 runtime foundation 图保留 |
 | `v2-flow.mmd` | mermaid 源 | V2 下 GitLab issue 从 `ai-ready` 到 `closed` / `ai-failed` / `ai-blocked` 的端到端生命周期，覆盖 Phase 1-5 五段周期任务 |
-| `v2-flow.svg` | 渲染产物 | 同上 |
+| `v2-flow.svg` | 渲染产物 | 上面文件的 SVG 渲染版本；作为历史 V2 lifecycle 图保留 |
 
 ## 渲染命令
 
@@ -20,6 +24,10 @@
 
 ```bash
 cd docs/superpowers/diagrams
+npx -y -p @mermaid-js/mermaid-cli mmdc \
+  -i v4-architecture.mmd -o v4-architecture.svg -b transparent --quiet
+npx -y -p @mermaid-js/mermaid-cli mmdc \
+  -i v4-flow.mmd -o v4-flow.svg -b transparent --quiet
 npx -y -p @mermaid-js/mermaid-cli mmdc \
   -i v2-architecture.mmd -o v2-architecture.svg -b transparent --quiet
 npx -y -p @mermaid-js/mermaid-cli mmdc \

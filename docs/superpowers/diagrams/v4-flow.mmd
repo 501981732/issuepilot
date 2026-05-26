@@ -1,0 +1,81 @@
+%% IssuePilot V4.10 current end-to-end flow
+%% Source of truth: docs/superpowers/specs/2026-05-17-issuepilot-v4-intelligent-workbench-design.md
+%% Release lock: docs/superpowers/plans/2026-05-22-issuepilot-v4-10-release-lock-acceptance.md
+%% Render: see docs/superpowers/diagrams/README.md
+flowchart TD
+    classDef state fill:#e0e7ff,stroke:#4338ca,color:#1f2937;
+    classDef action fill:#dcfce7,stroke:#15803d,color:#1f2937;
+    classDef intel fill:#ede9fe,stroke:#7c3aed,color:#1f2937;
+    classDef runner fill:#fde68a,stroke:#92400e,color:#1f2937;
+    classDef human fill:#fce7f3,stroke:#be185d,color:#1f2937;
+    classDef terminal fill:#f1f5f9,stroke:#475569,color:#1f2937;
+    classDef warn fill:#fee2e2,stroke:#b91c1c,color:#1f2937;
+
+    START(["GitLab Issue"]):::state
+    READY["label = ai-ready"]:::state
+    PLAN["Plan WorkItem<br/>issue decomposition + TaskPlan"]:::intel
+    REVIEW_PLAN{"Operator accepts or edits plan?"}:::human
+    EDIT_PLAN["edit / regenerate / reorder tasks"]:::human
+    TASK_GRAPH["TaskGraph<br/>dependencies + task states"]:::intel
+
+    READY_TASK{"Independent task ready?"}:::action
+    BLOCKED_DEP["blocked_by_dependency<br/>wait for upstream MR"]:::warn
+    CLAIM["claim task run<br/>ai-running + isolated worktree"]:::action
+
+    PIPELINE["multi-agent pipeline"]:::intel
+    CODER["coder role<br/>default codex_app_server"]:::runner
+    REVIEWER_AGENT["reviewer role<br/>codex or opt-in claude_code"]:::runner
+    TEST_EVIDENCE["test_evidence role<br/>validation + artifacts"]:::runner
+
+    RUN_OUTCOME{"Task run outcome"}:::action
+    AGENT_REPORT["AgentReports<br/>runner trace + redaction trace"]:::intel
+    EVIDENCE["Evidence<br/>screenshots / logs / reports"]:::intel
+    PARENT_PACKET["Parent Review Packet<br/>all task results + risks"]:::intel
+    QUALITY["Quality Analytics<br/>failure patterns + role slices"]:::intel
+    IMPROVE["Improvement Recommendations<br/>human-applied patches"]:::intel
+
+    HUMAN_REVIEW["label = human-review<br/>MR + handoff note"]:::state
+    HUMAN_DECISION{"Human reviewer decision"}:::human
+    MERGE["manual MR merge"]:::human
+    COMMENTS["MR comments / reviewer findings / CI evidence"]:::human
+    REWORK_PLAN["ReviewReworkPlan<br/>classify + plan + source refs"]:::intel
+    ACCEPT_REWORK{"Operator accepts rework plan?"}:::human
+    INJECT_REWORK["next ai-rework dispatch<br/>prepend Review rework plan"]:::action
+
+    FAILED["label = ai-failed<br/>failure note"]:::warn
+    BLOCKED["label = ai-blocked<br/>structured blocker"]:::warn
+    CLOSED["Issue closed"]:::terminal
+    TEAM_BOUNDARY["V4.10 boundary<br/>single daemon locked<br/>team review workflow binding follow-up"]:::warn
+
+    START --> READY --> PLAN --> REVIEW_PLAN
+    REVIEW_PLAN -- edit --> EDIT_PLAN --> PLAN
+    REVIEW_PLAN -- accept --> TASK_GRAPH
+
+    TASK_GRAPH --> READY_TASK
+    READY_TASK -- no --> BLOCKED_DEP --> TASK_GRAPH
+    READY_TASK -- yes --> CLAIM --> PIPELINE
+
+    PIPELINE --> CODER --> REVIEWER_AGENT --> TEST_EVIDENCE --> RUN_OUTCOME
+    RUN_OUTCOME -- completed --> AGENT_REPORT
+    RUN_OUTCOME -- failed --> FAILED
+    RUN_OUTCOME -- blocked --> BLOCKED
+    RUN_OUTCOME -- retryable --> CLAIM
+
+    AGENT_REPORT --> EVIDENCE --> PARENT_PACKET
+    AGENT_REPORT --> PARENT_PACKET
+    PARENT_PACKET --> QUALITY --> IMPROVE
+    PARENT_PACKET --> HUMAN_REVIEW
+
+    HUMAN_REVIEW --> HUMAN_DECISION
+    HUMAN_DECISION -- merge --> MERGE --> CLOSED
+    HUMAN_DECISION -- comments / ai-rework --> COMMENTS --> REWORK_PLAN --> ACCEPT_REWORK
+    HUMAN_DECISION -- wait for CI --> HUMAN_REVIEW
+    ACCEPT_REWORK -- no --> HUMAN_REVIEW
+    ACCEPT_REWORK -- yes --> INJECT_REWORK --> CLAIM
+
+    REWORK_PLAN --> PARENT_PACKET
+    REWORK_PLAN --> QUALITY
+    REWORK_PLAN -. "single daemon complete<br/>team scoped service follow-up" .-> TEAM_BOUNDARY
+
+    FAILED -. dashboard retry .-> CLAIM
+    BLOCKED -. human fixes blocker .-> READY

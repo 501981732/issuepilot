@@ -16,9 +16,17 @@ IssuePilot 当前处在 local-first / team-machine pilot 阶段。它已经能�
 
 ## Product Flow
 
+这张手绘信息图适合先建立直觉；精确节点和状态以 Mermaid 源图为准。
+
+![IssuePilot V4 hand-drawn flow infographic](./superpowers/diagrams/v4-flow-handdrawn.svg)
+
 ![IssuePilot V4 flow](./superpowers/diagrams/v4-flow.svg)
 
 ## Architecture
+
+这张手绘信息图说明 V2 本地运行时、V4 智能层、Runner Adapter、Dashboard 和本地状态的关系。
+
+![IssuePilot V4 hand-drawn architecture infographic](./superpowers/diagrams/v4-architecture-handdrawn.svg)
 
 ![IssuePilot V4 architecture](./superpowers/diagrams/v4-architecture.svg)
 

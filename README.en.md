@@ -74,6 +74,8 @@ For the full path, see [Getting Started](./docs/getting-started.md).
 - [Roadmap](./docs/roadmap.md)
 - [用户手册中文](./USAGE.zh-CN.md)
 - [User Guide English](./USAGE.md)
+- [Hand-drawn V4 architecture infographic](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+- [Hand-drawn V4 flow infographic](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
 - [V4 architecture diagram](./docs/superpowers/diagrams/v4-architecture.svg)
 - [V4 end-to-end flow diagram](./docs/superpowers/diagrams/v4-flow.svg)
 

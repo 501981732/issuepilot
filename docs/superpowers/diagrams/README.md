@@ -8,6 +8,8 @@
 
 | 文件 | 类型 | 描述 |
 | --- | --- | --- |
+| `v4-architecture-handdrawn.svg` | 手绘 SVG | 面向新读者的 V4.10 架构教育信息图，中文为主，用手绘卡片解释 V2 runtime + V4 intelligence + runner + dashboard |
+| `v4-flow-handdrawn.svg` | 手绘 SVG | 面向新读者的 V4.10 端到端流程教育信息图，中文为主，展示 Issue → WorkItem → 多 Agent → Review Packet → 返工闭环 |
 | `v4-architecture.mmd` | mermaid 源 | IssuePilot V4.10 当前架构图 — 在 V2.x local runtime 之上展示 Workflow Intelligence Layer、multi-agent pipeline、runner adapter、dashboard 和本地状态 |
 | `v4-architecture.svg` | 渲染产物 | 上面文件的 SVG 渲染版本，README / docs / 使用手册默认引用这张当前架构图 |
 | `v4-flow.mmd` | mermaid 源 | V4.10 当前端到端流程图 — 覆盖 WorkItem planning、TaskGraph、multi-agent run、Review Packet、Quality Analytics、ReviewReworkPlan 和 V4.10 team follow-up 边界 |
@@ -37,6 +39,9 @@ npx -y -p @mermaid-js/mermaid-cli mmdc \
 GitHub / GitLab 网页原生支持 `.mmd`-style mermaid 代码块，所以本地 IDE
 渲染不通过时也可以把 `.mmd` 内容粘贴到 markdown 代码块里预览（README 与
 使用手册引用的是 SVG 文件，避免双倍维护）。
+
+手绘信息图是人工维护的 SVG，定位是教育解释层，不作为状态机 / API / contract 的
+事实来源。修改产品结构时应先更新 `v4-*.mmd`，再同步手绘图中的高层说明。
 
 ## 维护约束
 

@@ -30,6 +30,10 @@
   `docs/superpowers/diagrams/v4-flow.mmd` / `.svg`。公开 README、docs 首页、
   roadmap 和 `USAGE.*.md` 默认指向 V4 图；旧 `v2-*` 图保留为 historical V2
   runtime foundation 参考。
+- 2026-05-26 — 新增 V4.10 手绘教育信息图：
+  `docs/superpowers/diagrams/v4-architecture-handdrawn.svg` 和
+  `docs/superpowers/diagrams/v4-flow-handdrawn.svg`。两张图以中文为主，面向新读者
+  解释当前架构与端到端流程；README、docs、roadmap 和 `USAGE.*.md` 已加入入口。
 
 ## [Unreleased] V4.10 Release Lock / Dog-food Closure（执行完成）
 

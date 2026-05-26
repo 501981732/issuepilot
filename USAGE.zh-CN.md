@@ -16,6 +16,8 @@
 
 当前视觉版本：
 
+- V4 手绘架构信息图：[`docs/superpowers/diagrams/v4-architecture-handdrawn.svg`](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+- V4 手绘流程信息图：[`docs/superpowers/diagrams/v4-flow-handdrawn.svg`](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
 - V4 架构图：[`docs/superpowers/diagrams/v4-architecture.svg`](./docs/superpowers/diagrams/v4-architecture.svg)
 - V4 端到端流程图：[`docs/superpowers/diagrams/v4-flow.svg`](./docs/superpowers/diagrams/v4-flow.svg)
 - 历史 V2 架构图：[`docs/superpowers/diagrams/v2-architecture.svg`](./docs/superpowers/diagrams/v2-architecture.svg)

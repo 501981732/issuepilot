@@ -28,6 +28,8 @@ IssuePilot 把一个 GitLab Issue 转成一个隔离的、可审查的 AI engine
 
 ## Architecture And Flow
 
+- [Hand-drawn V4 architecture infographic](./superpowers/diagrams/v4-architecture-handdrawn.svg)
+- [Hand-drawn V4 flow infographic](./superpowers/diagrams/v4-flow-handdrawn.svg)
 - [V4 architecture diagram](./superpowers/diagrams/v4-architecture.svg)
 - [V4 end-to-end flow diagram](./superpowers/diagrams/v4-flow.svg)
 - [Historical V2 architecture diagram](./superpowers/diagrams/v2-architecture.svg)

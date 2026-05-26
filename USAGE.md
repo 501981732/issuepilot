@@ -19,6 +19,8 @@ feedback and workspace cleanup wired in.
 
 Current visual versions:
 
+- Hand-drawn V4 architecture infographic: [`docs/superpowers/diagrams/v4-architecture-handdrawn.svg`](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+- Hand-drawn V4 flow infographic: [`docs/superpowers/diagrams/v4-flow-handdrawn.svg`](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
 - V4 architecture: [`docs/superpowers/diagrams/v4-architecture.svg`](./docs/superpowers/diagrams/v4-architecture.svg)
 - V4 end-to-end flow: [`docs/superpowers/diagrams/v4-flow.svg`](./docs/superpowers/diagrams/v4-flow.svg)
 - Historical V2 architecture: [`docs/superpowers/diagrams/v2-architecture.svg`](./docs/superpowers/diagrams/v2-architecture.svg)

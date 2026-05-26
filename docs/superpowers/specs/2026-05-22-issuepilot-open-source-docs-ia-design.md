@@ -180,6 +180,8 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 | `docs/assets/screenshots/dashboard-run-detail.png` | `docs/getting-started.*.md` | 展示一次 run 的 timeline、MR、events、review feedback |
 | `docs/assets/screenshots/dashboard-work-item-review-packet.png` | `docs/roadmap.md` 或 `docs/README.md` | 展示 V4 Review Packet / Evidence 能力 |
 | `docs/assets/screenshots/dashboard-reports.png` | `docs/roadmap.md` | 展示 Reports / quality analytics / review workflow |
+| `docs/superpowers/diagrams/v4-architecture-handdrawn.svg` | README / docs / roadmap | 面向新读者的 V4.10 手绘架构教育信息图 |
+| `docs/superpowers/diagrams/v4-flow-handdrawn.svg` | README / docs / roadmap | 面向新读者的 V4.10 手绘端到端流程教育信息图 |
 | `docs/superpowers/diagrams/v4-architecture.svg` | README / docs | 当前 V4.10 架构图入口 |
 | `docs/superpowers/diagrams/v4-flow.svg` | README / docs | 当前 V4.10 端到端流程图入口 |
 | `docs/superpowers/diagrams/v2-architecture.svg` | docs / roadmap | 历史 V2 runtime foundation 架构图 |
@@ -193,8 +195,8 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
   私有 GitLab URL 必须脱敏。
 - 图片放在 `docs/assets/screenshots/`，README 使用相对路径引用并写清 alt text。
 - 截图宽度建议 1440px；若要展示移动端，单独补 mobile 截图，不把 desktop 图硬压缩。
-- README 默认链接当前 V4.10 架构图 / 流程图；V2 图作为 historical diagrams 保留在
-  docs / roadmap 中，避免把旧图误认为最新全貌。
+- README 默认链接当前 V4.10 手绘信息图和精确 Mermaid 架构图 / 流程图；V2 图作为
+  historical diagrams 保留在 docs / roadmap 中，避免把旧图误认为最新全貌。
 - 如果本地 dashboard 无法启动，第一轮 implementation plan 必须先记录 blocker；
   不能用假图或 stock-like 图片替代。
 

@@ -9,6 +9,12 @@ Teams should not have to supervise agent chat sessions directly; they should man
 
 ![IssuePilot Command Center](./docs/assets/screenshots/dashboard-command-center.png)
 
+## V4 At A Glance
+
+![IssuePilot V4 hand-drawn architecture infographic](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+
+![IssuePilot V4 hand-drawn flow infographic](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
+
 ## Why IssuePilot
 
 The hard part of AI coding agents is not only whether they can write code. The hard part is how a team assigns work, isolates execution, reviews output and sends precise rework back through an existing engineering workflow.

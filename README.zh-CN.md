@@ -9,6 +9,12 @@ agent 会话，而是通过 Issue、MR、Review Packet 和 dashboard 管理交�
 
 ![IssuePilot Command Center](./docs/assets/screenshots/dashboard-command-center.png)
 
+## 一图看懂 V4
+
+![IssuePilot V4 手绘架构信息图](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+
+![IssuePilot V4 手绘流程信息图](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
+
 ## 为什么需要 IssuePilot
 
 AI coding agent 的难点不是“能不能写代码”，而是团队怎样安全地分派、隔离、审查和返工。

@@ -1001,7 +1001,7 @@ V4 优先在现有 V2.x runtime 上补齐流程智能和体验闭环。
 - ✅ release gate 固定化：format、lint、typecheck、build、unit tests、fake E2E、
   installed CLI smoke、smoke runner 和 `git diff --check` 纳入 `pnpm release:check`。
 - ✅ auth refresh、token rotation、日志脱敏、failed / blocked run 排障手册。
-- ✅ 文档收口：README、getting-started、smoke runbook、CHANGELOG 与本 spec 同步。
+- ✅ 文档收口：README、根目录 `USAGE`、smoke runbook、CHANGELOG 与本 spec 同步。
 - ✅ source-checkout 继续作为贡献者开发和紧急回滚路径保留。
 - ✅ 安装态 daemon / dashboard 启动路径已验证，真实 GitLab smoke 已由操作者确认通过。
 - 🚧 版本化 tag：包含 release notes、回滚说明和本地闭环兼容性预期。

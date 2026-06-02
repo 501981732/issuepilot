@@ -39,7 +39,7 @@ V1 完成后，一个使用者应该能够：
 1. 通过安装命令获得 `issuepilot` 可执行命令。
 2. 不进入 IssuePilot 源码仓库，也能运行 `issuepilot doctor`、`validate`、`run`。
 3. 使用已安装命令启动本地 dashboard。
-4. 按 README / getting-started 完成安装、配置、启动和真实 GitLab smoke。
+4. 按 README / 根目录 `USAGE.zh-CN.md` 完成安装、配置、启动和真实 GitLab smoke。
 5. 用 `pnpm release:check` 在发布前验证构建、测试、打包和本地安装 smoke。
 6. 遇到问题时按文档定位 auth、workflow、daemon、runner、workspace、event logs。
 7. 如需回滚，安装上一版本 package 或切回源码 checkout 的上一 tag。
@@ -131,7 +131,7 @@ V1 需要新增或更新：
 - `CHANGELOG.md`
 - package version，例如 `0.1.0`
 - README / README.zh-CN 的安装路径和启动命令
-- getting-started 的安装版 quickstart
+- 根目录 `USAGE.zh-CN.md` / `USAGE.md` 的安装版 quickstart
 - smoke runbook 的 release evidence 字段
 
 `CHANGELOG.md` 至少记录：
@@ -221,7 +221,7 @@ V1 完成时应满足：
 1. 安装后可以直接运行 `issuepilot --version`、`doctor`、`validate`、`run`。
 2. 安装后可以启动本地 dashboard。
 3. `package.json` 提供 `pnpm release:check`。
-4. README / README.zh-CN / getting-started 与 V1 安装路径一致。
+4. README / README.zh-CN / `USAGE.zh-CN.md` / `USAGE.md` 与 V1 安装路径一致。
 5. `CHANGELOG.md` 存在并记录 `0.1.0`。
 6. smoke runbook 有固定 release evidence 模板。
 7. 主设计 spec §20 与本 V1 设计一致。

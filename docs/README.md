@@ -1,7 +1,7 @@
 # IssuePilot Docs
 
 IssuePilot 是一个 local-first 的 GitLab Issue 驱动 AI engineering orchestrator。
-如果你是第一次进入仓库，先从 Getting Started 开始；如果你想理解设计取舍，再进入
+如果你是第一次进入仓库，先从根目录快速使用开始；如果你想理解设计取舍，再进入
 Internal Design Archive。
 
 ![IssuePilot Command Center](./assets/screenshots/dashboard-command-center.png)
@@ -10,10 +10,10 @@ Internal Design Archive。
 
 | 目标 | 文档 |
 | --- | --- |
-| 5 分钟启动本地开发环境 | [Getting Started](./getting-started.zh-CN.md) |
-| English quick start | [Getting Started](./getting-started.md) |
+| 第一次启动 IssuePilot | [快速使用中文](../USAGE.zh-CN.md) |
+| English quick start | [Quick Start English](../USAGE.md) |
 | 看当前能力和后续路线 | [Roadmap](./roadmap.md) |
-| 查完整用户手册 | [USAGE.zh-CN.md](../USAGE.zh-CN.md) / [USAGE.md](../USAGE.md) |
+| 查内部设计和验收材料 | `docs/superpowers/` |
 
 ## What IssuePilot Runs
 
@@ -39,11 +39,9 @@ IssuePilot 把一个 GitLab Issue 转成一个隔离的、可审查的 AI engine
 
 | 文档 | 用途 |
 | --- | --- |
-| [Getting Started 中文](./getting-started.zh-CN.md) | 源码启动、安装态启动、第一个 workflow、第一个 issue run |
-| [Getting Started English](./getting-started.md) | English version of the quick start |
+| [快速使用中文](../USAGE.zh-CN.md) | 安装、目标项目配置、凭据、启动、第一个 issue run |
+| [Quick Start English](../USAGE.md) | English version of the quick start |
 | [Roadmap](./roadmap.md) | 当前成熟度、已完成能力、下一阶段 |
-| [User Guide 中文](../USAGE.zh-CN.md) | 深度操作手册 |
-| [User Guide English](../USAGE.md) | Full user guide |
 
 ## Internal Design Archive
 

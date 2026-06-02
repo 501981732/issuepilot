@@ -28,6 +28,11 @@ IssuePilot 当前的文档问题不是内容不足，而是入口层级不清。
 
 因此第一轮文档重构采用 **开源入口重构 + 内部设计归档保留**。
 
+2026-06-02 更新：启动入口再次收口。`docs/getting-started.*.md` 与根目录
+`USAGE.*.md` 同时存在会让新用户不知道该看哪一个，因此删除 docs 下的
+getting-started 文件，把根目录 `USAGE.zh-CN.md` / `USAGE.md` 改成唯一
+快速使用入口。README 和 `docs/README.md` 只负责导航，不再重复一套启动命令。
+
 不删除 `docs/superpowers/specs/`、`docs/superpowers/plans/`、`SPEC.md` 或
 `elixir/`。这些仍是设计源、历史验收和参考实现，但不再作为开源读者的第一层入口。
 
@@ -37,13 +42,11 @@ IssuePilot 当前的文档问题不是内容不足，而是入口层级不清。
 
 - `README.md` / `README.zh-CN.md` / `README.en.md` 像开源项目首页，而不是内部进度报告。
 - 新读者能在 README 前 1-2 屏内理解产品定位、核心价值、当前成熟度和启动路径。
-- `docs/README.md` 成为文档中心，清楚区分 Getting Started、Guides、Operations、
-  Reference、Roadmap、Internal Design Archive。
+- `docs/README.md` 成为文档中心，清楚区分快速使用、Roadmap、Internal Design Archive。
 - README 和 docs 首页要有真实 dashboard 截图、架构图和端到端流程图入口，让读者
   在第一屏就能看到产品实际长什么样。
-- 启动文档独立成 `docs/getting-started.*.md`，避免用户在 1200 行使用手册里找启动命令。
-- `USAGE.md` / `USAGE.zh-CN.md` 从全量长手册降级为用户指南索引或保留为深度 guide，
-  但 README 不再把它当作唯一入口。
+- 启动文档合并到根目录 `USAGE.zh-CN.md` / `USAGE.md`，用“第一步、第二步”式路径指导首次运行。
+- README 不再内嵌完整启动命令，只链接根目录快速使用入口。
 - Roadmap 从 README 抽到 `docs/roadmap.md`，README 只保留短状态和下一步。
 - `CHANGELOG.md` 不再被 README 当作主导航入口；历史流水账后续可再归档。
 
@@ -69,8 +72,8 @@ IssuePilot 当前的文档问题不是内容不足，而是入口层级不清。
 | `README.md` | 中文默认开源首页 |
 | `README.zh-CN.md` | 中文别名，与 `README.md` 语义同步 |
 | `README.en.md` | 英文开源首页 |
-| `USAGE.md` | 英文用户指南索引或深度用户手册入口 |
-| `USAGE.zh-CN.md` | 中文用户指南索引或深度用户手册入口 |
+| `USAGE.md` | 英文快速使用入口 |
+| `USAGE.zh-CN.md` | 中文快速使用入口 |
 | `CHANGELOG.md` | 版本变更摘要，不承担产品介绍 |
 | `SPEC.md` | OpenAI Symphony language-agnostic reference spec |
 | `AGENTS.md` | agent 工作规则，不面向普通开源读者 |
@@ -82,8 +85,6 @@ IssuePilot 当前的文档问题不是内容不足，而是入口层级不清。
 ```text
 docs/
   README.md
-  getting-started.md
-  getting-started.zh-CN.md
   roadmap.md
   assets/
     screenshots/
@@ -110,8 +111,6 @@ docs/
 第一轮必须新增：
 
 - `docs/README.md`
-- `docs/getting-started.md`
-- `docs/getting-started.zh-CN.md`
 - `docs/roadmap.md`
 - `docs/assets/screenshots/` 下至少 2 张 IssuePilot dashboard 真实截图
 
@@ -155,13 +154,12 @@ README 第一轮目标长度：约 220-320 行。
 5. **Current maturity**
    - P0/V1/V2/V4 一句话状态。
    - 明确限制：not SaaS、not automatic merge、V3 production platform 未开始。
-6. **Quick start**
-   - 源码开发启动：`corepack enable`、`pnpm install`、`pnpm build`、`pnpm dev:orchestrator`、`pnpm dev:dashboard`。
-   - 安装态启动指向 `docs/getting-started.*.md`。
+6. **Where to start**
+   - 不重复启动命令。
+   - 指向根目录 `USAGE.zh-CN.md` / `USAGE.md`。
 7. **Documentation**
    - `docs/README.md`
-   - Getting Started
-   - User Guide
+   - Quick Start / 快速使用
    - Roadmap
    - Architecture / diagrams
 8. **Contributing**
@@ -177,7 +175,7 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 | 资产 | 目标位置 | 用途 |
 | --- | --- | --- |
 | `docs/assets/screenshots/dashboard-command-center.png` | README hero、`docs/README.md` | 展示 IssuePilot 的 List / Board / service health 第一印象 |
-| `docs/assets/screenshots/dashboard-run-detail.png` | `docs/getting-started.*.md` | 展示一次 run 的 timeline、MR、events、review feedback |
+| `docs/assets/screenshots/dashboard-run-detail.png` | README 或 `docs/README.md` | 展示一次 run 的 timeline、MR、events、review feedback |
 | `docs/assets/screenshots/dashboard-work-item-review-packet.png` | `docs/roadmap.md` 或 `docs/README.md` | 展示 V4 Review Packet / Evidence 能力 |
 | `docs/assets/screenshots/dashboard-reports.png` | `docs/roadmap.md` | 展示 Reports / quality analytics / review workflow |
 | `docs/superpowers/diagrams/v4-architecture-handdrawn.svg` | README / docs / roadmap | 面向新读者的 V4.10 手绘架构教育信息图 |
@@ -200,9 +198,9 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 - 如果本地 dashboard 无法启动，第一轮 implementation plan 必须先记录 blocker；
   不能用假图或 stock-like 图片替代。
 
-## 7. Getting Started 文档
+## 7. 根目录快速使用文档
 
-`docs/getting-started.zh-CN.md` 和 `docs/getting-started.md` 是启动文档，不是全量用户手册。
+`USAGE.zh-CN.md` 和 `USAGE.md` 是唯一启动文档，不是全量能力百科。
 
 必须覆盖：
 
@@ -220,7 +218,7 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
   - `issuepilot doctor`
 - 第一个 `WORKFLOW.md` 最小示例。
 - GitLab label 准备。
-- 启动 V1 single-project run。
+- 启动单项目 run。
 - 启动 dashboard 后的预期截图或截图链接，帮助用户确认“我启动对了”。
 - 常见启动失败：
   - dashboard unreachable。
@@ -254,28 +252,23 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 
 ## 9. USAGE 收敛
 
-第一轮有两种可接受落地方式：
+`USAGE.md` / `USAGE.zh-CN.md` 改成 150-250 行左右的快速使用入口，按固定顺序回答：
 
-### 方式 A：保留长 USAGE，但 README 降权
+1. 本机环境准备。
+2. 安装 IssuePilot。
+3. 准备目标 GitLab 项目和 `WORKFLOW.md`。
+4. 配置 GitLab 凭据。
+5. 校验配置。
+6. 启动 orchestrator 和 dashboard。
+7. 跑第一个 `ai-ready` Issue。
 
-`USAGE.md` / `USAGE.zh-CN.md` 暂不大改，只在顶部加说明：
-
-- 如果第一次启动，先看 `docs/getting-started.*.md`。
-- 本文件是完整用户手册，包含 V1/V2/V4 深度操作。
-- 文档导航看 `docs/README.md`。
-
-### 方式 B：把 USAGE 改成索引
-
-把 `USAGE.md` / `USAGE.zh-CN.md` 改成 150-250 行的用户指南入口，把深度章节迁移到
-`docs/guides/`、`docs/operations/`、`docs/reference/`。
-
-第一轮推荐方式 A。理由：风险低、改动可控、能快速改善开源第一印象。方式 B 可以作为第二轮。
+深度能力、历史验收和内部计划继续保留在 `docs/superpowers/`，不作为新用户第一入口。
 
 ## 10. 语言同步规则
 
 - `README.md` 和 `README.zh-CN.md` 语义同步，中文为主。
 - `README.en.md` 与中文 README 语义同步，但不要求逐字句式一致。
-- `docs/getting-started.zh-CN.md` 与 `docs/getting-started.md` 语义同步。
+- `USAGE.zh-CN.md` 与 `USAGE.md` 语义同步。
 - `docs/README.md` 可以用英文优先或中英混合；第一轮建议中文为主，英文链接清晰。
 - 技术名词、命令、配置字段、API 路径、label、runner kind 保持原文。
 
@@ -286,12 +279,12 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 - README 三语版本不超过 350 行/文件。
 - 根 README 前 100 行能说明产品定位、核心价值和当前成熟度。
 - `docs/README.md` 提供清晰文档地图。
-- `docs/getting-started.*.md` 能独立指导本地启动。
+- `USAGE.*.md` 能独立指导本地启动。
 - `docs/roadmap.md` 承接 README 中的长 roadmap。
 - README 或 `docs/README.md` 至少展示 1 张真实 dashboard 截图。
 - `docs/assets/screenshots/` 至少包含 2 张当前 IssuePilot dashboard 截图。
 - README / docs 明确链接当前 V4 架构图和端到端流程图，并把 V2 图标注为历史图。
-- `USAGE.*.md` 顶部明确自己不是第一次启动入口。
+- 不再存在 `docs/getting-started.*.md`；README 和 docs 首页均指向根目录 `USAGE.*.md`。
 - `git diff --check` 通过。
 - 若只改 markdown，不需要 `scripts/ci-equivalent-check.sh`。
 
@@ -315,10 +308,9 @@ Roadmap 用开源读者能理解的能力域写，不再逐条展开所有 commi
 
 计划应拆为：
 
-1. 新建 `docs/README.md`。
-2. 新建 `docs/getting-started.zh-CN.md` / `docs/getting-started.md`。
-3. 新建 `docs/roadmap.md`。
-4. 生成 / 放置 dashboard 截图，并接入 README / docs。
-5. 重写 README 三语版本。
-6. 给 `USAGE.*.md` 增加启动文档入口和定位说明。
-7. 文档自检和 `git diff --check`。
+1. 保留 `docs/README.md` 作为文档地图。
+2. 删除 `docs/getting-started.zh-CN.md` / `docs/getting-started.md`。
+3. 保留 `docs/roadmap.md`。
+4. README 三语版本只保留入口导航。
+5. 重写 `USAGE.zh-CN.md` / `USAGE.md` 为快速使用入口。
+6. 文档自检和 `git diff --check`。

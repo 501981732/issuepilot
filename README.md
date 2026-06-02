@@ -5,15 +5,9 @@
 IssuePilot 把 GitLab Issues 转成隔离的、可审查的 AI engineering runs。团队不需要盯着
 agent 会话，而是通过 Issue、MR、Review Packet 和 dashboard 管理交付。
 
-[快速启动](./docs/getting-started.zh-CN.md) · [文档中心](./docs/README.md) · [Roadmap](./docs/roadmap.md)
+[快速使用](./USAGE.zh-CN.md) · [文档中心](./docs/README.md) · [Roadmap](./docs/roadmap.md)
 
 ![IssuePilot Command Center](./docs/assets/screenshots/dashboard-command-center.png)
-
-## 一图看懂 V4
-
-![IssuePilot V4 手绘架构信息图](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
-
-![IssuePilot V4 手绘流程信息图](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
 
 ## 为什么需要 IssuePilot
 
@@ -25,7 +19,7 @@ IssuePilot 把这些动作放回工程团队已经熟悉的 GitLab Issue / MR �
 1. 给 GitLab Issue 添加 `ai-ready`。
 2. orchestrator claim issue，并在 `~/.issuepilot` 创建隔离 worktree。
 3. runner 在 worktree 内执行任务。
-4. IssuePilot 创建 branch / MR / handoff note / run report。
+4. IssuePilot 创建 branch、MR、handoff note 和 run report。
 5. dashboard 展示 Command Center、Run Detail、Review Packet 和 Reports。
 6. 人工 reviewer 决定 merge、`ai-rework`、`ai-blocked` 或 `ai-failed`。
 
@@ -54,34 +48,24 @@ IssuePilot 把这些动作放回工程团队已经熟悉的 GitLab Issue / MR �
 
 IssuePilot 当前适合本地开发、团队机器试点和内部 dog-food；它还不是 SaaS，也不会自动 merge MR。
 
-## 快速启动
+## 从哪里开始
 
-```bash
-corepack enable
-pnpm install
-pnpm build
-pnpm exec issuepilot doctor
-pnpm dev:orchestrator
-```
+第一次启动只看 [快速使用](./USAGE.zh-CN.md)。它按顺序说明：
 
-另开一个终端：
-
-```bash
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm dev:dashboard
-```
-
-完整步骤见 [Getting Started](./docs/getting-started.zh-CN.md)。
+1. 准备本机环境。
+2. 安装 IssuePilot。
+3. 准备目标 GitLab 项目和 `WORKFLOW.md`。
+4. 配置 GitLab 凭据。
+5. 校验配置。
+6. 启动 orchestrator 和 dashboard。
+7. 跑第一个 `ai-ready` Issue。
 
 ## 文档
 
+- [快速使用中文](./USAGE.zh-CN.md)
+- [Quick Start English](./USAGE.md)
 - [文档中心](./docs/README.md)
-- [Getting Started 中文](./docs/getting-started.zh-CN.md)
-- [Getting Started English](./docs/getting-started.md)
 - [Roadmap](./docs/roadmap.md)
-- [用户手册中文](./USAGE.zh-CN.md)
-- [User Guide English](./USAGE.md)
-- [V4 手绘架构信息图](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
-- [V4 手绘流程信息图](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
 - [V4 架构图](./docs/superpowers/diagrams/v4-architecture.svg)
 - [V4 端到端流程图](./docs/superpowers/diagrams/v4-flow.svg)
 

@@ -18,7 +18,7 @@
 
 - `docs/superpowers/specs/2026-05-11-issuepilot-design.md` 是 IssuePilot 的总设计 spec / 产品源头。在规划或实现 IssuePilot 相关工作前必须先阅读它。
 - `SPEC.md` 是 OpenAI Symphony 的开源通用 spec，保留作参考和对齐对象，不是 IssuePilot 内部产品架构的直接源头。
-- `elixir/` 是 OpenAI Symphony 的 Elixir 参考实现，修改该目录时遵守 `elixir/AGENTS.md`，不要把它当作 TypeScript IssuePilot 的生产实现路线。
+- 历史 Elixir 参考实现已从本仓库移除；当前生产路线只维护 TypeScript IssuePilot。
 - `docs/superpowers/specs/2026-05-15-issuepilot-gap-closure-design.md` 是用于对比根 `SPEC.md`、当前实现和 P0 收口差距的补充 spec，不替代总设计 spec。
 - `docs/superpowers/plans/` 下的文件是实施计划、runbook 或验收材料，用于执行和追踪，不作为产品源头。
 - 如果修改产品行为、架构、workflow labels、runner 行为或路线图范围，必须在同一变更中更新 IssuePilot 设计 spec。
@@ -33,12 +33,11 @@ IssuePilot P0 是：
 - 使用 TypeScript 实现，orchestrator 是独立 Node daemon，dashboard 使用 Next.js。
 - 使用 `~/.issuepilot` 下的 git worktree workspace。
 
-除非用户明确要求 prototype 工作，否则不要通过扩展 Elixir prototype 来实现内部产品。
+除非用户明确要求恢复历史 prototype，否则不要引入新的 Elixir 实现路线。
 
 ## 仓库边界
 
 - 根目录规则适用于整个仓库。
-- `elixir/AGENTS.md` 适用于 `elixir/` 内部变更，修改 Symphony Elixir 参考实现时必须遵守。
 - 新的 IssuePilot 实现代码应遵循设计 spec 中的目录规划：
   - `apps/orchestrator`
   - `apps/dashboard`

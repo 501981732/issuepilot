@@ -6,17 +6,35 @@ This is the only getting-started entry in this repository. Follow the steps in
 order the first time you run IssuePilot. For background, see the
 [docs home](./docs/README.md) and [Roadmap](./docs/roadmap.md).
 
+The common launch path is:
+
+```bash
+cd /path/to/target-project
+issuepilot validate
+issuepilot run --host 127.0.0.1 --port 4738
+```
+
+Then open another terminal:
+
+```bash
+issuepilot dashboard
+```
+
+You do not need `WORKFLOW_PATH` when the current directory contains
+`WORKFLOW.md`. The steps below cover installation, GitLab credentials, the
+`WORKFLOW.md` content and the startup order.
+
 ## Step 1: Prepare The Environment
 
 Make sure the machine has:
 
-| Tool | Requirement |
-| --- | --- |
-| Node.js | `>=22 <23` |
-| pnpm | `10.x`, enabled through `corepack` |
-| Git | Can clone, fetch and push the target project |
-| Codex CLI | Signed in and able to run `codex app-server` |
-| GitLab | A test project where you can create Issues, labels and Merge Requests |
+| Tool      | Requirement                                                           |
+| --------- | --------------------------------------------------------------------- |
+| Node.js   | `>=22 <23`                                                            |
+| pnpm      | `10.x`, enabled through `corepack`                                    |
+| Git       | Can clone, fetch and push the target project                          |
+| Codex CLI | Signed in and able to run `codex app-server`                          |
+| GitLab    | A test project where you can create Issues, labels and Merge Requests |
 
 IssuePilot stores runtime state, mirrors, worktrees and event logs under
 `~/.issuepilot`.
@@ -164,8 +182,8 @@ export GITLAB_TOKEN="<gitlab token>"
 ## Step 5: Validate The Config
 
 ```bash
-export WORKFLOW_PATH="/path/to/target-project/WORKFLOW.md"
-issuepilot validate --workflow "$WORKFLOW_PATH"
+cd /path/to/target-project
+issuepilot validate
 ```
 
 The config is usable when you see:
@@ -176,6 +194,13 @@ GitLab project: group/project
 Validation passed.
 ```
 
+`issuepilot validate` reads `./WORKFLOW.md` from the current directory by
+default. If you want to run it from another directory, pass the path explicitly:
+
+```bash
+issuepilot validate --workflow /path/to/target-project/WORKFLOW.md
+```
+
 ## Step 6: Start IssuePilot
 
 Open two terminals.
@@ -183,8 +208,8 @@ Open two terminals.
 Terminal A starts the orchestrator:
 
 ```bash
-export WORKFLOW_PATH="/path/to/target-project/WORKFLOW.md"
-issuepilot run --workflow "$WORKFLOW_PATH" --host 127.0.0.1 --port 4738
+cd /path/to/target-project
+issuepilot run --host 127.0.0.1 --port 4738
 ```
 
 Terminal B starts the dashboard:
@@ -203,6 +228,14 @@ If you start the dashboard from source:
 
 ```bash
 NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm dev:dashboard
+```
+
+You do not have to set `WORKFLOW_PATH` when you start from the target project
+root. IssuePilot automatically reads `./WORKFLOW.md`. Use `--workflow` only
+when starting from another directory:
+
+```bash
+issuepilot run --workflow /path/to/target-project/WORKFLOW.md --host 127.0.0.1 --port 4738
 ```
 
 ## Step 7: Run The First Issue
@@ -232,13 +265,13 @@ The central config background is documented in
 
 ## Troubleshooting
 
-| Problem | Fix |
-| --- | --- |
-| dashboard shows `GET /api/state failed` | Confirm the orchestrator is running and the dashboard points to `http://127.0.0.1:4738` |
-| GitLab returns 401 / 403 | Check OAuth status, or confirm the env var named by `token_env` is exported |
-| Codex runner is unavailable | Sign in to Codex CLI again, then run `issuepilot doctor` |
-| branch push fails | Check `git.repo_url`, SSH key and target project permissions |
-| workspace state is confusing | Stop the daemon, then inspect `~/.issuepilot/workspaces` and `~/.issuepilot/state/events` |
+| Problem                                 | Fix                                                                                       |
+| --------------------------------------- | ----------------------------------------------------------------------------------------- |
+| dashboard shows `GET /api/state failed` | Confirm the orchestrator is running and the dashboard points to `http://127.0.0.1:4738`   |
+| GitLab returns 401 / 403                | Check OAuth status, or confirm the env var named by `token_env` is exported               |
+| Codex runner is unavailable             | Sign in to Codex CLI again, then run `issuepilot doctor`                                  |
+| branch push fails                       | Check `git.repo_url`, SSH key and target project permissions                              |
+| workspace state is confusing            | Stop the daemon, then inspect `~/.issuepilot/workspaces` and `~/.issuepilot/state/events` |
 
 ## Document Map
 

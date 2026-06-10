@@ -5,17 +5,34 @@
 这是仓库里唯一的 getting-started 入口。第一次使用按顺序做；需要背景材料时再看
 [文档中心](./docs/README.md) 和 [Roadmap](./docs/roadmap.md)。
 
+最常见的启动方式是：
+
+```bash
+cd /path/to/target-project
+issuepilot validate
+issuepilot run --host 127.0.0.1 --port 4738
+```
+
+然后另开一个终端：
+
+```bash
+issuepilot dashboard
+```
+
+只要当前目录有 `WORKFLOW.md`，就不需要配置 `WORKFLOW_PATH`。下面的步骤会从安装、
+GitLab 凭据、`WORKFLOW.md` 内容到启动顺序完整走一遍。
+
 ## 第一步：准备环境
 
 确认本机有这些工具：
 
-| 工具 | 要求 |
-| --- | --- |
-| Node.js | `>=22 <23` |
-| pnpm | `10.x`，通过 `corepack` 启用 |
-| Git | 能 clone、fetch、push 目标项目 |
-| Codex CLI | 已登录，并能执行 `codex app-server` |
-| GitLab | 一个可测试的项目，能创建 Issue、label 和 Merge Request |
+| 工具      | 要求                                                   |
+| --------- | ------------------------------------------------------ |
+| Node.js   | `>=22 <23`                                             |
+| pnpm      | `10.x`，通过 `corepack` 启用                           |
+| Git       | 能 clone、fetch、push 目标项目                         |
+| Codex CLI | 已登录，并能执行 `codex app-server`                    |
+| GitLab    | 一个可测试的项目，能创建 Issue、label 和 Merge Request |
 
 IssuePilot 会把运行状态、mirror、worktree、event logs 放在 `~/.issuepilot`。
 
@@ -160,8 +177,8 @@ export GITLAB_TOKEN="<gitlab token>"
 ## 第五步：校验配置
 
 ```bash
-export WORKFLOW_PATH="/path/to/target-project/WORKFLOW.md"
-issuepilot validate --workflow "$WORKFLOW_PATH"
+cd /path/to/target-project
+issuepilot validate
 ```
 
 看到下面输出说明配置可用：
@@ -172,6 +189,13 @@ GitLab project: group/project
 Validation passed.
 ```
 
+`issuepilot validate` 默认读取当前目录的 `WORKFLOW.md`。如果你不想切到目标项目目录，
+也可以显式传路径：
+
+```bash
+issuepilot validate --workflow /path/to/target-project/WORKFLOW.md
+```
+
 ## 第六步：启动 IssuePilot
 
 开两个终端。
@@ -179,8 +203,8 @@ Validation passed.
 终端 A 启动 orchestrator：
 
 ```bash
-export WORKFLOW_PATH="/path/to/target-project/WORKFLOW.md"
-issuepilot run --workflow "$WORKFLOW_PATH" --host 127.0.0.1 --port 4738
+cd /path/to/target-project
+issuepilot run --host 127.0.0.1 --port 4738
 ```
 
 终端 B 启动 dashboard：
@@ -199,6 +223,13 @@ http://localhost:3000
 
 ```bash
 NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm dev:dashboard
+```
+
+这里不一定要配置 `WORKFLOW_PATH`。只要命令在目标项目根目录执行，IssuePilot 会自动找
+`./WORKFLOW.md`。只有从其他目录启动时，才需要：
+
+```bash
+issuepilot run --workflow /path/to/target-project/WORKFLOW.md --host 127.0.0.1 --port 4738
 ```
 
 ## 第七步：跑第一个 Issue
@@ -227,13 +258,13 @@ issuepilot dashboard
 
 ## 常见问题
 
-| 问题 | 处理 |
-| --- | --- |
-| dashboard 显示 `GET /api/state failed` | 确认 orchestrator 正在跑，dashboard 连的是 `http://127.0.0.1:4738` |
-| GitLab 返回 401 / 403 | 检查 OAuth 登录态，或确认 `token_env` 指向的环境变量已经 export |
-| Codex runner 不可用 | 重新登录 Codex CLI，再跑 `issuepilot doctor` |
-| 无法 push branch | 检查 `git.repo_url`、SSH key、目标项目权限 |
-| workspace 状态混乱 | 停掉 daemon 后检查 `~/.issuepilot/workspaces` 和 `~/.issuepilot/state/events` |
+| 问题                                   | 处理                                                                          |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| dashboard 显示 `GET /api/state failed` | 确认 orchestrator 正在跑，dashboard 连的是 `http://127.0.0.1:4738`            |
+| GitLab 返回 401 / 403                  | 检查 OAuth 登录态，或确认 `token_env` 指向的环境变量已经 export               |
+| Codex runner 不可用                    | 重新登录 Codex CLI，再跑 `issuepilot doctor`                                  |
+| 无法 push branch                       | 检查 `git.repo_url`、SSH key、目标项目权限                                    |
+| workspace 状态混乱                     | 停掉 daemon 后检查 `~/.issuepilot/workspaces` 和 `~/.issuepilot/state/events` |
 
 ## 文档导航
 

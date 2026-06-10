@@ -28,7 +28,8 @@ GitLab Issue 带 ai-ready label
 
 ## 2. 与 Symphony 的关系
 
-当前 fork 不作为生产代码直接移植。
+当前 fork 不作为生产代码直接移植。历史 Elixir 参考实现已移除，当前仓库只维护
+TypeScript IssuePilot 路线。
 
 IssuePilot 参考它的这些部分：
 
@@ -148,10 +149,10 @@ P0 不引入数据库。本地状态存放在 `~/.issuepilot/state`。
 P0 是一个本地 daemon：
 
 ```bash
-pnpm issuepilot run --workflow WORKFLOW.md --port 4738
+issuepilot run --port 4738
 ```
 
-这个命令启动：
+在目标项目根目录执行时，这个命令默认读取 `./WORKFLOW.md` 并启动：
 
 - orchestrator loop
 - Codex app-server runner 管理
@@ -173,7 +174,7 @@ WORKFLOW.md
 
 `WORKFLOW.md` 是长期默认入口，保持与根目录开源 `SPEC.md` 一致。
 `.agents/workflow.md` 仅作为显式 `--workflow` 路径或 P0 迁移期兼容路径；
-当未显式指定 workflow 时，daemon 优先读取仓库根 `WORKFLOW.md`。
+当未显式指定 workflow 时，daemon 优先读取当前目录的 `WORKFLOW.md`。
 
 文件结构：
 
@@ -996,7 +997,7 @@ V4 优先在现有 V2.x runtime 上补齐流程智能和体验闭环。
 
 - ✅ 通过 npm-compatible package tooling 提供可安装 CLI 分发，安装后暴露
   `issuepilot` 可执行命令。
-- ✅ 安装后的本地启动路径：`issuepilot run --workflow ...` 启动 daemon/API，并提供
+- ✅ 安装后的本地启动路径：`issuepilot run` 默认读取 `./WORKFLOW.md` 并启动 daemon/API，另提供
   已安装的 dashboard 启动命令。
 - ✅ release gate 固定化：format、lint、typecheck、build、unit tests、fake E2E、
   installed CLI smoke、smoke runner 和 `git diff --check` 纳入 `pnpm release:check`。
@@ -1190,8 +1191,8 @@ P0 完成标准：
 建议命令：
 
 ```bash
-issuepilot run --workflow WORKFLOW.md --port 4738
-issuepilot validate --workflow WORKFLOW.md
+issuepilot run --port 4738
+issuepilot validate
 issuepilot doctor
 issuepilot auth login --hostname gitlab.example.com   # OAuth Device Flow，token 存入 ~/.issuepilot/credentials
 issuepilot auth status [--hostname <host>]            # 显示当前登录状态、scope、token 到期时间

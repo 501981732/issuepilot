@@ -2333,7 +2333,10 @@ describe("V4.1 work item routes", () => {
       try {
         const resp = await app.inject({
           method: "GET",
-          url: "/api/quality/summary?window=7d",
+          url:
+            "/api/quality/summary?window=7d" +
+            "&from=2026-05-13T00%3A00%3A00.000Z" +
+            "&to=2026-05-20T23%3A59%3A59.999Z",
         });
         expect(resp.statusCode).toBe(200);
         const body = JSON.parse(resp.body);
@@ -2619,7 +2622,10 @@ describe("V4.1 work item routes", () => {
       try {
         const resp = await app.inject({
           method: "GET",
-          url: "/api/quality/summary?window=7d",
+          url:
+            "/api/quality/summary?window=7d" +
+            "&from=2026-05-13T00%3A00%3A00.000Z" +
+            "&to=2026-05-20T23%3A59%3A59.999Z",
         });
         expect(resp.statusCode).toBe(200);
         const body = JSON.parse(resp.body) as QualitySummaryResponse;

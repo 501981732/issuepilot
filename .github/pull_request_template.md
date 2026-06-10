@@ -18,5 +18,5 @@
 
 #### Test Plan
 
-- [ ] `make -C elixir all`
+- [ ] `SKIP_E2E=1 bash scripts/ci-equivalent-check.sh`
 - [ ] <!-- Additional targeted checks (list below) -->

@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/shared-contracts" },
     { "path": "./packages/core" },
+    { "path": "./packages/credentials" },
     { "path": "./packages/workflow" },
     { "path": "./packages/tracker-gitlab" },
     { "path": "./packages/workspace" },

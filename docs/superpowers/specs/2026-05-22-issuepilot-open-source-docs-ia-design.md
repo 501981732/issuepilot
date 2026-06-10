@@ -33,8 +33,9 @@ IssuePilot 当前的文档问题不是内容不足，而是入口层级不清。
 getting-started 文件，把根目录 `USAGE.zh-CN.md` / `USAGE.md` 改成唯一
 快速使用入口。README 和 `docs/README.md` 只负责导航，不再重复一套启动命令。
 
-不删除 `docs/superpowers/specs/`、`docs/superpowers/plans/`、`SPEC.md` 或
-`elixir/`。这些仍是设计源、历史验收和参考实现，但不再作为开源读者的第一层入口。
+不删除 `docs/superpowers/specs/`、`docs/superpowers/plans/` 或 `SPEC.md`。
+这些仍是设计源和历史验收，但不再作为开源读者的第一层入口。历史
+`elixir/` 参考实现已在后续清理中移除，仓库只保留 TypeScript IssuePilot 路线。
 
 ## 2. 目标
 
@@ -56,7 +57,7 @@ getting-started 文件，把根目录 `USAGE.zh-CN.md` / `USAGE.md` 改成唯一
 
 - 不引入 Docusaurus、VitePress、Mintlify 或其他 docs site。
 - 不重写所有 `docs/superpowers/*` 历史 spec / plan。
-- 不删除 OpenAI Symphony `SPEC.md` 或 `elixir/`。
+- 不删除 OpenAI Symphony `SPEC.md`。历史 `elixir/` 参考实现后续已移除，不再作为约束。
 - 不改变产品行为、CLI、API、dashboard UI 或 roadmap 决策。
 - 不把文档改成纯营销页；README 必须仍然给出真实成熟度和当前限制。
 - 不一次性拆完 `USAGE.md` 的所有章节；第一轮只做入口和启动路径收敛。
@@ -187,8 +188,7 @@ README 不再内嵌完整 roadmap、V2/V4 phase 细节、长 implementation stat
 
 截图要求：
 
-- 必须来自当前 TypeScript IssuePilot dashboard，不使用旧 `.github/media/elixir-screenshot.png`
-  或 OpenAI Symphony prototype 截图。
+- 必须来自当前 TypeScript IssuePilot dashboard，不使用 OpenAI Symphony prototype 截图。
 - 使用本地 fixture / demo data / seeded state；敏感信息、真实 token、真实公司项目名、
   私有 GitLab URL 必须脱敏。
 - 图片放在 `docs/assets/screenshots/`，README 使用相对路径引用并写清 alt text。

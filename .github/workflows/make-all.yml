@@ -1,4 +1,4 @@
-name: make-all
+name: ci
 
 on:
   pull_request:
@@ -7,32 +7,23 @@ on:
       - main
 
 jobs:
-  make-all:
+  ci:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Set up mise tools
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          install: true
-          cache: true
-          working_directory: elixir
+          node-version: 22
 
-      - name: Cache deps and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            elixir/deps
-            elixir/_build
-          key: ${{ runner.os }}-mix-${{ hashFiles('elixir/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-
+      - name: Enable pnpm
+        run: corepack enable
 
-      - name: Verify make all
-        run: make all
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify IssuePilot
+        run: SKIP_E2E=1 bash scripts/ci-equivalent-check.sh

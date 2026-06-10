@@ -5,7 +5,10 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "references": [{ "path": "../shared-contracts" }],
+  "references": [
+    { "path": "../credentials" },
+    { "path": "../shared-contracts" }
+  ],
   "include": ["src/**/*.ts"],
   "exclude": ["**/*.test.ts", "**/__tests__/**", "dist/**"]
 }

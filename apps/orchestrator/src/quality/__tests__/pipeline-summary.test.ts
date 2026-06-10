@@ -188,7 +188,7 @@ describe("createPipelineQualitySummaryCallback (improvement-service adapter)", (
       collectorDeps: { metadata: { workflow: "v4-6.workflow.md" } },
       scope: { mode: "single-project" },
     });
-    const summary = await callback({ filters: { window: "7d" } });
+    const summary = await callback({ filters: filtersFor7d() });
     expect(summary.byRole).toBeDefined();
     expect(summary.byRole?.reviewerApproveRate).toBe(100);
   });

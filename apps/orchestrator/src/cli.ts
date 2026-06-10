@@ -81,6 +81,11 @@ interface ResolvedWorkflowPath {
   warning?: string;
 }
 
+interface ResolvedTeamConfigPath {
+  path: string;
+  explicit: boolean;
+}
+
 /**
  * Render a compiled {@link WorkflowConfig} as YAML for `render-workflow`.
  *
@@ -184,6 +189,20 @@ function resolveWorkflowPath(
   return { path: rootWorkflow };
 }
 
+function resolveTeamConfigPath(
+  input: unknown,
+  cwd = process.cwd(),
+): ResolvedTeamConfigPath | null {
+  if (typeof input === "string" && input.trim().length > 0) {
+    return { path: path.resolve(cwd, input), explicit: true };
+  }
+
+  const rootConfig = path.resolve(cwd, "issuepilot.team.yaml");
+  if (fs.existsSync(rootConfig)) return { path: rootConfig, explicit: false };
+
+  return null;
+}
+
 export function buildCli(deps: CliDeps = {}): Command {
   const daemonStarter = deps.startDaemon ?? startDaemon;
   const teamDaemonStarter = deps.startTeamDaemon ?? startTeamDaemon;
@@ -240,8 +259,11 @@ export function buildCli(deps: CliDeps = {}): Command {
   program
     .command("run")
     .description("Start the orchestrator daemon")
-    .option("--workflow <path>", "Path to workflow file")
-    .option("--config <path>", "Path to V2 team config file")
+    .option("--workflow <path>", "Path to legacy single-project workflow file")
+    .option(
+      "--config <path>",
+      "Path to team config file (defaults to ./issuepilot.team.yaml when present)",
+    )
     .option(
       "--port <number>",
       "HTTP API port (default 4738; team mode falls back to issuepilot.team.yaml server.port)",
@@ -284,8 +306,12 @@ export function buildCli(deps: CliDeps = {}): Command {
         explicitHost = trimmed;
       }
 
-      if (typeof opts.config === "string" && opts.config.length > 0) {
-        const configPath = path.resolve(opts.config);
+      const resolvedTeamConfig =
+        typeof opts.workflow === "string" && opts.workflow.length > 0
+          ? null
+          : resolveTeamConfigPath(opts.config);
+      if (resolvedTeamConfig) {
+        const configPath = resolvedTeamConfig.path;
         if (!fs.existsSync(configPath)) {
           console.error(`Error: team config file not found: ${configPath}`);
           process.exitCode = 1;
@@ -342,9 +368,9 @@ export function buildCli(deps: CliDeps = {}): Command {
     .command("validate")
     .description(
       "Validate workflow or team config (preflight before `run`).\n" +
-        "Pass --config to check an issuepilot.team.yaml, or --workflow for a V1 WORKFLOW.md.",
+        "Defaults to ./issuepilot.team.yaml when present, then ./WORKFLOW.md. Pass --config or --workflow to choose explicitly.",
     )
-    .option("--workflow <path>", "Path to workflow file")
+    .option("--workflow <path>", "Path to legacy single-project workflow file")
     .option("--config <path>", "Path to issuepilot.team.yaml")
     .action(async (opts) => {
       if (opts.config && opts.workflow) {
@@ -354,8 +380,11 @@ export function buildCli(deps: CliDeps = {}): Command {
         process.exitCode = 1;
         return;
       }
-      if (opts.config) {
-        const configPath = path.resolve(process.cwd(), String(opts.config));
+      const resolvedTeamConfig = opts.workflow
+        ? null
+        : resolveTeamConfigPath(opts.config);
+      if (resolvedTeamConfig) {
+        const configPath = resolvedTeamConfig.path;
         if (!fs.existsSync(configPath)) {
           console.error(`Error: team config file not found: ${configPath}`);
           process.exitCode = 1;

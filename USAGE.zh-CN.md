@@ -5,12 +5,17 @@
 这是仓库里唯一的 getting-started 入口。第一次使用按顺序做；需要背景材料时再看
 [文档中心](./docs/README.md) 和 [Roadmap](./docs/roadmap.md)。
 
-最常见的启动方式是：
+先区分两件事：
+
+1. 安装 IssuePilot：在当前 IssuePilot 源码仓库里执行。
+2. 运行 IssuePilot：在中心化配置目录执行，默认读取 `./issuepilot.team.yaml`。
+
+安装完成后的常见启动方式是：
 
 ```bash
-cd /path/to/target-project
+cd /path/to/issuepilot-config
 issuepilot validate
-issuepilot run --host 127.0.0.1 --port 4738
+issuepilot run
 ```
 
 然后另开一个终端：
@@ -19,8 +24,17 @@ issuepilot run --host 127.0.0.1 --port 4738
 issuepilot dashboard
 ```
 
-只要当前目录有 `WORKFLOW.md`，就不需要配置 `WORKFLOW_PATH`。下面的步骤会从安装、
-GitLab 凭据、`WORKFLOW.md` 内容到启动顺序完整走一遍。
+这里的 `/path/to/issuepilot-config` 是中心化配置目录，不是目标项目目录。
+目标项目路径、GitLab project、workflow profile 都写在中心化配置里。
+
+如果不想切到配置目录，也可以显式指定：
+
+```bash
+issuepilot validate --config /path/to/issuepilot-config/issuepilot.team.yaml
+issuepilot run --config /path/to/issuepilot-config/issuepilot.team.yaml
+```
+
+下面的步骤会从安装、GitLab 凭据、中心化配置到启动顺序完整走一遍。
 
 ## 第一步：准备环境
 
@@ -60,70 +74,58 @@ pnpm exec issuepilot doctor
 
 后面所有 `issuepilot ...` 命令都可以临时替换成 `pnpm exec issuepilot ...`。
 
-## 第三步：准备目标项目
+## 第三步：准备中心化配置
 
-以下操作在要让 AI 修改的 GitLab 项目里完成。
-
-先创建 6 个 label：
+准备一个配置目录，例如：
 
 ```text
-ai-ready
-ai-running
-human-review
-ai-rework
-ai-failed
-ai-blocked
+issuepilot-config/
+  issuepilot.team.yaml
+  projects/
+    platform-web.yaml
+  workflows/
+    default-web.md
 ```
 
-再确认本机 SSH key 能 push：
+`issuepilot.team.yaml`：
 
-```bash
-ssh -T git@gitlab.example.com
+```yaml
+version: 1
+
+server:
+  host: 127.0.0.1
+  port: 4738
+
+projects:
+  - id: platform-web
+    name: Platform Web
+    enabled: true
+    project: ./projects/platform-web.yaml
+    workflow_profile: ./workflows/default-web.md
 ```
 
-然后在目标项目根目录提交 `WORKFLOW.md`：
+`projects/platform-web.yaml`：
 
-```md
----
+```yaml
 tracker:
   kind: gitlab
   base_url: "https://gitlab.example.com"
-  project_id: "group/project"
-  active_labels:
-    - ai-ready
-    - ai-rework
-  running_label: ai-running
-  handoff_label: human-review
-  failed_label: ai-failed
-  blocked_label: ai-blocked
-  rework_label: ai-rework
-
-workspace:
-  root: "~/.issuepilot/workspaces"
-  strategy: worktree
-  repo_cache_root: "~/.issuepilot/repos"
+  project_id: "group/platform-web"
 
 git:
-  repo_url: "git@gitlab.example.com:group/project.git"
+  repo_url: "git@gitlab.example.com:group/platform-web.git"
   base_branch: main
   branch_prefix: ai
+```
 
+`workflows/default-web.md`：
+
+```md
+---
 agent:
   runner: codex-app-server
-  max_concurrent_agents: 1
   max_turns: 10
   max_attempts: 2
-  retry_backoff_ms: 30000
-
-codex:
-  command: "codex app-server"
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_timeout_ms: 3600000
-  turn_sandbox_policy:
-    type: workspaceWrite
-
-poll_interval_ms: 10000
 ---
 
 你是这个仓库的 AI 工程师。
@@ -142,69 +144,53 @@ Description:
 3. 完成 Issue 描述里的修改。
 4. 提交代码，并创建或更新 Merge Request。
 5. 给 Issue 回写实现、验证、风险和 MR 链接。
-6. 缺信息、权限或密钥时，把 Issue 标成 `ai-blocked` 并说明原因。
 ```
 
-`tracker.project_id` 可以填项目路径或数字 ID；`git.repo_url` 推荐用 SSH
-地址。不要把 token 写进 `WORKFLOW.md`。
+## 第四步：准备目标项目
 
-## 第四步：配置 GitLab 凭据
+在要让 AI 修改的 GitLab 项目里创建 6 个 label：
 
-个人机器推荐 OAuth：
+```text
+ai-ready
+ai-running
+human-review
+ai-rework
+ai-failed
+ai-blocked
+```
+
+确认本机 SSH key 能 push：
+
+```bash
+ssh -T git@gitlab.example.com
+```
+
+不要把 token 写进任何配置文件。
+
+## 第五步：配置 GitLab 凭据
+
+个人机器使用 OAuth：
 
 ```bash
 issuepilot auth login --hostname gitlab.example.com --client-id <oauth-application-id>
 issuepilot auth status --hostname gitlab.example.com
 ```
 
-如果使用 PAT / Group Access Token / Project Access Token，就在 `WORKFLOW.md`
-的 `tracker` 段加环境变量名：
+中心化 project file 不写 `tracker.token_env`，也不要保存 token 值。
 
-```yaml
-tracker:
-  base_url: "https://gitlab.example.com"
-  token_env: "GITLAB_TOKEN"
-```
-
-启动前 export：
+## 第六步：校验并启动
 
 ```bash
-export GITLAB_TOKEN="<gitlab token>"
-```
-
-`token_env` 的值只能是环境变量名，不能是 token 本身。
-
-## 第五步：校验配置
-
-```bash
-cd /path/to/target-project
+cd /path/to/issuepilot-config
 issuepilot validate
 ```
-
-看到下面输出说明配置可用：
-
-```text
-Workflow loaded: /path/to/target-project/WORKFLOW.md
-GitLab project: group/project
-Validation passed.
-```
-
-`issuepilot validate` 默认读取当前目录的 `WORKFLOW.md`。如果你不想切到目标项目目录，
-也可以显式传路径：
-
-```bash
-issuepilot validate --workflow /path/to/target-project/WORKFLOW.md
-```
-
-## 第六步：启动 IssuePilot
 
 开两个终端。
 
 终端 A 启动 orchestrator：
 
 ```bash
-cd /path/to/target-project
-issuepilot run --host 127.0.0.1 --port 4738
+issuepilot run
 ```
 
 终端 B 启动 dashboard：
@@ -219,17 +205,10 @@ issuepilot dashboard
 http://localhost:3000
 ```
 
-如果从源码启动 dashboard：
+如果不在配置目录，可以传 `--config`：
 
 ```bash
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm dev:dashboard
-```
-
-这里不一定要配置 `WORKFLOW_PATH`。只要命令在目标项目根目录执行，IssuePilot 会自动找
-`./WORKFLOW.md`。只有从其他目录启动时，才需要：
-
-```bash
-issuepilot run --workflow /path/to/target-project/WORKFLOW.md --host 127.0.0.1 --port 4738
+issuepilot run --config /path/to/issuepilot-config/issuepilot.team.yaml
 ```
 
 ## 第七步：跑第一个 Issue
@@ -243,14 +222,13 @@ issuepilot run --workflow /path/to/target-project/WORKFLOW.md --host 127.0.0.1 -
 
 IssuePilot 不会自动 merge MR。
 
-## 多项目启动
+## 兼容：单项目 `WORKFLOW.md`
 
-如果一台机器要同时管理多个项目，准备一个中心化配置目录，然后使用：
+`--workflow` 不是中心化配置路径的必填参数。它只用于旧的单项目 `WORKFLOW.md`
+方式：
 
 ```bash
-issuepilot validate --config /path/to/issuepilot.team.yaml
-issuepilot run --config /path/to/issuepilot.team.yaml --host 127.0.0.1 --port 4738
-issuepilot dashboard
+issuepilot run --workflow /path/to/target-project/WORKFLOW.md
 ```
 
 中心化配置的设计背景见
@@ -261,7 +239,7 @@ issuepilot dashboard
 | 问题                                   | 处理                                                                          |
 | -------------------------------------- | ----------------------------------------------------------------------------- |
 | dashboard 显示 `GET /api/state failed` | 确认 orchestrator 正在跑，dashboard 连的是 `http://127.0.0.1:4738`            |
-| GitLab 返回 401 / 403                  | 检查 OAuth 登录态，或确认 `token_env` 指向的环境变量已经 export               |
+| GitLab 返回 401 / 403                  | 检查 OAuth 登录态和目标项目权限                                               |
 | Codex runner 不可用                    | 重新登录 Codex CLI，再跑 `issuepilot doctor`                                  |
 | 无法 push branch                       | 检查 `git.repo_url`、SSH key、目标项目权限                                    |
 | workspace 状态混乱                     | 停掉 daemon 后检查 `~/.issuepilot/workspaces` 和 `~/.issuepilot/state/events` |

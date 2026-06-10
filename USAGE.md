@@ -6,12 +6,18 @@ This is the only getting-started entry in this repository. Follow the steps in
 order the first time you run IssuePilot. For background, see the
 [docs home](./docs/README.md) and [Roadmap](./docs/roadmap.md).
 
-The common launch path is:
+Separate two things first:
+
+1. Installing IssuePilot: run these commands in the IssuePilot source repository.
+2. Running IssuePilot: run it from a central config directory; IssuePilot reads
+   `./issuepilot.team.yaml` by default.
+
+After installation, the common launch path is:
 
 ```bash
-cd /path/to/target-project
+cd /path/to/issuepilot-config
 issuepilot validate
-issuepilot run --host 127.0.0.1 --port 4738
+issuepilot run
 ```
 
 Then open another terminal:
@@ -20,9 +26,19 @@ Then open another terminal:
 issuepilot dashboard
 ```
 
-You do not need `WORKFLOW_PATH` when the current directory contains
-`WORKFLOW.md`. The steps below cover installation, GitLab credentials, the
-`WORKFLOW.md` content and the startup order.
+`/path/to/issuepilot-config` is the central config directory, not the target
+project. Target project paths, GitLab project ids and workflow profiles live in
+central config.
+
+If you do not want to change directories, pass the config explicitly:
+
+```bash
+issuepilot validate --config /path/to/issuepilot-config/issuepilot.team.yaml
+issuepilot run --config /path/to/issuepilot-config/issuepilot.team.yaml
+```
+
+The steps below cover installation, GitLab credentials, central config and the
+startup order.
 
 ## Step 1: Prepare The Environment
 
@@ -64,70 +80,58 @@ pnpm exec issuepilot doctor
 You can temporarily replace every later `issuepilot ...` command with
 `pnpm exec issuepilot ...`.
 
-## Step 3: Prepare The Target Project
+## Step 3: Prepare Central Config
 
-Do the following in the GitLab project that AI will modify.
-
-Create these 6 labels:
+Prepare a config directory, for example:
 
 ```text
-ai-ready
-ai-running
-human-review
-ai-rework
-ai-failed
-ai-blocked
+issuepilot-config/
+  issuepilot.team.yaml
+  projects/
+    platform-web.yaml
+  workflows/
+    default-web.md
 ```
 
-Confirm your local SSH key can push:
+`issuepilot.team.yaml`:
 
-```bash
-ssh -T git@gitlab.example.com
+```yaml
+version: 1
+
+server:
+  host: 127.0.0.1
+  port: 4738
+
+projects:
+  - id: platform-web
+    name: Platform Web
+    enabled: true
+    project: ./projects/platform-web.yaml
+    workflow_profile: ./workflows/default-web.md
 ```
 
-Then commit `WORKFLOW.md` at the target project root:
+`projects/platform-web.yaml`:
 
-```md
----
+```yaml
 tracker:
   kind: gitlab
   base_url: "https://gitlab.example.com"
-  project_id: "group/project"
-  active_labels:
-    - ai-ready
-    - ai-rework
-  running_label: ai-running
-  handoff_label: human-review
-  failed_label: ai-failed
-  blocked_label: ai-blocked
-  rework_label: ai-rework
-
-workspace:
-  root: "~/.issuepilot/workspaces"
-  strategy: worktree
-  repo_cache_root: "~/.issuepilot/repos"
+  project_id: "group/platform-web"
 
 git:
-  repo_url: "git@gitlab.example.com:group/project.git"
+  repo_url: "git@gitlab.example.com:group/platform-web.git"
   base_branch: main
   branch_prefix: ai
+```
 
+`workflows/default-web.md`:
+
+```md
+---
 agent:
   runner: codex-app-server
-  max_concurrent_agents: 1
   max_turns: 10
   max_attempts: 2
-  retry_backoff_ms: 30000
-
-codex:
-  command: "codex app-server"
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_timeout_ms: 3600000
-  turn_sandbox_policy:
-    type: workspaceWrite
-
-poll_interval_ms: 10000
 ---
 
 You are the AI engineer for this repository.
@@ -146,70 +150,54 @@ Requirements:
 3. Implement the Issue description.
 4. Commit changes and create or update a Merge Request.
 5. Write implementation, validation, risk and MR link back to the Issue.
-6. If information, permission or secrets are missing, mark the Issue
-   `ai-blocked` and explain why.
 ```
 
-`tracker.project_id` can be a project path or numeric ID. `git.repo_url` should
-prefer SSH. Do not put tokens in `WORKFLOW.md`.
+## Step 4: Prepare The Target Project
 
-## Step 4: Configure GitLab Credentials
+Create these 6 labels in the GitLab project that AI will modify:
 
-OAuth is recommended on personal machines:
+```text
+ai-ready
+ai-running
+human-review
+ai-rework
+ai-failed
+ai-blocked
+```
+
+Confirm your local SSH key can push:
+
+```bash
+ssh -T git@gitlab.example.com
+```
+
+Do not put tokens in config files.
+
+## Step 5: Configure GitLab Credentials
+
+Use OAuth on personal machines:
 
 ```bash
 issuepilot auth login --hostname gitlab.example.com --client-id <oauth-application-id>
 issuepilot auth status --hostname gitlab.example.com
 ```
 
-If you use a PAT, Group Access Token or Project Access Token, add an environment
-variable name to the `tracker` block in `WORKFLOW.md`:
+Central project files do not set `tracker.token_env`, and they must not store
+token values.
 
-```yaml
-tracker:
-  base_url: "https://gitlab.example.com"
-  token_env: "GITLAB_TOKEN"
-```
-
-Export it before launch:
+## Step 6: Validate And Start
 
 ```bash
-export GITLAB_TOKEN="<gitlab token>"
-```
-
-`token_env` must be the environment variable name, not the token value.
-
-## Step 5: Validate The Config
-
-```bash
-cd /path/to/target-project
+cd /path/to/issuepilot-config
 issuepilot validate
 ```
-
-The config is usable when you see:
-
-```text
-Workflow loaded: /path/to/target-project/WORKFLOW.md
-GitLab project: group/project
-Validation passed.
-```
-
-`issuepilot validate` reads `./WORKFLOW.md` from the current directory by
-default. If you want to run it from another directory, pass the path explicitly:
-
-```bash
-issuepilot validate --workflow /path/to/target-project/WORKFLOW.md
-```
-
-## Step 6: Start IssuePilot
 
 Open two terminals.
 
 Terminal A starts the orchestrator:
 
 ```bash
-cd /path/to/target-project
-issuepilot run --host 127.0.0.1 --port 4738
+issuepilot run
 ```
 
 Terminal B starts the dashboard:
@@ -224,18 +212,10 @@ Open:
 http://localhost:3000
 ```
 
-If you start the dashboard from source:
+If you are not in the config directory, pass `--config`:
 
 ```bash
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:4738 pnpm dev:dashboard
-```
-
-You do not have to set `WORKFLOW_PATH` when you start from the target project
-root. IssuePilot automatically reads `./WORKFLOW.md`. Use `--workflow` only
-when starting from another directory:
-
-```bash
-issuepilot run --workflow /path/to/target-project/WORKFLOW.md --host 127.0.0.1 --port 4738
+issuepilot run --config /path/to/issuepilot-config/issuepilot.team.yaml
 ```
 
 ## Step 7: Run The First Issue
@@ -249,15 +229,13 @@ issuepilot run --workflow /path/to/target-project/WORKFLOW.md --host 127.0.0.1 -
 
 IssuePilot never auto-merges MRs.
 
-## Multi-Project Startup
+## Compatibility: Single-Project `WORKFLOW.md`
 
-If one machine needs to manage multiple projects, prepare a central config
-directory and use:
+`--workflow` is not required for central config. It is only for the older
+single-project `WORKFLOW.md` path:
 
 ```bash
-issuepilot validate --config /path/to/issuepilot.team.yaml
-issuepilot run --config /path/to/issuepilot.team.yaml --host 127.0.0.1 --port 4738
-issuepilot dashboard
+issuepilot run --workflow /path/to/target-project/WORKFLOW.md
 ```
 
 The central config background is documented in
@@ -268,7 +246,7 @@ The central config background is documented in
 | Problem                                 | Fix                                                                                       |
 | --------------------------------------- | ----------------------------------------------------------------------------------------- |
 | dashboard shows `GET /api/state failed` | Confirm the orchestrator is running and the dashboard points to `http://127.0.0.1:4738`   |
-| GitLab returns 401 / 403                | Check OAuth status, or confirm the env var named by `token_env` is exported               |
+| GitLab returns 401 / 403                | Check OAuth status and target project permissions                                         |
 | Codex runner is unavailable             | Sign in to Codex CLI again, then run `issuepilot doctor`                                  |
 | branch push fails                       | Check `git.repo_url`, SSH key and target project permissions                              |
 | workspace state is confusing            | Stop the daemon, then inspect `~/.issuepilot/workspaces` and `~/.issuepilot/state/events` |

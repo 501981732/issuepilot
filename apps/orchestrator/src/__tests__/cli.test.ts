@@ -181,6 +181,73 @@ describe("CLI", () => {
     expect(validateWorkflow).toHaveBeenCalledWith(wfPath);
   });
 
+  it("validate defaults to ./issuepilot.team.yaml when present", async () => {
+    const originalCwd = process.cwd();
+    const configPath = path.join(tmpDir, "issuepilot.team.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "version: 1",
+        "projects:",
+        "  - id: platform-web",
+        "    name: Platform Web",
+        "    project: ./projects/platform-web.yaml",
+        "    workflow_profile: ./workflows/default-web.md",
+      ].join("\n"),
+    );
+
+    const loadTeamConfig = vi.fn(async () => ({
+      version: 1 as const,
+      server: { host: "127.0.0.1", port: 4738 },
+      scheduler: {
+        maxConcurrentRuns: 2,
+        maxConcurrentRunsPerProject: 1,
+        leaseTtlMs: 900_000,
+        pollIntervalMs: 10_000,
+      },
+      defaults: {
+        labelsPath: null,
+        codexPath: null,
+        workspaceRoot: "~/.issuepilot/workspaces",
+        repoCacheRoot: "~/.issuepilot/repos",
+      },
+      projects: [
+        {
+          id: "platform-web",
+          name: "Platform Web",
+          projectPath: path.join(tmpDir, "projects/platform-web.yaml"),
+          workflowProfilePath: path.join(tmpDir, "workflows/default-web.md"),
+          enabled: true,
+          ci: null,
+        },
+      ],
+      retention: {
+        successfulRunDays: 7,
+        failedRunDays: 30,
+        maxWorkspaceGb: 20,
+        cleanupIntervalMs: 3_600_000,
+      },
+      ci: null,
+      source: {
+        path: configPath,
+        sha256: "sha",
+        loadedAt: new Date(0).toISOString(),
+      },
+    }));
+    const mockLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const cli = buildCli({ loadTeamConfig });
+
+    try {
+      process.chdir(tmpDir);
+      await cli.parseAsync(["validate"], { from: "user" });
+    } finally {
+      process.chdir(originalCwd);
+      mockLog.mockRestore();
+    }
+
+    expect(loadTeamConfig).toHaveBeenCalledWith(configPath);
+  });
+
   it("validate falls back to .agents/workflow.md with a warning", async () => {
     const originalCwd = process.cwd();
     const legacyDir = path.join(tmpDir, ".agents");
@@ -401,7 +468,11 @@ describe("CLI", () => {
         beforeRun: "pnpm typecheck",
         afterRun: "pnpm test",
       },
-      ci: { enabled: false, onFailure: "ai-rework" as const, waitForPipeline: true },
+      ci: {
+        enabled: false,
+        onFailure: "ai-rework" as const,
+        waitForPipeline: true,
+      },
       retention: {
         successfulRunDays: 7,
         failedRunDays: 30,
@@ -425,13 +496,7 @@ describe("CLI", () => {
     const cli = buildCli({ loadTeamConfig, compileCentralWorkflowProject });
 
     await cli.parseAsync(
-      [
-        "render-workflow",
-        "--config",
-        cfgPath,
-        "--project",
-        "platform-web",
-      ],
+      ["render-workflow", "--config", cfgPath, "--project", "platform-web"],
       { from: "user" },
     );
 
@@ -439,8 +504,7 @@ describe("CLI", () => {
       expect.objectContaining({
         projectId: "platform-web",
         projectPath: "/srv/issuepilot-config/projects/platform-web.yaml",
-        workflowProfilePath:
-          "/srv/issuepilot-config/workflows/default-web.md",
+        workflowProfilePath: "/srv/issuepilot-config/workflows/default-web.md",
       }),
     );
     const output = mockLog.mock.calls.map((c) => c[0]).join("\n");
@@ -773,6 +837,42 @@ describe("CLI", () => {
       port: 4738,
       host: "127.0.0.1",
     });
+  });
+
+  it("run defaults to ./issuepilot.team.yaml when present", async () => {
+    const originalCwd = process.cwd();
+    const configPath = path.join(tmpDir, "issuepilot.team.yaml");
+    fs.writeFileSync(
+      configPath,
+      [
+        "version: 1",
+        "projects:",
+        "  - id: platform-web",
+        "    name: Platform Web",
+        "    project: ./projects/platform-web.yaml",
+        "    workflow_profile: ./workflows/default-web.md",
+      ].join("\n"),
+    );
+
+    const startTeamDaemon = vi.fn(async () => ({
+      host: "127.0.0.1",
+      port: 4738,
+      url: "http://127.0.0.1:4738",
+      stop: vi.fn(async () => {}),
+      wait: vi.fn(async () => {}),
+    }));
+    const mockLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const cli = buildCli({ startTeamDaemon });
+
+    try {
+      process.chdir(tmpDir);
+      await cli.parseAsync(["run"], { from: "user" });
+    } finally {
+      process.chdir(originalCwd);
+      mockLog.mockRestore();
+    }
+
+    expect(startTeamDaemon).toHaveBeenCalledWith({ configPath });
   });
 
   it("run starts team daemon when --config is provided", async () => {

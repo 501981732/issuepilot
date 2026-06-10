@@ -17,10 +17,21 @@ personal machine or a team machine pilot.
 
 ![IssuePilot Command Center](./docs/assets/screenshots/dashboard-command-center.png)
 
+## V4 At A Glance
+
+The two hand-drawn infographics below are for first-time readers: start with
+the system boundary and core modules, then follow the loop from GitLab Issue to
+MR review and rework. The precise architecture and flow diagrams remain in the
+documentation section.
+
+![IssuePilot V4 hand-drawn architecture infographic](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+
+![IssuePilot V4 hand-drawn flow infographic](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
+
 ## The Three Directories To Understand First
 
 Most first-time confusion comes from where commands should run. Keep these
-three directories separate:
+directories separate:
 
 | Directory              | Purpose                                                              | Must you enter it?                                |
 | ---------------------- | -------------------------------------------------------------------- | ------------------------------------------------- |

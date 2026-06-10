@@ -16,9 +16,18 @@ IssuePilot 不会自动 merge MR，也不是 SaaS。它适合先在个人电脑�
 
 ![IssuePilot Command Center](./docs/assets/screenshots/dashboard-command-center.png)
 
+## 一图看懂 V4
+
+下面两张手绘信息图面向第一次了解 IssuePilot 的读者：先看系统边界和核心模块，
+再看从 GitLab Issue 到 MR review / rework 的完整闭环。精确版架构图和流程图见文档区。
+
+![IssuePilot V4 手绘架构信息图](./docs/superpowers/diagrams/v4-architecture-handdrawn.svg)
+
+![IssuePilot V4 手绘流程信息图](./docs/superpowers/diagrams/v4-flow-handdrawn.svg)
+
 ## 你需要先知道的几个目录
 
-新手最容易混淆的是“在哪个目录执行命令”。先记住这三个概念：
+新手最容易混淆的是“在哪个目录执行命令”。先记住这几个概念：
 
 | 目录 | 用途 | 你是否必须进去 |
 | --- | --- | --- |
